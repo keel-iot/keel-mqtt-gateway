@@ -58,18 +58,32 @@ type pendingEntry struct {
 	sentAt time.Time
 }
 
-// metrics is the single shared collector for the whole run. All counters
-// are protected by mu; latencies is append-only during the run and sorted
-// once at report time.
-type metrics struct {
-	mu sync.Mutex
+// numMessageShards is the shard count for the per-message hot path
+// (recordPublish/recordDelivery, called once per device per message —
+// the operations that turned into a client-side bottleneck at ~5 msg/s/device
+// with a single shared mutex). Sharding by msgID hash keeps each shard's lock
+// held only by the goroutines whose messages land in it.
+const numMessageShards = 32
 
+// messageShard holds the message-rate counters and pending map for one shard.
+type messageShard struct {
+	mu            sync.Mutex
 	pending       map[string]pendingEntry // msgID -> sent time, deleted on first delivery or on loss sweep
 	latencies     []time.Duration
 	delivered     int
 	lost          int
 	published     int
 	publishErrors int
+}
+
+// metrics is the single shared collector for the whole run. Message-rate
+// counters live in sharded messageShards to avoid a single central lock on
+// the hot path; the lower-frequency counters below (one update per device
+// per connect/storm/churn phase, not per message) stay behind mu.
+type metrics struct {
+	shards [numMessageShards]messageShard
+
+	mu sync.Mutex
 
 	// Reconnect storm bookkeeping.
 	stormDisconnected       int
@@ -89,18 +103,34 @@ type metrics struct {
 }
 
 func newMetrics() *metrics {
-	return &metrics{pending: make(map[string]pendingEntry)}
+	m := &metrics{}
+	for i := range m.shards {
+		m.shards[i].pending = make(map[string]pendingEntry)
+	}
+	return m
+}
+
+// shardFor picks the shard for a given msgID via FNV-1a; recordPublish and
+// recordDelivery for the same msgID must land on the same shard.
+func (m *metrics) shardFor(msgID string) *messageShard {
+	var h uint32 = 2166136261
+	for i := 0; i < len(msgID); i++ {
+		h ^= uint32(msgID[i])
+		h *= 16777619
+	}
+	return &m.shards[h%numMessageShards]
 }
 
 func (m *metrics) recordPublish(msgID string, sentAt time.Time, err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.published++
+	s := m.shardFor(msgID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.published++
 	if err != nil {
-		m.publishErrors++
+		s.publishErrors++
 		return
 	}
-	m.pending[msgID] = pendingEntry{sentAt: sentAt}
+	s.pending[msgID] = pendingEntry{sentAt: sentAt}
 }
 
 // recordDelivery is called by a monitor on message receipt. Returns true if
@@ -108,15 +138,16 @@ func (m *metrics) recordPublish(msgID string, sentAt time.Time, err error) {
 // per message even when multiple monitors — one per node — all receive the
 // same fanned-out message).
 func (m *metrics) recordDelivery(msgID string, recvAt time.Time) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	entry, ok := m.pending[msgID]
+	s := m.shardFor(msgID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.pending[msgID]
 	if !ok {
 		return false // already delivered to another monitor, or already swept as lost
 	}
-	delete(m.pending, msgID)
-	m.delivered++
-	m.latencies = append(m.latencies, recvAt.Sub(entry.sentAt))
+	delete(s.pending, msgID)
+	s.delivered++
+	s.latencies = append(s.latencies, recvAt.Sub(entry.sentAt))
 	return true
 }
 
@@ -125,14 +156,33 @@ func (m *metrics) recordDelivery(msgID string, recvAt time.Time) bool {
 // the run plus one extra timeout window at the end (drainLost).
 func (m *metrics) sweepLost(timeout time.Duration) {
 	cutoff := time.Now().Add(-timeout)
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for id, e := range m.pending {
-		if e.sentAt.Before(cutoff) {
-			delete(m.pending, id)
-			m.lost++
+	for i := range m.shards {
+		s := &m.shards[i]
+		s.mu.Lock()
+		for id, e := range s.pending {
+			if e.sentAt.Before(cutoff) {
+				delete(s.pending, id)
+				s.lost++
+			}
 		}
+		s.mu.Unlock()
 	}
+}
+
+// messageSnapshot aggregates the sharded message-rate counters. Called once
+// at report time, after the run has stopped producing traffic.
+func (m *metrics) messageSnapshot() (published, publishErrors, delivered, lost int, latencies []time.Duration) {
+	for i := range m.shards {
+		s := &m.shards[i]
+		s.mu.Lock()
+		published += s.published
+		publishErrors += s.publishErrors
+		delivered += s.delivered
+		lost += s.lost
+		latencies = append(latencies, s.latencies...)
+		s.mu.Unlock()
+	}
+	return
 }
 
 func (m *metrics) recordConnect(latency time.Duration, err error) {

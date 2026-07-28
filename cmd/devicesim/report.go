@@ -61,18 +61,20 @@ type report struct {
 }
 
 func buildReport(cfg *config, mx *metrics, started time.Time, dockerSummaries []statsSummary, dockerOK bool, dockerErr string, notes []string) *report {
+	published, publishErrors, delivered, lost, latencies := mx.messageSnapshot()
+
 	mx.mu.Lock()
 	defer mx.mu.Unlock()
 
-	p50, p95, p99 := percentiles(mx.latencies)
+	p50, p95, p99 := percentiles(latencies)
 	cp50, cp95, cp99 := percentiles(mx.connectLatencies)
 	sp50, sp95, sp99 := percentiles(mx.stormReconnectLatencies)
 	convp50, convp95, convp99 := percentiles(mx.convergenceLatencies)
 
-	totalOutcomes := mx.delivered + mx.lost
+	totalOutcomes := delivered + lost
 	lossPct := 0.0
 	if totalOutcomes > 0 {
-		lossPct = 100 * float64(mx.lost) / float64(totalOutcomes)
+		lossPct = 100 * float64(lost) / float64(totalOutcomes)
 	}
 
 	stormTotal := mx.stormReconnected + mx.stormReconnectFailed
@@ -94,16 +96,16 @@ func buildReport(cfg *config, mx *metrics, started time.Time, dockerSummaries []
 		ConnectP95Ms:     ms(cp95),
 		ConnectP99Ms:     ms(cp99),
 
-		Published:     mx.published,
-		PublishErrors: mx.publishErrors,
-		Delivered:     mx.delivered,
-		Lost:          mx.lost,
+		Published:     published,
+		PublishErrors: publishErrors,
+		Delivered:     delivered,
+		Lost:          lost,
 		LossPercent:   lossPct,
 
 		LatencyP50Ms:  ms(p50),
 		LatencyP95Ms:  ms(p95),
 		LatencyP99Ms:  ms(p99),
-		LatencyMeanMs: ms(mean(mx.latencies)),
+		LatencyMeanMs: ms(mean(latencies)),
 
 		DockerStats: dockerSummaries,
 		Notes:       notes,
