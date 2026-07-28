@@ -18,28 +18,53 @@ func TestKafkaHonoConnector_CategoryFromTopic(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "keel telemetry topic",
-			topic:    "keel.tenant.device.telemetry.type",
+			name:     "bare telemetry topic",
+			topic:    "telemetry",
 			expected: "telemetry",
 		},
 		{
-			name:     "ditto twin commands",
-			topic:    "tenant/device/things/twin/commands/modify",
+			name:     "short telemetry alias",
+			topic:    "t",
 			expected: "telemetry",
 		},
 		{
-			name:     "ditto live messages",
-			topic:    "tenant/device/things/live/messages/event",
+			name:     "telemetry topic with type suffix",
+			topic:    "telemetry/metrics",
+			expected: "telemetry",
+		},
+		{
+			name:     "bare event topic",
+			topic:    "event",
 			expected: "event",
 		},
 		{
-			name:     "keel event topic",
-			topic:    "keel.tenant.device.events.type",
+			name:     "short event alias",
+			topic:    "e",
 			expected: "event",
+		},
+		{
+			name:     "event topic with subject suffix",
+			topic:    "event/alarm",
+			expected: "event",
+		},
+		{
+			name:     "via gateway delegation, telemetry",
+			topic:    "via/f47ac10b-58cc-4372-a567-0e02b2c3d479/telemetry",
+			expected: "telemetry",
+		},
+		{
+			name:     "via gateway delegation, event with subject",
+			topic:    "via/f47ac10b-58cc-4372-a567-0e02b2c3d479/event/alarm",
+			expected: "event",
+		},
+		{
+			name:     "via prefix with invalid uuid is not stripped",
+			topic:    "via/not-a-uuid/telemetry",
+			expected: "",
 		},
 		{
 			name:     "unknown topic",
-			topic:    "unknown.topic",
+			topic:    "status/heartbeat",
 			expected: "",
 		},
 	}
@@ -149,7 +174,7 @@ func TestKafkaHonoConnector_Forward_UsesRealHeaders(t *testing.T) {
 	}
 
 	req := &ForwardRequest{
-		Topic:    "keel.tenant.device.telemetry.type",
+		Topic:    "telemetry",
 		Payload:  []byte(`{"temp": 21}`),
 		DeviceId: "device-123",
 		TenantId: "tenant-456",

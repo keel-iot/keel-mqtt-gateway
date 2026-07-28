@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/keel/pkg/redpanda"
 )
 
@@ -205,28 +206,41 @@ func (c *KafkaHonoConnector) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// categoryFromTopic extracts the Hono category (telemetry/event) from a topic string.
-// Supports both:
-//   - Keel telemetry topics: "keel.tenant.device.telemetry.type"
-//   - Ditto topics: "tenant.device.things.twin.commands.modify"
+// categoryFromTopic extracts the Hono category (telemetry/event) from the raw
+// device MQTT topic (req.Topic is pk.TopicName, see broker/hooks.go
+// forwardToOutputConnector — not the Ditto-envelope or Kafka-output topic).
+// Matches the device-side topic taxonomy enforced by isAllowedPublish in
+// internal/broker/hooks.go: "telemetry"/"t"[/type] and "event"/"e"[/subject],
+// optionally wrapped in the "via/<uuid>/..." gateway delegation pattern.
 func (c *KafkaHonoConnector) categoryFromTopic(topic string) string {
-	// Check if it's a Ditto protocol topic (contains "things/twin/commands")
-	if strings.Contains(topic, "things/twin/commands") {
+	topic = stripViaPrefix(topic)
+	parts := strings.SplitN(topic, "/", 2)
+	switch parts[0] {
+	case "telemetry", "t":
 		return "telemetry"
-	}
-	// Check if it's a Ditto live message (things/live/messages)
-	if strings.Contains(topic, "things/live/messages") {
-		return "event"
-	}
-	// Check if it's a keel telemetry topic (contains ".telemetry.")
-	if strings.Contains(topic, ".telemetry") {
-		return "telemetry"
-	}
-	// Check if it's a keel event topic (contains ".event")
-	if strings.Contains(topic, ".events") || strings.Contains(topic, ".event.") {
+	case "event", "e":
 		return "event"
 	}
 	return ""
+}
+
+// stripViaPrefix strips a leading "via/<uuid>/" gateway delegation prefix so
+// the remainder can be categorized normally. Returns topic unchanged if it
+// doesn't match the pattern (invalid or missing UUID).
+func stripViaPrefix(topic string) string {
+	const prefix = "via/"
+	if !strings.HasPrefix(topic, prefix) {
+		return topic
+	}
+	rest := topic[len(prefix):]
+	slashIdx := strings.IndexByte(rest, '/')
+	if slashIdx < 0 {
+		return topic
+	}
+	if _, err := uuid.Parse(rest[:slashIdx]); err != nil {
+		return topic
+	}
+	return rest[slashIdx+1:]
 }
 
 // init registers the connector.
