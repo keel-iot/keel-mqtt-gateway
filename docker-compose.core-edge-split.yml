@@ -1,0 +1,269 @@
+# Dedicated core/edge topology for validating the isolation hypothesis:
+# a storm on edge nodes (connections, accept/handshake CPU, auth) should not
+# measurably affect core node stability (Raft apply latency, Olric
+# convergence). See internal/cluster's design doc and the 2026-07-27
+# core/edge separation review for context.
+#
+# --role=core is now a genuinely pure core node: cmd/server/main.go gates
+# the MQTT broker/HTTP adapter/commander/Redpanda forwarder on role (only
+# "edge", "combined", and standalone run them), so core-N below run none
+# of that — not just unreachable, structurally absent. The "never publish
+# core's MQTT port" note below is now belt-and-suspenders, not a load-bearing
+# workaround. See --role=combined (docker-compose.yml) for the single-process
+# all-in-one deployment that still needs broker+raft+olric together.
+name: keel-mqtt-cluster-split
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: keel_devices
+    volumes:
+      - ./deploy/docker-compose/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+
+  # ── Core nodes: raft + Olric quorum only. No MQTT port published — see the
+  # KNOWN GAP note above for why the process itself isn't fully listener-free.
+  core-1:
+    build: .
+    image: keel-mqtt-cluster:dev
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      AUTH_BACKEND: "file"
+      CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
+      CREDENTIAL_CACHE_TTL: "${CREDENTIAL_CACHE_TTL:-30s}"
+      LOG_LEVEL: "debug"
+    volumes:
+      - ./deploy/docker-compose/credentials.split.yaml:/etc/keel/credentials.yaml:ro
+      - core-1-data:/data
+    command:
+      - "--role=core"
+      - "--node-id=core-1"
+      - "--bootstrap=true"
+      - "--raft-bind=core-1:7000"
+      - "--raft-data-dir=/data/raft"
+      - "--gossip-bind=0.0.0.0"
+      - "--gossip-port=7946"
+      - "--gossip-advertise=core-1"
+      - "--gossip-peers=core-2:7946,core-3:7946"
+      - "--grpc-bind=0.0.0.0:7100"
+      - "--grpc-advertise=core-1:7100"
+      - "--management-addr=0.0.0.0:8090"
+      - "--olric-bind=0.0.0.0"
+      - "--olric-port=7300"
+      - "--olric-gossip-port=7301"
+      - "--olric-advertise=core-1"
+    ports:
+      - "18090:8090"
+      # deliberately no "1883:1883" — core's MQTT port is never exposed to
+      # the host, so devicesim (running on the host) cannot reach it.
+
+  core-2:
+    build: .
+    image: keel-mqtt-cluster:dev
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    depends_on:
+      postgres:
+        condition: service_healthy
+      core-1:
+        condition: service_started
+    environment:
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      AUTH_BACKEND: "file"
+      CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
+      CREDENTIAL_CACHE_TTL: "${CREDENTIAL_CACHE_TTL:-30s}"
+      LOG_LEVEL: "debug"
+    volumes:
+      - ./deploy/docker-compose/credentials.split.yaml:/etc/keel/credentials.yaml:ro
+      - core-2-data:/data
+    command:
+      - "--role=core"
+      - "--node-id=core-2"
+      - "--raft-bind=core-2:7000"
+      - "--raft-data-dir=/data/raft"
+      - "--gossip-bind=0.0.0.0"
+      - "--gossip-port=7946"
+      - "--gossip-advertise=core-2"
+      - "--gossip-peers=core-1:7946"
+      - "--grpc-bind=0.0.0.0:7100"
+      - "--grpc-advertise=core-2:7100"
+      - "--management-addr=0.0.0.0:8090"
+      - "--olric-bind=0.0.0.0"
+      - "--olric-port=7300"
+      - "--olric-gossip-port=7301"
+      - "--olric-advertise=core-2"
+    ports:
+      - "28090:8090"
+
+  core-3:
+    build: .
+    image: keel-mqtt-cluster:dev
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    depends_on:
+      postgres:
+        condition: service_healthy
+      core-1:
+        condition: service_started
+    environment:
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      AUTH_BACKEND: "file"
+      CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
+      CREDENTIAL_CACHE_TTL: "${CREDENTIAL_CACHE_TTL:-30s}"
+      LOG_LEVEL: "debug"
+    volumes:
+      - ./deploy/docker-compose/credentials.split.yaml:/etc/keel/credentials.yaml:ro
+      - core-3-data:/data
+    command:
+      - "--role=core"
+      - "--node-id=core-3"
+      - "--raft-bind=core-3:7000"
+      - "--raft-data-dir=/data/raft"
+      - "--gossip-bind=0.0.0.0"
+      - "--gossip-port=7946"
+      - "--gossip-advertise=core-3"
+      - "--gossip-peers=core-1:7946"
+      - "--grpc-bind=0.0.0.0:7100"
+      - "--grpc-advertise=core-3:7100"
+      - "--management-addr=0.0.0.0:8090"
+      - "--olric-bind=0.0.0.0"
+      - "--olric-port=7300"
+      - "--olric-gossip-port=7301"
+      - "--olric-advertise=core-3"
+    ports:
+      - "38090:8090"
+
+  # ── Edge nodes: MQTT termination + auth + forwarding only. No raft, no
+  # Olric, no management API, no lifecycle monitor — already correctly
+  # role-gated in cmd/server/main.go, no workaround needed here.
+  edge-1:
+    build: .
+    image: keel-mqtt-cluster:dev
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    depends_on:
+      postgres:
+        condition: service_healthy
+      core-1:
+        condition: service_started
+    environment:
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      AUTH_BACKEND: "file"
+      CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
+      CREDENTIAL_CACHE_TTL: "${CREDENTIAL_CACHE_TTL:-30s}"
+      LOG_LEVEL: "debug"
+    volumes:
+      - ./deploy/docker-compose/credentials.split.yaml:/etc/keel/credentials.yaml:ro
+    command:
+      - "--role=edge"
+      - "--node-id=edge-1"
+      - "--gossip-bind=0.0.0.0"
+      - "--gossip-port=7946"
+      - "--gossip-advertise=edge-1"
+      - "--gossip-peers=core-1:7946"
+      - "--grpc-bind=0.0.0.0:7100"
+      - "--grpc-advertise=edge-1:7100"
+    ports:
+      - "51883:1883"
+
+  edge-2:
+    build: .
+    image: keel-mqtt-cluster:dev
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    depends_on:
+      postgres:
+        condition: service_healthy
+      core-1:
+        condition: service_started
+    environment:
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      AUTH_BACKEND: "file"
+      CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
+      CREDENTIAL_CACHE_TTL: "${CREDENTIAL_CACHE_TTL:-30s}"
+      LOG_LEVEL: "debug"
+    volumes:
+      - ./deploy/docker-compose/credentials.split.yaml:/etc/keel/credentials.yaml:ro
+    command:
+      - "--role=edge"
+      - "--node-id=edge-2"
+      - "--gossip-bind=0.0.0.0"
+      - "--gossip-port=7946"
+      - "--gossip-advertise=edge-2"
+      - "--gossip-peers=core-1:7946"
+      - "--grpc-bind=0.0.0.0:7100"
+      - "--grpc-advertise=edge-2:7100"
+    ports:
+      - "52883:1883"
+
+  edge-3:
+    build: .
+    image: keel-mqtt-cluster:dev
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    depends_on:
+      postgres:
+        condition: service_healthy
+      core-1:
+        condition: service_started
+    environment:
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
+      REDIS_ADDR: "redis:6379"
+      AUTH_BACKEND: "file"
+      CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
+      CREDENTIAL_CACHE_TTL: "${CREDENTIAL_CACHE_TTL:-30s}"
+      LOG_LEVEL: "debug"
+    volumes:
+      - ./deploy/docker-compose/credentials.split.yaml:/etc/keel/credentials.yaml:ro
+    command:
+      - "--role=edge"
+      - "--node-id=edge-3"
+      - "--gossip-bind=0.0.0.0"
+      - "--gossip-port=7946"
+      - "--gossip-advertise=edge-3"
+      - "--gossip-peers=core-1:7946"
+      - "--grpc-bind=0.0.0.0:7100"
+      - "--grpc-advertise=edge-3:7100"
+    ports:
+      - "53883:1883"
+
+volumes:
+  core-1-data:
+  core-2-data:
+  core-3-data:

@@ -1,0 +1,39 @@
+# Prometheus Adapter rule exposing keel_gateway_edge_load_score (see
+# internal/telemetry/loadscore.go) as the custom.metrics.k8s.io metric
+# "keel_edge_load_score", consumed by deploy/k8s/hpa-edge.yaml.
+#
+# Prerequisites (not bundled here):
+#   - A Prometheus (or VictoriaMetrics, already in the Kimera stack per the
+#     design doc) scraping every edge pod's /metrics via standard
+#     kubernetes_sd_configs pod discovery — this is what attaches the
+#     `namespace`/`pod` labels the seriesQuery below relies on.
+#   - prometheus-adapter itself installed (e.g. `helm install
+#     prometheus-adapter prometheus-community/prometheus-adapter`), pointed
+#     at that Prometheus/VictoriaMetrics as --prometheus-url, with this
+#     ConfigMap mounted over its default config and referenced via
+#     --config=/etc/adapter/config.yaml.
+#
+# Applying this ConfigMap alone does nothing without an adapter deployment
+# that mounts it — see the adapter chart's `rules.custom` values if
+# preferred over a raw ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keel-prometheus-adapter-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    rules:
+      - seriesQuery: 'keel_gateway_edge_load_score{namespace!="",pod!=""}'
+        resources:
+          overrides:
+            namespace: {resource: "namespace"}
+            pod: {resource: "pod"}
+        name:
+          matches: "^keel_gateway_edge_load_score$"
+          as: "keel_edge_load_score"
+        # Gauge, already a single per-pod sample — no rate()/aggregation
+        # needed, unlike the adapter's usual counter-rate rules. This is the
+        # entire point of computing the composite score application-side
+        # (see design doc, HPA risk #5): the adapter just relays a number.
+        metricsQuery: 'keel_gateway_edge_load_score{<<.LabelMatchers>>}'

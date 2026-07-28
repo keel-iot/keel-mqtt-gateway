@@ -1,0 +1,31 @@
+# Compose override used only by backup-restore.sh: remaps every host port
+# docker-compose.yml publishes so this e2e run never collides with another
+# docker-compose.yml-based stack already using the file's hardcoded default
+# ports on the same host (confirmed happening in practice against a
+# concurrently-running docker-compose.core-edge-split.yml session during
+# this test's development — postgres/redis/all three core nodes' mgmt ports
+# all collided in turn).
+#
+# Compose merges list-valued keys like `ports` by concatenation, not
+# replacement, so `!override` is required on each to force a wholesale
+# replacement instead of appending to docker-compose.yml's own entries.
+services:
+  postgres:
+    ports: !override
+      - "15533:5432"
+  redis:
+    ports: !override
+      - "16479:6379"
+  core-1:
+    ports: !override
+      - "19183:1883"
+      - "19190:8090"
+  core-2:
+    ports: !override
+      - "19283:1883"
+      - "19290:8090"
+      - "19300:7100"
+  core-3:
+    ports: !override
+      - "19383:1883"
+      - "19390:8090"

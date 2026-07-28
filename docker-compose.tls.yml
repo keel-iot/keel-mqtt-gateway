@@ -1,0 +1,54 @@
+# Single standalone node validating Phase 1 (TLS listener): same binary as
+# every other compose file, no clustering (--role left empty). Confirms:
+#   - mochi-mqtt terminates TLS directly on a dedicated port (8883)
+#   - the cert is watched/reloaded from a mounted directory with no restart
+#     (see deploy/tls/gen-certs.sh and deploy/tls/README.md for the manual
+#     rotation test)
+#   - /readyz on the metrics port reports NotReady while --tls-enabled=true
+#     and no valid certificate is present yet, then Ready once one appears
+#
+# Certs are generated on the host by deploy/tls/gen-certs.sh into
+# deploy/tls/certs/ (gitignored) and bind-mounted read-only into the
+# container — the CertReloader only ever reads them.
+name: keel-mqtt-cluster-tls
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: keel_devices
+    volumes:
+      - ./deploy/docker-compose/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "15433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  gateway:
+    build: .
+    image: keel-mqtt-cluster:dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
+      AUTH_BACKEND: "file"
+      CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
+      MQTT_TLS_PORT: "8883"
+      LOG_LEVEL: "debug"
+    volumes:
+      - ./deploy/docker-compose/credentials.yaml:/etc/keel/credentials.yaml:ro
+      - ./deploy/tls/certs:/etc/keel/tls:ro
+    command:
+      - "--tls-enabled=true"
+      - "--tls-cert-dir=/etc/keel/tls"
+      - "--tls-client-auth=request"
+    ports:
+      - "11883:1883" # plain TCP, for comparison
+      - "18883:8883" # TLS
+      - "19090:9090" # metrics + /healthz + /readyz

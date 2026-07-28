@@ -1,0 +1,5 @@
+/deploy/tls/certs/
+
+# Compiled binaries from local `go build -o server/devicesim ...` runs.
+/server
+/devicesim

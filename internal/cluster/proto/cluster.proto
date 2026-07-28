@@ -1,0 +1,177 @@
+syntax = "proto3";
+
+package keel.cluster;
+
+option go_package = "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/proto/clusterpb";
+
+// Registry is called by edge nodes to reach the raft-backed Registry that
+// lives on core nodes. Core nodes call their local LocalRegistry directly
+// and never go through this RPC.
+service Registry {
+  rpc Subscribe(SubscribeRequest) returns (SubscribeResponse);
+  rpc Unsubscribe(UnsubscribeRequest) returns (UnsubscribeResponse);
+  rpc NodesFor(NodesForRequest) returns (NodesForResponse);
+  rpc ClaimSession(ClaimSessionRequest) returns (ClaimSessionResponse);
+  rpc ReleaseSession(ReleaseSessionRequest) returns (ReleaseSessionResponse);
+  // EvaluateACL is a read: any core node's FSM state is fail-closed-safe
+  // to consult even if lagging slightly behind the leader (see
+  // internal/cluster/acl and raft.LocalRegistry.EvaluateACL), so — like
+  // NodesFor — it does not require reaching the leader specifically.
+  rpc EvaluateACL(EvaluateACLRequest) returns (EvaluateACLResponse);
+
+  // ACLSnapshot is a read, same fail-closed-safe rationale as EvaluateACL
+  // above — used by edge nodes to populate/refresh a local ACL cache
+  // (internal/cluster/raft.ACLCache) instead of round-tripping
+  // EvaluateACL to a core node on every publish/subscribe.
+  rpc ACLSnapshot(ACLSnapshotRequest) returns (ACLSnapshotResponse);
+
+  // ACL mutation RPCs. Only used core-to-core, when a non-leader core node
+  // forwards a management-API-originated write to the current leader (the
+  // same fallback path ClaimSession/ReleaseSession already use) — edge
+  // nodes never call these directly, since internal/cluster/management is
+  // only mounted on core nodes and the CLI/API always targets a core
+  // address.
+  rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse);
+  rpc DeleteRole(DeleteRoleRequest) returns (DeleteRoleResponse);
+  rpc CreateBinding(CreateBindingRequest) returns (CreateBindingResponse);
+  rpc DeleteBinding(DeleteBindingRequest) returns (DeleteBindingResponse);
+  rpc EnableRuleset(EnableRulesetRequest) returns (EnableRulesetResponse);
+  rpc DisableRuleset(DisableRulesetRequest) returns (DisableRulesetResponse);
+}
+
+message SubscribeRequest {
+  string topic = 1;
+  string node_id = 2;
+}
+message SubscribeResponse {}
+
+message UnsubscribeRequest {
+  string topic = 1;
+  string node_id = 2;
+}
+message UnsubscribeResponse {}
+
+message NodesForRequest {
+  string topic = 1;
+}
+message NodesForResponse {
+  repeated string node_ids = 1;
+}
+
+message ClaimSessionRequest {
+  string client_id = 1;
+  string node_id = 2;
+}
+message ClaimSessionResponse {
+  bool ok = 1;
+  // evicted_node_id is the previous owner's node ID when the claim took
+  // the session over from a different node, empty otherwise — see
+  // raft.Registry.ClaimSession's doc.
+  string evicted_node_id = 2;
+}
+
+message ReleaseSessionRequest {
+  string client_id = 1;
+  string node_id = 2;
+}
+message ReleaseSessionResponse {}
+
+message EvaluateACLRequest {
+  string client_id = 1;
+  string username = 2;
+  string topic = 3;
+  string action = 4; // "publish" | "subscribe"
+}
+message EvaluateACLResponse {
+  bool allowed = 1;
+  // matched_filter is the topic filter of the rule that decided the
+  // outcome, empty when the decision was the fail-closed default (no
+  // rule matched). Carried across the wire for audit/debugging parity
+  // with acl.Decision on the core side.
+  string matched_filter = 2;
+}
+
+message ACLRule {
+  string topic_filter = 1;
+  repeated string actions = 2;
+  string effect = 3; // "allow" | "deny"
+}
+
+message ACLSnapshotRequest {}
+
+message RoleEntry {
+  string name = 1;
+  repeated ACLRule rules = 2;
+}
+message BindingEntry {
+  string principal = 1;
+  repeated string role_names = 2;
+}
+message ACLSnapshotResponse {
+  repeated RoleEntry roles = 1;
+  repeated BindingEntry bindings = 2;
+  repeated string enabled_rulesets = 3;
+}
+
+message CreateRoleRequest {
+  string name = 1;
+  repeated ACLRule rules = 2;
+}
+message CreateRoleResponse {}
+
+message DeleteRoleRequest {
+  string name = 1;
+}
+message DeleteRoleResponse {}
+
+message CreateBindingRequest {
+  string principal = 1;
+  string role_name = 2;
+}
+message CreateBindingResponse {}
+
+message DeleteBindingRequest {
+  string principal = 1;
+  string role_name = 2;
+}
+message DeleteBindingResponse {}
+
+message EnableRulesetRequest {
+  string name = 1;
+}
+message EnableRulesetResponse {}
+
+message DisableRulesetRequest {
+  string name = 1;
+}
+message DisableRulesetResponse {}
+
+// Dataplane carries MQTT message payloads directly between nodes,
+// point-to-point, kept off the raft log entirely. This is the phase-1
+// implementation of internal/cluster/dataplane.Forwarder; a future
+// implementation may replace it with embedded NATS without changing the
+// Forwarder interface.
+service Dataplane {
+  rpc Forward(ForwardRequest) returns (ForwardResponse);
+  // Evict tells the receiving node to locally disconnect clientID — sent
+  // by the node that just won a ClaimSession takeover, to the node that
+  // previously owned the session (see internal/broker/hooks.go's
+  // OnConnectAuthenticate). Best-effort: the caller does not block the
+  // new connection on this succeeding: the evicted node's own MQTT
+  // keepalive/TCP timeout is the backstop if this RPC is lost.
+  rpc Evict(EvictRequest) returns (EvictResponse);
+}
+
+message ForwardRequest {
+  string source_node_id = 1;
+  string tenant_id = 2;
+  string topic = 3;
+  bytes payload = 4;
+  uint32 qos = 5;
+}
+message ForwardResponse {}
+
+message EvictRequest {
+  string client_id = 1;
+}
+message EvictResponse {}

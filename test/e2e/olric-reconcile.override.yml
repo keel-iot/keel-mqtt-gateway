@@ -1,0 +1,34 @@
+# Compose override used only by olric-reconcile.sh: remaps every host port
+# docker-compose.core-edge-split.yml publishes so this e2e run never
+# collides with another already-running stack based on the same file (this
+# host had one running from an earlier scale-test session while this test
+# was developed) or with test/e2e/backup-restore.sh's own stack.
+#
+# `!override` forces a wholesale replacement of each ports: list — compose
+# merges list-valued keys by concatenation otherwise (see
+# backup-restore.override.yml's comment, where this was first worked out).
+services:
+  postgres:
+    ports: !override
+      - "25532:5432"
+  redis:
+    ports: !override
+      - "26479:6379"
+  core-1:
+    ports: !override
+      - "28190:8090"
+  core-2:
+    ports: !override
+      - "28290:8090"
+  core-3:
+    ports: !override
+      - "28390:8090"
+  edge-1:
+    ports: !override
+      - "28183:1883"
+  edge-2:
+    ports: !override
+      - "28283:1883"
+  edge-3:
+    ports: !override
+      - "28383:1883"

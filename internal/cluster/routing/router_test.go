@@ -1,0 +1,214 @@
+package routing
+
+import (
+	"testing"
+	"time"
+)
+
+func newTestRouter(t *testing.T) *Router {
+	t.Helper()
+	r, err := New(Config{Store: newMemStore(), ReconcileInterval: time.Hour}) // reconcile never fires; tests exercise the pub/sub fast path
+	if err != nil {
+		t.Fatalf("new router: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return r
+}
+
+// waitForNodes polls NodesFor(topic) until it matches want (as a set) or
+// the timeout elapses. Subscribe/Unsubscribe apply to the local cache
+// asynchronously (via the store's pub/sub echo), so tests can't assert
+// immediately after a call returns.
+func waitForNodes(t *testing.T, r *Router, topic string, want []string) []string {
+	t.Helper()
+	wantSet := make(map[string]bool, len(want))
+	for _, n := range want {
+		wantSet[n] = true
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got []string
+	for time.Now().Before(deadline) {
+		got = r.NodesFor(topic)
+		if len(got) == len(wantSet) {
+			gotSet := make(map[string]bool, len(got))
+			for _, n := range got {
+				gotSet[n] = true
+			}
+			match := true
+			for n := range wantSet {
+				if !gotSet[n] {
+					match = false
+					break
+				}
+			}
+			if match {
+				return got
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("NodesFor(%q): timed out waiting for %v, last got %v", topic, want, got)
+	return nil
+}
+
+func TestRouterExactMatch(t *testing.T) {
+	r := newTestRouter(t)
+	if err := r.Subscribe("telemetry/poc/device-1", "core-1"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	waitForNodes(t, r, "telemetry/poc/device-1", []string{"core-1"})
+	if nodes := r.NodesFor("telemetry/poc/device-2"); len(nodes) != 0 {
+		t.Fatalf("expected no match for a different literal topic, got %v", nodes)
+	}
+}
+
+func TestRouterHashWildcard(t *testing.T) {
+	r := newTestRouter(t)
+	if err := r.Subscribe("sport/tennis/#", "core-1"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	waitForNodes(t, r, "sport/tennis", []string{"core-1"}) // "#" also matches its parent level; syncs the cache before the table below
+
+	cases := []struct {
+		topic string
+		want  bool
+	}{
+		{"sport/tennis", true},
+		{"sport/tennis/player1", true},
+		{"sport/tennis/player1/ranking", true},
+		{"sport/badminton/player1", false},
+		{"sport", false},
+	}
+	for _, tc := range cases {
+		nodes := r.NodesFor(tc.topic)
+		got := len(nodes) == 1 && nodes[0] == "core-1"
+		if got != tc.want {
+			t.Errorf("topic %q: got match=%v (%v), want match=%v", tc.topic, got, nodes, tc.want)
+		}
+	}
+}
+
+func TestRouterPlusWildcard(t *testing.T) {
+	r := newTestRouter(t)
+	if err := r.Subscribe("sport/+/player1", "core-1"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	waitForNodes(t, r, "sport/tennis/player1", []string{"core-1"})
+	if nodes := r.NodesFor("sport/tennis/indoor/player1"); len(nodes) != 0 {
+		t.Fatalf("single-level '+' must not span multiple segments, got %v", nodes)
+	}
+
+	r2 := newTestRouter(t)
+	if err := r2.Subscribe("sport/+/+/scores", "core-2"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	waitForNodes(t, r2, "sport/tennis/indoor/scores", []string{"core-2"})
+	if nodes := r2.NodesFor("sport/tennis/scores"); len(nodes) != 0 {
+		t.Fatalf("two '+' wildcards must not collapse to fewer segments, got %v", nodes)
+	}
+}
+
+func TestRouterSysTopicExcludedFromWildcard(t *testing.T) {
+	r := newTestRouter(t)
+	if err := r.Subscribe("#", "core-1"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := r.Subscribe("+/uptime", "core-1"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	waitForNodes(t, r, "anything/else", []string{"core-1"}) // sync point for the '#' subscribe
+
+	if nodes := r.NodesFor("$SYS/uptime"); len(nodes) != 0 {
+		t.Fatalf("top-level '#'/'+' must not match a $SYS topic, got %v", nodes)
+	}
+
+	if err := r.Subscribe("$SYS/uptime", "core-2"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	waitForNodes(t, r, "$SYS/uptime", []string{"core-2"})
+}
+
+func TestRouterUnionOfOverlappingFilters(t *testing.T) {
+	r := newTestRouter(t)
+	// A more specific (literal) filter and a more general (wildcard)
+	// filter, from different nodes, both active on the same published
+	// topic: NodesFor must return the union, unlike the ACL precedence
+	// rules used elsewhere.
+	if err := r.Subscribe("telemetry/poc/device-1", "core-1"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := r.Subscribe("telemetry/poc/#", "core-2"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := r.Subscribe("telemetry/+/device-1", "core-3"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	waitForNodes(t, r, "telemetry/poc/device-1", []string{"core-1", "core-2", "core-3"})
+
+	// A node subscribed via two distinct matching filters must still
+	// appear only once (dedup), not once per matching filter.
+	if err := r.Subscribe("telemetry/poc/+", "core-1"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		nodes := r.NodesFor("telemetry/poc/device-1")
+		count := 0
+		for _, n := range nodes {
+			if n == "core-1" {
+				count++
+			}
+		}
+		if len(nodes) == 3 && count == 1 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("expected core-1 to appear exactly once despite matching two filters, got %v", r.NodesFor("telemetry/poc/device-1"))
+}
+
+func TestRouterUnsubscribe(t *testing.T) {
+	r := newTestRouter(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	must(r.Subscribe("t/1", "core-1"))
+	must(r.Subscribe("t/1", "core-2"))
+	waitForNodes(t, r, "t/1", []string{"core-1", "core-2"})
+
+	must(r.Unsubscribe("t/1", "core-1"))
+	waitForNodes(t, r, "t/1", []string{"core-2"})
+
+	must(r.Unsubscribe("t/1", "core-2"))
+	waitForNodes(t, r, "t/1", nil)
+}
+
+func TestRouterUnsubscribeBatchAndPurgeNode(t *testing.T) {
+	r := newTestRouter(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	must(r.Subscribe("t/1", "core-1"))
+	must(r.Subscribe("t/2", "core-1"))
+	must(r.Subscribe("t/3", "core-1"))
+	must(r.Subscribe("t/1", "core-2"))
+	waitForNodes(t, r, "t/3", []string{"core-1"})
+
+	must(r.UnsubscribeBatch([]string{"t/1", "t/2"}, "core-1"))
+	waitForNodes(t, r, "t/1", []string{"core-2"})
+	waitForNodes(t, r, "t/2", nil)
+	waitForNodes(t, r, "t/3", []string{"core-1"}) // untouched — not in the batch
+
+	must(r.PurgeNode("core-1"))
+	waitForNodes(t, r, "t/3", nil)
+	waitForNodes(t, r, "t/1", []string{"core-2"}) // core-2's own route survives
+}
