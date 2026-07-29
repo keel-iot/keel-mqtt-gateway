@@ -66,6 +66,11 @@ type keelHook struct {
 	clients     map[string]*clientState
 	generation  map[string]uint64 // monotonic counter per client_id to detect stale OnDisconnect
 	tenantConns map[string]int    // per-tenant active connection counter for rate limiting
+
+	// liveStats feeds the basic monitoring UI's messages/sec figure (see
+	// internal/telemetry.LiveStats). Nil when not configured (standalone
+	// mode, or tests that don't exercise it) — every call site guards it.
+	liveStats *telemetry.LiveStats
 }
 
 // sessionStore is satisfied by *RedisSessionHook; narrowed for testability —
@@ -635,6 +640,9 @@ func (h *keelHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet
 	tenantStr := info.TenantID.String()
 	telemetry.MessagesPublished.WithLabelValues(tenantStr, strconv.Itoa(int(pk.FixedHeader.Qos))).Inc()
 	telemetry.BytesPublished.WithLabelValues(tenantStr).Add(float64(len(pk.Payload)))
+	if h.liveStats != nil {
+		h.liveStats.RecordPublish(len(pk.Payload))
+	}
 
 	span.SetStatus(codes.Ok, "")
 	return pk, nil

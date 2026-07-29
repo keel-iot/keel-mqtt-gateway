@@ -42,6 +42,9 @@ func (a *API) Router() http.Handler {
 	mux.HandleFunc("GET /api/cluster/nodes", a.handleNodes)
 	mux.HandleFunc("GET /api/cluster/routes", a.handleRoutes)
 	mux.HandleFunc("GET /api/cluster/sessions", a.handleSessions)
+	mux.HandleFunc("GET /api/metrics", a.handleLiveMetrics)
+	mux.HandleFunc("GET /api/live/clients", a.handleLiveClients)
+	mux.HandleFunc("GET /ui", a.handleUI)
 	mux.HandleFunc("POST /api/cluster/drain", a.handleDrain)
 	mux.HandleFunc("POST /api/cluster/snapshot", a.handleSnapshot)
 

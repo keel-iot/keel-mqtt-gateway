@@ -31,6 +31,7 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/dataplane"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/lifecycle"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/management"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/livestatsapi"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/membership"
 	keelraft "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/raft"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
@@ -679,6 +680,19 @@ func runServer() {
 			// describes a core's co-located instance.
 			redisAddrForGossip = cfg.RedisAddr
 		}
+		httpAddrForGossip := ""
+		if brokerRuntimeEnabled {
+			// NodeMeta.HTTPAddr feeds internal/cluster/management's
+			// cluster-wide GET /api/metrics/GET /api/live/clients
+			// aggregation (see internal/livestatsapi) — same host as
+			// grpc-advertise (same pod/container by construction), metrics
+			// port instead of the gRPC one.
+			if host, _, err := net.SplitHostPort(cf.grpcAdvertise); err == nil {
+				if _, metricsPort, err := net.SplitHostPort(cfg.MetricsAddr); err == nil {
+					httpAddrForGossip = net.JoinHostPort(host, metricsPort)
+				}
+			}
+		}
 		// A combined node gossips as plain "core" — the membership package
 		// only knows RoleCore/RoleEdge, and combined nodes must be
 		// discoverable as core peers (CoreGRPCAddrs, CoreOlricAddrs, raft
@@ -703,6 +717,7 @@ func runServer() {
 			OlricClientAddr: olricClientAdvertiseAddr,
 			RedisAddr:       redisAddrForGossip,
 			RedisPassword:   cfg.RedisPassword,
+			HTTPAddr:        httpAddrForGossip,
 			RaftNode:        raftNode,
 		}, log)
 		if err != nil {
@@ -1018,6 +1033,13 @@ func runServer() {
 	// devices to serve, so it runs none of them. "edge", "combined", and
 	// standalone (role == "") all run the full set.
 	if brokerRuntimeEnabled {
+		// Basic monitoring UI (see internal/livestatsapi and
+		// internal/cluster/management's aggregation of it): feeds
+		// GET /api/live/stats' messages/sec figure. Must exist before
+		// broker.New so hooks.go's OnPublish can record into it.
+		liveStats := telemetry.NewLiveStats()
+		liveStats.Start(ctx, time.Second)
+
 		mqttServer, certReloader, err = broker.New(broker.Config{
 			MQTTPort:              cfg.MQTTPort,
 			MQTTTLSPort:           cfg.MQTTTLSPort,
@@ -1031,6 +1053,7 @@ func runServer() {
 			ClusterNodeID:         cf.nodeID,
 			OutputConnector:       outputConn,
 			SessionExpiryInterval: cfg.SessionExpiryInterval,
+			LiveStats:             liveStats,
 		}, provider, fwd, log)
 		if err != nil {
 			log.Error("create MQTT broker", "error", err)
@@ -1044,6 +1067,47 @@ func runServer() {
 		go telemetry.RunEdgeLoadScoreSampler(ctx,
 			func() int { return int(atomic.LoadInt64(&srv.Info.ClientsConnected)) },
 			cf.edgeConnectionsLimit, cf.edgeCPULimit, cf.edgeLoadScoreInterval)
+
+		// GET /api/live/stats, GET /api/live/clients — mounted on the
+		// metrics mux (already serving, safe to add routes to a live
+		// http.ServeMux — see net/http's docs), aggregated cluster-wide by
+		// internal/cluster/management's GET /api/metrics.
+		liveHandlers := &livestatsapi.Handlers{
+			Clients: func() []livestatsapi.ClientView {
+				all := srv.Clients.GetAll()
+				out := make([]livestatsapi.ClientView, 0, len(all))
+				for _, cl := range all {
+					if cl.Closed() || cl.Net.Inline {
+						continue
+					}
+					subs := cl.State.Subscriptions.GetAll()
+					filters := make([]string, 0, len(subs))
+					for filter := range subs {
+						filters = append(filters, filter)
+					}
+					out = append(out, livestatsapi.ClientView{
+						ClientID:      cl.ID,
+						Username:      string(cl.Properties.Username),
+						RemoteAddr:    cl.Net.Remote,
+						CleanSession:  cl.Properties.Clean,
+						Subscriptions: filters,
+					})
+				}
+				return out
+			},
+			Stats: func() livestatsapi.StatsView {
+				snap := liveStats.Snapshot()
+				return livestatsapi.StatsView{
+					NodeID:            cf.nodeID,
+					ActiveConnections: int(atomic.LoadInt64(&srv.Info.ClientsConnected)),
+					TotalMessages:     snap.TotalMessages,
+					MessagesPerSecond: snap.MessagesPerSecond,
+					TotalBytes:        snap.TotalBytes,
+					BytesPerSecond:    snap.BytesPerSecond,
+				}
+			},
+		}
+		liveHandlers.Register(metricsMux)
 
 		// Inbound side of the cluster data plane: a message another node
 		// forwarded to us (because we own a local subscriber for its topic)

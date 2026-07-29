@@ -36,6 +36,15 @@ type NodeMeta struct {
 	// something gossip's eventually-consistent, best-effort propagation is
 	// safe to be the source of truth for.
 	RedisAddr string `json:"redis_addr,omitempty"`
+
+	// HTTPAddr is edge-only (also set on a "combined" node, which gossips
+	// as core but still runs a local broker — see cmd/server/main.go's
+	// brokerRuntimeEnabled) — the metrics-server address (/api/live/stats,
+	// /api/live/clients, alongside the existing /healthz/readyz/metrics)
+	// this node's local broker state is queryable on. Used by the core
+	// management API to aggregate live connection/message stats across
+	// every edge into GET /api/metrics — see internal/cluster/management.
+	HTTPAddr string `json:"http_addr,omitempty"`
 }
 
 func (m NodeMeta) encode() []byte {

@@ -15,6 +15,7 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/connector"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/forwarder"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/listeners"
 )
@@ -74,6 +75,12 @@ type Config struct {
 	// and cluster routing entry survive after a disconnect with no reconnect.
 	// Zero uses mochi-mqtt's own default (effectively unbounded).
 	SessionExpiryInterval time.Duration
+
+	// LiveStats feeds the basic monitoring UI's messages/sec figure (see
+	// internal/telemetry.LiveStats and GET /api/live/stats). Nil disables
+	// tracking (a no-op — RecordPublish on a nil *LiveStats is guarded in
+	// hooks.go), same posture as every other optional Config field here.
+	LiveStats *telemetry.LiveStats
 }
 
 // parseClientAuth maps a TLSClientAuth config string to a tls.ClientAuthType.
@@ -136,6 +143,7 @@ func New(cfg Config, provider auth.AuthProvider, fwd *forwarder.Forwarder, log *
 		clusterNodeID:   cfg.ClusterNodeID,
 		outputConnector: cfg.OutputConnector,
 		server:          server,
+		liveStats:       cfg.LiveStats,
 	}
 	// Typed nil guard: an interface value holding a nil *RedisSessionHook is
 	// itself non-nil, which would defeat OnSessionEstablish's `h.sessionStore

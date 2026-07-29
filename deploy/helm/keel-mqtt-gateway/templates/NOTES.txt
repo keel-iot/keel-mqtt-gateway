@@ -14,6 +14,10 @@ Check cluster status once core pods are ready:
   kubectl -n {{ .Release.Namespace }} exec {{ include "keel.core.fullname" . }}-0 -- \
     wget -qO- http://localhost:{{ .Values.core.managementApi.port }}/api/cluster/nodes
 
+Monitoring dashboard (connections, messages/sec, clients, topics):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "keel.core.fullname" . }} {{ .Values.core.managementApi.port }}:{{ .Values.core.managementApi.port }}
+  open http://localhost:{{ .Values.core.managementApi.port }}/ui
+
 MQTT endpoint:
 {{- if eq .Values.edge.service.type "LoadBalancer" }}
   kubectl -n {{ .Release.Namespace }} get svc {{ include "keel.edge.fullname" . }} -w

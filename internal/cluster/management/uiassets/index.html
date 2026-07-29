@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>keel-mqtt-gateway — cluster monitor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115;
+    color: #d8dee9;
+    padding: 24px;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; color: #eceff4; }
+  .subtitle { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 28px; }
+  .card { background: #161a21; border: 1px solid #262b35; border-radius: 8px; padding: 14px 16px; }
+  .card .label { font-size: 12px; color: #7d8590; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card .value { font-size: 26px; font-weight: 600; color: #eceff4; margin-top: 4px; }
+  section { margin-bottom: 28px; }
+  section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: #7d8590; margin: 0 0 10px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; background: #161a21; border: 1px solid #262b35; border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #262b35; }
+  th { color: #7d8590; font-weight: 500; font-size: 12px; text-transform: uppercase; }
+  tr:last-child td { border-bottom: none; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .pill.leader { background: #2d4a2d; color: #a3e6a3; }
+  .pill.voter { background: #23303d; color: #7fb0e0; }
+  .pill.unreachable { background: #4a2d2d; color: #e6a3a3; }
+  .muted { color: #6b7280; }
+  .error-banner { background: #4a2d2d; color: #e6a3a3; padding: 8px 14px; border-radius: 6px; margin-bottom: 16px; font-size: 13px; display: none; }
+  code { background: #0f1115; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>keel-mqtt-gateway</h1>
+  <div class="subtitle">cluster monitor — auto-refreshes every 3s</div>
+  <div class="error-banner" id="error-banner"></div>
+
+  <div class="cards">
+    <div class="card"><div class="label">Active connections</div><div class="value" id="stat-connections">–</div></div>
+    <div class="card"><div class="label">Messages/sec</div><div class="value" id="stat-msgrate">–</div></div>
+    <div class="card"><div class="label">Total messages</div><div class="value" id="stat-total-msgs">–</div></div>
+    <div class="card"><div class="label">Bytes/sec</div><div class="value" id="stat-byterate">–</div></div>
+  </div>
+
+  <section>
+    <h2>Nodes</h2>
+    <table>
+      <thead><tr><th>Node ID</th><th>Role</th><th>Status</th></tr></thead>
+      <tbody id="nodes-body"><tr><td colspan="3" class="muted">loading…</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Topics</h2>
+    <table>
+      <thead><tr><th>Topic filter</th><th>Served by</th></tr></thead>
+      <tbody id="topics-body"><tr><td colspan="2" class="muted">loading…</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Clients</h2>
+    <table>
+      <thead><tr><th>Client ID</th><th>Node</th><th>Username</th><th>Remote addr</th><th>Clean</th><th>Subscriptions</th></tr></thead>
+      <tbody id="clients-body"><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
+    </table>
+  </section>
+
+<script>
+function fmtNum(n) {
+  if (n === undefined || n === null) return '–';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return Math.round(n * 10) / 10;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s == null ? '' : String(s);
+  return d.innerHTML;
+}
+
+async function fetchJSON(path) {
+  const res = await fetch(path, { cache: 'no-store' });
+  if (!res.ok) throw new Error(path + ': ' + res.status);
+  return res.json();
+}
+
+function showError(msg) {
+  const banner = document.getElementById('error-banner');
+  if (msg) {
+    banner.textContent = msg;
+    banner.style.display = 'block';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+async function refresh() {
+  try {
+    const [nodes, metrics, routes, clients] = await Promise.all([
+      fetchJSON('/api/cluster/nodes'),
+      fetchJSON('/api/metrics'),
+      fetchJSON('/api/cluster/routes'),
+      fetchJSON('/api/live/clients'),
+    ]);
+
+    document.getElementById('stat-connections').textContent = fmtNum(metrics.active_connections);
+    document.getElementById('stat-msgrate').textContent = fmtNum(metrics.messages_per_second);
+    document.getElementById('stat-total-msgs').textContent = fmtNum(metrics.total_messages);
+    document.getElementById('stat-byterate').textContent = fmtNum(metrics.bytes_per_second) + ' B/s';
+
+    const unreachable = new Set(metrics.unreachable || []);
+
+    const nodesBody = document.getElementById('nodes-body');
+    nodesBody.innerHTML = nodes.map(n => {
+      const pills = [];
+      if (n.is_leader) pills.push('<span class="pill leader">leader</span>');
+      if (n.raft_voter) pills.push('<span class="pill voter">voter</span>');
+      if (unreachable.has(n.node_id)) pills.push('<span class="pill unreachable">unreachable</span>');
+      return `<tr><td><code>${escapeHtml(n.node_id)}</code>${n.is_self ? ' <span class="muted">(self)</span>' : ''}</td><td>${escapeHtml(n.role)}</td><td>${pills.join(' ') || '<span class="muted">–</span>'}</td></tr>`;
+    }).join('') || '<tr><td colspan="3" class="muted">no nodes</td></tr>';
+
+    const topicsBody = document.getElementById('topics-body');
+    const topicEntries = Object.entries(routes || {});
+    topicsBody.innerHTML = topicEntries.map(([topic, nodeList]) =>
+      `<tr><td><code>${escapeHtml(topic)}</code></td><td>${(nodeList || []).map(escapeHtml).join(', ') || '<span class="muted">–</span>'}</td></tr>`
+    ).join('') || '<tr><td colspan="2" class="muted">no active topics</td></tr>';
+
+    const clientsBody = document.getElementById('clients-body');
+    clientsBody.innerHTML = (clients || []).map(c =>
+      `<tr><td><code>${escapeHtml(c.client_id)}</code></td><td>${escapeHtml(c.node_id)}</td><td>${escapeHtml(c.username)}</td><td>${escapeHtml(c.remote_addr)}</td><td>${c.clean_session ? 'yes' : 'no'}</td><td>${(c.subscriptions || []).map(escapeHtml).join(', ') || '<span class="muted">–</span>'}</td></tr>`
+    ).join('') || '<tr><td colspan="6" class="muted">no connected clients</td></tr>';
+
+    showError(metrics.unreachable && metrics.unreachable.length ? `Unreachable edge nodes: ${metrics.unreachable.join(', ')} — figures below exclude them.` : null);
+  } catch (e) {
+    showError('Failed to refresh: ' + e.message);
+  }
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

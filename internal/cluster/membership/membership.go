@@ -39,6 +39,7 @@ type Config struct {
 	OlricAddr       string // core only, empty for edge — see NodeMeta.OlricAddr
 	OlricClientAddr string // core only, empty for edge — see NodeMeta.OlricClientAddr
 	RedisAddr       string // core only, empty for edge — see NodeMeta.RedisAddr
+	HTTPAddr        string // edge (or combined) only, empty for pure core — see NodeMeta.HTTPAddr
 
 	// RedisPassword authenticates admin commands (SLAVEOF/REPLICAOF) this
 	// node's failover loop issues against OTHER core nodes' co-located
@@ -128,6 +129,7 @@ func New(cfg Config, log *slog.Logger) (*Membership, error) {
 		OlricAddr:       cfg.OlricAddr,
 		OlricClientAddr: cfg.OlricClientAddr,
 		RedisAddr:       cfg.RedisAddr,
+		HTTPAddr:        cfg.HTTPAddr,
 	}
 
 	redisPrimaryDeadThreshold := cfg.RedisPrimaryDeadThreshold
@@ -408,6 +410,23 @@ func (m *Membership) RedisAddrForNode(nodeID string) (string, bool) {
 		return "", false
 	}
 	return meta.RedisAddr, true
+}
+
+// EdgeHTTPAddrs returns the node_id -> metrics-server address (see
+// NodeMeta.HTTPAddr) of every currently known member that has one set —
+// edges and combined nodes, never a pure core. Used by
+// internal/cluster/management's GET /api/metrics and GET
+// /api/live/clients to know which nodes to poll for live broker state.
+func (m *Membership) EdgeHTTPAddrs() map[string]string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]string)
+	for _, meta := range m.members {
+		if meta.HTTPAddr != "" {
+			out[meta.NodeID] = meta.HTTPAddr
+		}
+	}
+	return out
 }
 
 // ── memberlist.Delegate — only NodeMeta carries data for this PoC ────────
