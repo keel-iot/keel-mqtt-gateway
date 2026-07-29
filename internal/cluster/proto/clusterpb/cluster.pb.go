@@ -864,6 +864,94 @@ func (x *ACLSnapshotResponse) GetEnabledRulesets() []string {
 	return nil
 }
 
+type CurrentRedisPrimaryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CurrentRedisPrimaryRequest) Reset() {
+	*x = CurrentRedisPrimaryRequest{}
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CurrentRedisPrimaryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CurrentRedisPrimaryRequest) ProtoMessage() {}
+
+func (x *CurrentRedisPrimaryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CurrentRedisPrimaryRequest.ProtoReflect.Descriptor instead.
+func (*CurrentRedisPrimaryRequest) Descriptor() ([]byte, []int) {
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{17}
+}
+
+type CurrentRedisPrimaryResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Ok            bool                   `protobuf:"varint,2,opt,name=ok,proto3" json:"ok,omitempty"` // false when no primary has ever been designated yet
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CurrentRedisPrimaryResponse) Reset() {
+	*x = CurrentRedisPrimaryResponse{}
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CurrentRedisPrimaryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CurrentRedisPrimaryResponse) ProtoMessage() {}
+
+func (x *CurrentRedisPrimaryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CurrentRedisPrimaryResponse.ProtoReflect.Descriptor instead.
+func (*CurrentRedisPrimaryResponse) Descriptor() ([]byte, []int) {
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *CurrentRedisPrimaryResponse) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *CurrentRedisPrimaryResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
 type CreateRoleRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -874,7 +962,7 @@ type CreateRoleRequest struct {
 
 func (x *CreateRoleRequest) Reset() {
 	*x = CreateRoleRequest{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[17]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -886,7 +974,7 @@ func (x *CreateRoleRequest) String() string {
 func (*CreateRoleRequest) ProtoMessage() {}
 
 func (x *CreateRoleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[17]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -899,7 +987,7 @@ func (x *CreateRoleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateRoleRequest.ProtoReflect.Descriptor instead.
 func (*CreateRoleRequest) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{17}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *CreateRoleRequest) GetName() string {
@@ -924,7 +1012,7 @@ type CreateRoleResponse struct {
 
 func (x *CreateRoleResponse) Reset() {
 	*x = CreateRoleResponse{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[18]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -936,7 +1024,7 @@ func (x *CreateRoleResponse) String() string {
 func (*CreateRoleResponse) ProtoMessage() {}
 
 func (x *CreateRoleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[18]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -949,7 +1037,7 @@ func (x *CreateRoleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateRoleResponse.ProtoReflect.Descriptor instead.
 func (*CreateRoleResponse) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{18}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{20}
 }
 
 type DeleteRoleRequest struct {
@@ -961,7 +1049,7 @@ type DeleteRoleRequest struct {
 
 func (x *DeleteRoleRequest) Reset() {
 	*x = DeleteRoleRequest{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[19]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -973,7 +1061,7 @@ func (x *DeleteRoleRequest) String() string {
 func (*DeleteRoleRequest) ProtoMessage() {}
 
 func (x *DeleteRoleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[19]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -986,7 +1074,7 @@ func (x *DeleteRoleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRoleRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRoleRequest) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{19}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *DeleteRoleRequest) GetName() string {
@@ -1004,7 +1092,7 @@ type DeleteRoleResponse struct {
 
 func (x *DeleteRoleResponse) Reset() {
 	*x = DeleteRoleResponse{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[20]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1016,7 +1104,7 @@ func (x *DeleteRoleResponse) String() string {
 func (*DeleteRoleResponse) ProtoMessage() {}
 
 func (x *DeleteRoleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[20]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1029,7 +1117,7 @@ func (x *DeleteRoleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRoleResponse.ProtoReflect.Descriptor instead.
 func (*DeleteRoleResponse) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{20}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{22}
 }
 
 type CreateBindingRequest struct {
@@ -1042,7 +1130,7 @@ type CreateBindingRequest struct {
 
 func (x *CreateBindingRequest) Reset() {
 	*x = CreateBindingRequest{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[21]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1054,7 +1142,7 @@ func (x *CreateBindingRequest) String() string {
 func (*CreateBindingRequest) ProtoMessage() {}
 
 func (x *CreateBindingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[21]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1067,7 +1155,7 @@ func (x *CreateBindingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateBindingRequest.ProtoReflect.Descriptor instead.
 func (*CreateBindingRequest) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{21}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *CreateBindingRequest) GetPrincipal() string {
@@ -1092,7 +1180,7 @@ type CreateBindingResponse struct {
 
 func (x *CreateBindingResponse) Reset() {
 	*x = CreateBindingResponse{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[22]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1104,7 +1192,7 @@ func (x *CreateBindingResponse) String() string {
 func (*CreateBindingResponse) ProtoMessage() {}
 
 func (x *CreateBindingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[22]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1117,7 +1205,7 @@ func (x *CreateBindingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateBindingResponse.ProtoReflect.Descriptor instead.
 func (*CreateBindingResponse) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{22}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{24}
 }
 
 type DeleteBindingRequest struct {
@@ -1130,7 +1218,7 @@ type DeleteBindingRequest struct {
 
 func (x *DeleteBindingRequest) Reset() {
 	*x = DeleteBindingRequest{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[23]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1142,7 +1230,7 @@ func (x *DeleteBindingRequest) String() string {
 func (*DeleteBindingRequest) ProtoMessage() {}
 
 func (x *DeleteBindingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[23]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1155,7 +1243,7 @@ func (x *DeleteBindingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteBindingRequest.ProtoReflect.Descriptor instead.
 func (*DeleteBindingRequest) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{23}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *DeleteBindingRequest) GetPrincipal() string {
@@ -1180,7 +1268,7 @@ type DeleteBindingResponse struct {
 
 func (x *DeleteBindingResponse) Reset() {
 	*x = DeleteBindingResponse{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[24]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1192,7 +1280,7 @@ func (x *DeleteBindingResponse) String() string {
 func (*DeleteBindingResponse) ProtoMessage() {}
 
 func (x *DeleteBindingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[24]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1205,7 +1293,7 @@ func (x *DeleteBindingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteBindingResponse.ProtoReflect.Descriptor instead.
 func (*DeleteBindingResponse) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{24}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{26}
 }
 
 type EnableRulesetRequest struct {
@@ -1217,7 +1305,7 @@ type EnableRulesetRequest struct {
 
 func (x *EnableRulesetRequest) Reset() {
 	*x = EnableRulesetRequest{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[25]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1229,7 +1317,7 @@ func (x *EnableRulesetRequest) String() string {
 func (*EnableRulesetRequest) ProtoMessage() {}
 
 func (x *EnableRulesetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[25]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1242,7 +1330,7 @@ func (x *EnableRulesetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnableRulesetRequest.ProtoReflect.Descriptor instead.
 func (*EnableRulesetRequest) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{25}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *EnableRulesetRequest) GetName() string {
@@ -1260,7 +1348,7 @@ type EnableRulesetResponse struct {
 
 func (x *EnableRulesetResponse) Reset() {
 	*x = EnableRulesetResponse{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[26]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1272,7 +1360,7 @@ func (x *EnableRulesetResponse) String() string {
 func (*EnableRulesetResponse) ProtoMessage() {}
 
 func (x *EnableRulesetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[26]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1285,7 +1373,7 @@ func (x *EnableRulesetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnableRulesetResponse.ProtoReflect.Descriptor instead.
 func (*EnableRulesetResponse) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{26}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{28}
 }
 
 type DisableRulesetRequest struct {
@@ -1297,7 +1385,7 @@ type DisableRulesetRequest struct {
 
 func (x *DisableRulesetRequest) Reset() {
 	*x = DisableRulesetRequest{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[27]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1309,7 +1397,7 @@ func (x *DisableRulesetRequest) String() string {
 func (*DisableRulesetRequest) ProtoMessage() {}
 
 func (x *DisableRulesetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[27]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1322,7 +1410,7 @@ func (x *DisableRulesetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DisableRulesetRequest.ProtoReflect.Descriptor instead.
 func (*DisableRulesetRequest) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{27}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *DisableRulesetRequest) GetName() string {
@@ -1340,7 +1428,7 @@ type DisableRulesetResponse struct {
 
 func (x *DisableRulesetResponse) Reset() {
 	*x = DisableRulesetResponse{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[28]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1352,7 +1440,7 @@ func (x *DisableRulesetResponse) String() string {
 func (*DisableRulesetResponse) ProtoMessage() {}
 
 func (x *DisableRulesetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[28]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1365,7 +1453,7 @@ func (x *DisableRulesetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DisableRulesetResponse.ProtoReflect.Descriptor instead.
 func (*DisableRulesetResponse) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{28}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{30}
 }
 
 type ForwardRequest struct {
@@ -1381,7 +1469,7 @@ type ForwardRequest struct {
 
 func (x *ForwardRequest) Reset() {
 	*x = ForwardRequest{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[29]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1393,7 +1481,7 @@ func (x *ForwardRequest) String() string {
 func (*ForwardRequest) ProtoMessage() {}
 
 func (x *ForwardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[29]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1406,7 +1494,7 @@ func (x *ForwardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardRequest.ProtoReflect.Descriptor instead.
 func (*ForwardRequest) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{29}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ForwardRequest) GetSourceNodeId() string {
@@ -1452,7 +1540,7 @@ type ForwardResponse struct {
 
 func (x *ForwardResponse) Reset() {
 	*x = ForwardResponse{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[30]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1464,7 +1552,7 @@ func (x *ForwardResponse) String() string {
 func (*ForwardResponse) ProtoMessage() {}
 
 func (x *ForwardResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[30]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1477,7 +1565,7 @@ func (x *ForwardResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardResponse.ProtoReflect.Descriptor instead.
 func (*ForwardResponse) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{30}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{32}
 }
 
 type EvictRequest struct {
@@ -1489,7 +1577,7 @@ type EvictRequest struct {
 
 func (x *EvictRequest) Reset() {
 	*x = EvictRequest{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[31]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1501,7 +1589,7 @@ func (x *EvictRequest) String() string {
 func (*EvictRequest) ProtoMessage() {}
 
 func (x *EvictRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[31]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1514,7 +1602,7 @@ func (x *EvictRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EvictRequest.ProtoReflect.Descriptor instead.
 func (*EvictRequest) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{31}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *EvictRequest) GetClientId() string {
@@ -1532,7 +1620,7 @@ type EvictResponse struct {
 
 func (x *EvictResponse) Reset() {
 	*x = EvictResponse{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[32]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1544,7 +1632,7 @@ func (x *EvictResponse) String() string {
 func (*EvictResponse) ProtoMessage() {}
 
 func (x *EvictResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[32]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1557,7 +1645,7 @@ func (x *EvictResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EvictResponse.ProtoReflect.Descriptor instead.
 func (*EvictResponse) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{32}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{34}
 }
 
 var File_internal_cluster_proto_cluster_proto protoreflect.FileDescriptor
@@ -1610,7 +1698,11 @@ const file_internal_cluster_proto_cluster_proto_rawDesc = "" +
 	"\x13ACLSnapshotResponse\x12-\n" +
 	"\x05roles\x18\x01 \x03(\v2\x17.keel.cluster.RoleEntryR\x05roles\x126\n" +
 	"\bbindings\x18\x02 \x03(\v2\x1a.keel.cluster.BindingEntryR\bbindings\x12)\n" +
-	"\x10enabled_rulesets\x18\x03 \x03(\tR\x0fenabledRulesets\"T\n" +
+	"\x10enabled_rulesets\x18\x03 \x03(\tR\x0fenabledRulesets\"\x1c\n" +
+	"\x1aCurrentRedisPrimaryRequest\"F\n" +
+	"\x1bCurrentRedisPrimaryResponse\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x0e\n" +
+	"\x02ok\x18\x02 \x01(\bR\x02ok\"T\n" +
 	"\x11CreateRoleRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
 	"\x05rules\x18\x02 \x03(\v2\x15.keel.cluster.ACLRuleR\x05rules\"\x14\n" +
@@ -1641,7 +1733,7 @@ const file_internal_cluster_proto_cluster_proto_rawDesc = "" +
 	"\x0fForwardResponse\"+\n" +
 	"\fEvictRequest\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\tR\bclientId\"\x0f\n" +
-	"\rEvictResponse2\xe0\b\n" +
+	"\rEvictResponse2\xcc\t\n" +
 	"\bRegistry\x12L\n" +
 	"\tSubscribe\x12\x1e.keel.cluster.SubscribeRequest\x1a\x1f.keel.cluster.SubscribeResponse\x12R\n" +
 	"\vUnsubscribe\x12 .keel.cluster.UnsubscribeRequest\x1a!.keel.cluster.UnsubscribeResponse\x12I\n" +
@@ -1649,7 +1741,8 @@ const file_internal_cluster_proto_cluster_proto_rawDesc = "" +
 	"\fClaimSession\x12!.keel.cluster.ClaimSessionRequest\x1a\".keel.cluster.ClaimSessionResponse\x12[\n" +
 	"\x0eReleaseSession\x12#.keel.cluster.ReleaseSessionRequest\x1a$.keel.cluster.ReleaseSessionResponse\x12R\n" +
 	"\vEvaluateACL\x12 .keel.cluster.EvaluateACLRequest\x1a!.keel.cluster.EvaluateACLResponse\x12R\n" +
-	"\vACLSnapshot\x12 .keel.cluster.ACLSnapshotRequest\x1a!.keel.cluster.ACLSnapshotResponse\x12O\n" +
+	"\vACLSnapshot\x12 .keel.cluster.ACLSnapshotRequest\x1a!.keel.cluster.ACLSnapshotResponse\x12j\n" +
+	"\x13CurrentRedisPrimary\x12(.keel.cluster.CurrentRedisPrimaryRequest\x1a).keel.cluster.CurrentRedisPrimaryResponse\x12O\n" +
 	"\n" +
 	"CreateRole\x12\x1f.keel.cluster.CreateRoleRequest\x1a .keel.cluster.CreateRoleResponse\x12O\n" +
 	"\n" +
@@ -1674,41 +1767,43 @@ func file_internal_cluster_proto_cluster_proto_rawDescGZIP() []byte {
 	return file_internal_cluster_proto_cluster_proto_rawDescData
 }
 
-var file_internal_cluster_proto_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_internal_cluster_proto_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_internal_cluster_proto_cluster_proto_goTypes = []any{
-	(*SubscribeRequest)(nil),       // 0: keel.cluster.SubscribeRequest
-	(*SubscribeResponse)(nil),      // 1: keel.cluster.SubscribeResponse
-	(*UnsubscribeRequest)(nil),     // 2: keel.cluster.UnsubscribeRequest
-	(*UnsubscribeResponse)(nil),    // 3: keel.cluster.UnsubscribeResponse
-	(*NodesForRequest)(nil),        // 4: keel.cluster.NodesForRequest
-	(*NodesForResponse)(nil),       // 5: keel.cluster.NodesForResponse
-	(*ClaimSessionRequest)(nil),    // 6: keel.cluster.ClaimSessionRequest
-	(*ClaimSessionResponse)(nil),   // 7: keel.cluster.ClaimSessionResponse
-	(*ReleaseSessionRequest)(nil),  // 8: keel.cluster.ReleaseSessionRequest
-	(*ReleaseSessionResponse)(nil), // 9: keel.cluster.ReleaseSessionResponse
-	(*EvaluateACLRequest)(nil),     // 10: keel.cluster.EvaluateACLRequest
-	(*EvaluateACLResponse)(nil),    // 11: keel.cluster.EvaluateACLResponse
-	(*ACLRule)(nil),                // 12: keel.cluster.ACLRule
-	(*ACLSnapshotRequest)(nil),     // 13: keel.cluster.ACLSnapshotRequest
-	(*RoleEntry)(nil),              // 14: keel.cluster.RoleEntry
-	(*BindingEntry)(nil),           // 15: keel.cluster.BindingEntry
-	(*ACLSnapshotResponse)(nil),    // 16: keel.cluster.ACLSnapshotResponse
-	(*CreateRoleRequest)(nil),      // 17: keel.cluster.CreateRoleRequest
-	(*CreateRoleResponse)(nil),     // 18: keel.cluster.CreateRoleResponse
-	(*DeleteRoleRequest)(nil),      // 19: keel.cluster.DeleteRoleRequest
-	(*DeleteRoleResponse)(nil),     // 20: keel.cluster.DeleteRoleResponse
-	(*CreateBindingRequest)(nil),   // 21: keel.cluster.CreateBindingRequest
-	(*CreateBindingResponse)(nil),  // 22: keel.cluster.CreateBindingResponse
-	(*DeleteBindingRequest)(nil),   // 23: keel.cluster.DeleteBindingRequest
-	(*DeleteBindingResponse)(nil),  // 24: keel.cluster.DeleteBindingResponse
-	(*EnableRulesetRequest)(nil),   // 25: keel.cluster.EnableRulesetRequest
-	(*EnableRulesetResponse)(nil),  // 26: keel.cluster.EnableRulesetResponse
-	(*DisableRulesetRequest)(nil),  // 27: keel.cluster.DisableRulesetRequest
-	(*DisableRulesetResponse)(nil), // 28: keel.cluster.DisableRulesetResponse
-	(*ForwardRequest)(nil),         // 29: keel.cluster.ForwardRequest
-	(*ForwardResponse)(nil),        // 30: keel.cluster.ForwardResponse
-	(*EvictRequest)(nil),           // 31: keel.cluster.EvictRequest
-	(*EvictResponse)(nil),          // 32: keel.cluster.EvictResponse
+	(*SubscribeRequest)(nil),            // 0: keel.cluster.SubscribeRequest
+	(*SubscribeResponse)(nil),           // 1: keel.cluster.SubscribeResponse
+	(*UnsubscribeRequest)(nil),          // 2: keel.cluster.UnsubscribeRequest
+	(*UnsubscribeResponse)(nil),         // 3: keel.cluster.UnsubscribeResponse
+	(*NodesForRequest)(nil),             // 4: keel.cluster.NodesForRequest
+	(*NodesForResponse)(nil),            // 5: keel.cluster.NodesForResponse
+	(*ClaimSessionRequest)(nil),         // 6: keel.cluster.ClaimSessionRequest
+	(*ClaimSessionResponse)(nil),        // 7: keel.cluster.ClaimSessionResponse
+	(*ReleaseSessionRequest)(nil),       // 8: keel.cluster.ReleaseSessionRequest
+	(*ReleaseSessionResponse)(nil),      // 9: keel.cluster.ReleaseSessionResponse
+	(*EvaluateACLRequest)(nil),          // 10: keel.cluster.EvaluateACLRequest
+	(*EvaluateACLResponse)(nil),         // 11: keel.cluster.EvaluateACLResponse
+	(*ACLRule)(nil),                     // 12: keel.cluster.ACLRule
+	(*ACLSnapshotRequest)(nil),          // 13: keel.cluster.ACLSnapshotRequest
+	(*RoleEntry)(nil),                   // 14: keel.cluster.RoleEntry
+	(*BindingEntry)(nil),                // 15: keel.cluster.BindingEntry
+	(*ACLSnapshotResponse)(nil),         // 16: keel.cluster.ACLSnapshotResponse
+	(*CurrentRedisPrimaryRequest)(nil),  // 17: keel.cluster.CurrentRedisPrimaryRequest
+	(*CurrentRedisPrimaryResponse)(nil), // 18: keel.cluster.CurrentRedisPrimaryResponse
+	(*CreateRoleRequest)(nil),           // 19: keel.cluster.CreateRoleRequest
+	(*CreateRoleResponse)(nil),          // 20: keel.cluster.CreateRoleResponse
+	(*DeleteRoleRequest)(nil),           // 21: keel.cluster.DeleteRoleRequest
+	(*DeleteRoleResponse)(nil),          // 22: keel.cluster.DeleteRoleResponse
+	(*CreateBindingRequest)(nil),        // 23: keel.cluster.CreateBindingRequest
+	(*CreateBindingResponse)(nil),       // 24: keel.cluster.CreateBindingResponse
+	(*DeleteBindingRequest)(nil),        // 25: keel.cluster.DeleteBindingRequest
+	(*DeleteBindingResponse)(nil),       // 26: keel.cluster.DeleteBindingResponse
+	(*EnableRulesetRequest)(nil),        // 27: keel.cluster.EnableRulesetRequest
+	(*EnableRulesetResponse)(nil),       // 28: keel.cluster.EnableRulesetResponse
+	(*DisableRulesetRequest)(nil),       // 29: keel.cluster.DisableRulesetRequest
+	(*DisableRulesetResponse)(nil),      // 30: keel.cluster.DisableRulesetResponse
+	(*ForwardRequest)(nil),              // 31: keel.cluster.ForwardRequest
+	(*ForwardResponse)(nil),             // 32: keel.cluster.ForwardResponse
+	(*EvictRequest)(nil),                // 33: keel.cluster.EvictRequest
+	(*EvictResponse)(nil),               // 34: keel.cluster.EvictResponse
 }
 var file_internal_cluster_proto_cluster_proto_depIdxs = []int32{
 	12, // 0: keel.cluster.RoleEntry.rules:type_name -> keel.cluster.ACLRule
@@ -1722,31 +1817,33 @@ var file_internal_cluster_proto_cluster_proto_depIdxs = []int32{
 	8,  // 8: keel.cluster.Registry.ReleaseSession:input_type -> keel.cluster.ReleaseSessionRequest
 	10, // 9: keel.cluster.Registry.EvaluateACL:input_type -> keel.cluster.EvaluateACLRequest
 	13, // 10: keel.cluster.Registry.ACLSnapshot:input_type -> keel.cluster.ACLSnapshotRequest
-	17, // 11: keel.cluster.Registry.CreateRole:input_type -> keel.cluster.CreateRoleRequest
-	19, // 12: keel.cluster.Registry.DeleteRole:input_type -> keel.cluster.DeleteRoleRequest
-	21, // 13: keel.cluster.Registry.CreateBinding:input_type -> keel.cluster.CreateBindingRequest
-	23, // 14: keel.cluster.Registry.DeleteBinding:input_type -> keel.cluster.DeleteBindingRequest
-	25, // 15: keel.cluster.Registry.EnableRuleset:input_type -> keel.cluster.EnableRulesetRequest
-	27, // 16: keel.cluster.Registry.DisableRuleset:input_type -> keel.cluster.DisableRulesetRequest
-	29, // 17: keel.cluster.Dataplane.Forward:input_type -> keel.cluster.ForwardRequest
-	31, // 18: keel.cluster.Dataplane.Evict:input_type -> keel.cluster.EvictRequest
-	1,  // 19: keel.cluster.Registry.Subscribe:output_type -> keel.cluster.SubscribeResponse
-	3,  // 20: keel.cluster.Registry.Unsubscribe:output_type -> keel.cluster.UnsubscribeResponse
-	5,  // 21: keel.cluster.Registry.NodesFor:output_type -> keel.cluster.NodesForResponse
-	7,  // 22: keel.cluster.Registry.ClaimSession:output_type -> keel.cluster.ClaimSessionResponse
-	9,  // 23: keel.cluster.Registry.ReleaseSession:output_type -> keel.cluster.ReleaseSessionResponse
-	11, // 24: keel.cluster.Registry.EvaluateACL:output_type -> keel.cluster.EvaluateACLResponse
-	16, // 25: keel.cluster.Registry.ACLSnapshot:output_type -> keel.cluster.ACLSnapshotResponse
-	18, // 26: keel.cluster.Registry.CreateRole:output_type -> keel.cluster.CreateRoleResponse
-	20, // 27: keel.cluster.Registry.DeleteRole:output_type -> keel.cluster.DeleteRoleResponse
-	22, // 28: keel.cluster.Registry.CreateBinding:output_type -> keel.cluster.CreateBindingResponse
-	24, // 29: keel.cluster.Registry.DeleteBinding:output_type -> keel.cluster.DeleteBindingResponse
-	26, // 30: keel.cluster.Registry.EnableRuleset:output_type -> keel.cluster.EnableRulesetResponse
-	28, // 31: keel.cluster.Registry.DisableRuleset:output_type -> keel.cluster.DisableRulesetResponse
-	30, // 32: keel.cluster.Dataplane.Forward:output_type -> keel.cluster.ForwardResponse
-	32, // 33: keel.cluster.Dataplane.Evict:output_type -> keel.cluster.EvictResponse
-	19, // [19:34] is the sub-list for method output_type
-	4,  // [4:19] is the sub-list for method input_type
+	17, // 11: keel.cluster.Registry.CurrentRedisPrimary:input_type -> keel.cluster.CurrentRedisPrimaryRequest
+	19, // 12: keel.cluster.Registry.CreateRole:input_type -> keel.cluster.CreateRoleRequest
+	21, // 13: keel.cluster.Registry.DeleteRole:input_type -> keel.cluster.DeleteRoleRequest
+	23, // 14: keel.cluster.Registry.CreateBinding:input_type -> keel.cluster.CreateBindingRequest
+	25, // 15: keel.cluster.Registry.DeleteBinding:input_type -> keel.cluster.DeleteBindingRequest
+	27, // 16: keel.cluster.Registry.EnableRuleset:input_type -> keel.cluster.EnableRulesetRequest
+	29, // 17: keel.cluster.Registry.DisableRuleset:input_type -> keel.cluster.DisableRulesetRequest
+	31, // 18: keel.cluster.Dataplane.Forward:input_type -> keel.cluster.ForwardRequest
+	33, // 19: keel.cluster.Dataplane.Evict:input_type -> keel.cluster.EvictRequest
+	1,  // 20: keel.cluster.Registry.Subscribe:output_type -> keel.cluster.SubscribeResponse
+	3,  // 21: keel.cluster.Registry.Unsubscribe:output_type -> keel.cluster.UnsubscribeResponse
+	5,  // 22: keel.cluster.Registry.NodesFor:output_type -> keel.cluster.NodesForResponse
+	7,  // 23: keel.cluster.Registry.ClaimSession:output_type -> keel.cluster.ClaimSessionResponse
+	9,  // 24: keel.cluster.Registry.ReleaseSession:output_type -> keel.cluster.ReleaseSessionResponse
+	11, // 25: keel.cluster.Registry.EvaluateACL:output_type -> keel.cluster.EvaluateACLResponse
+	16, // 26: keel.cluster.Registry.ACLSnapshot:output_type -> keel.cluster.ACLSnapshotResponse
+	18, // 27: keel.cluster.Registry.CurrentRedisPrimary:output_type -> keel.cluster.CurrentRedisPrimaryResponse
+	20, // 28: keel.cluster.Registry.CreateRole:output_type -> keel.cluster.CreateRoleResponse
+	22, // 29: keel.cluster.Registry.DeleteRole:output_type -> keel.cluster.DeleteRoleResponse
+	24, // 30: keel.cluster.Registry.CreateBinding:output_type -> keel.cluster.CreateBindingResponse
+	26, // 31: keel.cluster.Registry.DeleteBinding:output_type -> keel.cluster.DeleteBindingResponse
+	28, // 32: keel.cluster.Registry.EnableRuleset:output_type -> keel.cluster.EnableRulesetResponse
+	30, // 33: keel.cluster.Registry.DisableRuleset:output_type -> keel.cluster.DisableRulesetResponse
+	32, // 34: keel.cluster.Dataplane.Forward:output_type -> keel.cluster.ForwardResponse
+	34, // 35: keel.cluster.Dataplane.Evict:output_type -> keel.cluster.EvictResponse
+	20, // [20:36] is the sub-list for method output_type
+	4,  // [4:20] is the sub-list for method input_type
 	4,  // [4:4] is the sub-list for extension type_name
 	4,  // [4:4] is the sub-list for extension extendee
 	0,  // [0:4] is the sub-list for field type_name
@@ -1763,7 +1860,7 @@ func file_internal_cluster_proto_cluster_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_cluster_proto_cluster_proto_rawDesc), len(file_internal_cluster_proto_cluster_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   33,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

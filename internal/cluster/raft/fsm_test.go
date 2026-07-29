@@ -101,6 +101,79 @@ func TestFSMSnapshotRestore(t *testing.T) {
 	}
 }
 
+func TestFSMSetRedisPrimary(t *testing.T) {
+	f := NewFSM()
+
+	if _, ok := f.currentRedisPrimary(); ok {
+		t.Fatalf("expected no redis primary designated on a fresh FSM")
+	}
+
+	res := apply(t, f, Command{Op: OpSetRedisPrimary, NodeID: "core-1"})
+	if !res.ok {
+		t.Fatalf("set redis primary should succeed")
+	}
+	primary, ok := f.currentRedisPrimary()
+	if !ok || primary != "core-1" {
+		t.Fatalf("expected redis primary core-1, got %q (ok=%v)", primary, ok)
+	}
+
+	// A later designation (failover to a different node) simply overwrites
+	// — there's no "previous owner" concept to report here, unlike
+	// OpClaimSession's evictedNode: the failover loop already knows who the
+	// old primary was (that's what triggered the failover) and is
+	// responsible for reconfiguring it as a replica itself.
+	apply(t, f, Command{Op: OpSetRedisPrimary, NodeID: "core-2"})
+	primary, ok = f.currentRedisPrimary()
+	if !ok || primary != "core-2" {
+		t.Fatalf("expected redis primary core-2 after redesignation, got %q (ok=%v)", primary, ok)
+	}
+}
+
+func TestFSMSnapshotRestoreRedisPrimary(t *testing.T) {
+	f := NewFSM()
+	apply(t, f, Command{Op: OpSetRedisPrimary, NodeID: "core-3"})
+
+	snap, err := f.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	sink := newMemSink()
+	if err := snap.Persist(sink); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	f2 := NewFSM()
+	if err := f2.Restore(sink.reader()); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if primary, ok := f2.currentRedisPrimary(); !ok || primary != "core-3" {
+		t.Fatalf("expected restored redis primary core-3, got %q (ok=%v)", primary, ok)
+	}
+}
+
+// TestFSMRestorePreRedisPrimarySnapshot verifies restoring a snapshot taken
+// before this field existed (redis_primary absent from the JSON) leaves the
+// FSM with no primary designated, not a decode error — same forward-
+// compatibility guarantee TestFSMRestorePreACLSnapshot already covers for
+// the ACL fields.
+func TestFSMRestorePreRedisPrimarySnapshot(t *testing.T) {
+	f := NewFSM()
+	apply(t, f, Command{Op: OpClaimSession, ClientID: "device-1", NodeID: "core-1"})
+
+	oldSnapshotJSON := `{"sessions":{"device-1":"core-1"}}`
+	sink := newMemSink()
+	if _, err := sink.Write([]byte(oldSnapshotJSON)); err != nil {
+		t.Fatalf("write pre-redis-primary snapshot: %v", err)
+	}
+
+	if err := f.Restore(sink.reader()); err != nil {
+		t.Fatalf("restore pre-redis-primary snapshot: %v", err)
+	}
+	if _, ok := f.currentRedisPrimary(); ok {
+		t.Fatalf("expected no redis primary designated after restoring a pre-redis-primary snapshot")
+	}
+}
+
 func TestFSMCreateRole(t *testing.T) {
 	f := NewFSM()
 	rules := []acl.ACLRule{

@@ -23,9 +23,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/auth"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 	"github.com/keel/pkg/redpanda"
-	"github.com/redis/go-redis/v9"
 )
 
 // twinUpdate is keel's native twin-ingestion envelope, published to
@@ -62,7 +62,7 @@ type Forwarder struct {
 	dittoCompat       bool                    // when true, also emit Ditto Protocol envelopes
 	dittoInboundTopic string                  // Ditto interop topic (used only when dittoCompat)
 	honoCompat        bool                    // when true, accept Hono inbound topic forms
-	rdb               *redis.Client           // optional; nil = no volume tracking
+	rdb               *redisrouter.Router     // optional; nil = no volume tracking
 	tenantCache       *auth.TenantConfigCache // optional; nil = no volume limits
 	log               *slog.Logger
 }
@@ -100,8 +100,10 @@ type Config struct {
 	// HonoCompat enables optional Eclipse Hono inbound topic compatibility.
 	HonoCompat bool
 	// RDB and TenantCache are optional; when both non-nil, per-tenant daily
-	// data-volume limits (max_bytes_per_day) are enforced.
-	RDB         *redis.Client
+	// data-volume limits (max_bytes_per_day) are enforced. RDB is the same
+	// shared internal/cluster/redisrouter.Router the QoS/session
+	// persistence hook uses — see that package's doc.
+	RDB         *redisrouter.Router
 	TenantCache *auth.TenantConfigCache
 	Log         *slog.Logger
 }
@@ -177,7 +179,7 @@ func (f *Forwarder) Forward(ctx context.Context, device *auth.DeviceInfo, mqttTo
 		if tenantCfg != nil {
 			maxBytes = tenantCfg.MaxBytesPerDay
 		}
-		if err := CheckAndRecordBytes(ctx, f.rdb, tenantStr, len(payload), maxBytes); err != nil {
+		if err := CheckAndRecordBytes(ctx, f.rdb.Client(), tenantStr, len(payload), maxBytes); err != nil {
 			f.log.Warn("mqtt-gateway: data volume limit exceeded, dropping message",
 				"tenant", tenantStr, "payload_bytes", len(payload))
 			telemetry.DataVolumeLimitExceeded.WithLabelValues(tenantStr).Inc()

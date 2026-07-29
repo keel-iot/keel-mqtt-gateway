@@ -118,6 +118,12 @@ func (c *CoreRegistry) EvaluateACL(clientID, username, topic string, action acl.
 	return c.local.EvaluateACL(clientID, username, topic, action)
 }
 
+// CurrentRedisPrimary is a pure FSM read, same no-leader-forwarding-needed
+// rationale as EvaluateACL.
+func (c *CoreRegistry) CurrentRedisPrimary() (string, bool) {
+	return c.local.CurrentRedisPrimary()
+}
+
 // CreateRole, DeleteRole, CreateBinding, DeleteBinding, EnableRuleset and
 // DisableRuleset are ACL *writes* and therefore need the same
 // leader-forwarding fallback as ClaimSession/ReleaseSession above — only

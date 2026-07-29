@@ -33,6 +33,7 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/management"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/membership"
 	keelraft "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/raft"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/routing"
 	clusterstore "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/store"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/commander"
@@ -43,7 +44,6 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 	"github.com/keel/pkg/redpanda"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -559,13 +559,17 @@ func runServer() {
 	}
 
 	// ── Redis (optional) ─────────────────────────────────────────────────────
-	var rdb *redis.Client
+	// rdb is a *redisrouter.Router, not a raw *redis.Client: the single
+	// swappable indirection point every Redis consumer below shares (QoS/
+	// session persistence, tenant data-volume limiting), so a primary
+	// failover (core-colocated Redis primary+replica — see
+	// keel-design-doc.md's risk #6) redirects all of them at once instead
+	// of needing a separate swap site per consumer.
+	var rdb *redisrouter.Router
 	if cfg.RedisAddr != "" {
-		rdb = redis.NewClient(&redis.Options{
-			Addr:     cfg.RedisAddr,
-			Password: cfg.RedisPassword,
-		})
-		if err := rdb.Ping(ctx).Err(); err != nil {
+		var err error
+		rdb, err = redisrouter.New(ctx, cfg.RedisAddr, cfg.RedisPassword)
+		if err != nil {
 			log.Error("connect to Redis", "addr", cfg.RedisAddr, "error", err)
 			os.Exit(1)
 		}
@@ -652,6 +656,7 @@ func runServer() {
 		olricAdvertiseAddr := ""
 		olricGossipAdvertiseAddr := ""
 		olricClientAdvertiseAddr := ""
+		redisAddrForGossip := ""
 		if isCoreRole {
 			raftAdvertiseAddr = cf.raftBindAddr
 			olricAdvertiseAddr = cf.olricAdvertise
@@ -665,6 +670,14 @@ func runServer() {
 			// the gossip one above) — what edge nodes dial to build a
 			// thin store.NewRemoteOlricStore client (see EdgeRegistry).
 			olricClientAdvertiseAddr = net.JoinHostPort(cf.olricAdvertise, strconv.Itoa(cf.olricPort))
+			// NodeMeta.RedisAddr is core-only, same as OlricAddr above —
+			// this core's own co-located Redis instance (REDIS_ADDR on a
+			// core process IS that instance's address, by deployment
+			// convention; see docker-compose.core-edge-split.yml). An
+			// edge's own cfg.RedisAddr is just its Router's bootstrap
+			// seed, never gossiped — NodeMeta.RedisAddr only ever
+			// describes a core's co-located instance.
+			redisAddrForGossip = cfg.RedisAddr
 		}
 		// A combined node gossips as plain "core" — the membership package
 		// only knows RoleCore/RoleEdge, and combined nodes must be
@@ -688,6 +701,8 @@ func runServer() {
 			GRPCAddr:        cf.grpcAdvertise,
 			OlricAddr:       olricGossipAdvertiseAddr,
 			OlricClientAddr: olricClientAdvertiseAddr,
+			RedisAddr:       redisAddrForGossip,
+			RedisPassword:   cfg.RedisPassword,
 			RaftNode:        raftNode,
 		}, log)
 		if err != nil {
@@ -813,6 +828,16 @@ func runServer() {
 			aclCache := keelraft.NewACLCache(remoteRegistry.ACLSnapshot, 0, log)
 
 			clusterRegistry = keelraft.NewEdgeRegistry(edgeRouter, remoteRegistry, aclCache)
+		}
+
+		// Redirect the shared Redis router to whichever node raft has
+		// designated primary — runs on every node (core and edge alike),
+		// unlike the failover DECISION itself (membership's
+		// redisFailoverLoop), which only the raft leader makes. See
+		// internal/cluster/redisrouter's package doc and
+		// keel-design-doc.md's risk #6.
+		if rdb != nil {
+			go redisrouter.WatchPrimary(ctx, rdb, clusterRegistry.CurrentRedisPrimary, clusterMembership.RedisAddrForNode, log)
 		}
 
 		grpcListener, err := net.Listen("tcp", cf.grpcBindAddr)
@@ -987,7 +1012,6 @@ func runServer() {
 		log.Info("output connector: ready", "type", cfg.OutputConnector, "buffer_size", cf.forwarderBufferSize)
 	}
 
-
 	// ── MQTT broker, commander, HTTP adapter ──────────────────────────────────
 	// All three are client-traffic components (device MQTT/HTTP ingestion,
 	// platform→device commands) — a pure "core" node has no connected
@@ -995,17 +1019,18 @@ func runServer() {
 	// standalone (role == "") all run the full set.
 	if brokerRuntimeEnabled {
 		mqttServer, certReloader, err = broker.New(broker.Config{
-			MQTTPort:            cfg.MQTTPort,
-			MQTTTLSPort:         cfg.MQTTTLSPort,
-			TLSCertDir:          cf.tlsCertDir,
-			TLSClientAuth:       cf.tlsClientAuth,
-			TenantConfigCache:   tenantCache,
-			AutoProvisioningURL: cfg.AutoProvisioningURL,
-			RedisClient:         rdb,
-			ClusterRegistry:     clusterRegistry,
-			ClusterFwd:          clusterFwd,
-			ClusterNodeID:       cf.nodeID,
-			OutputConnector:     outputConn,
+			MQTTPort:              cfg.MQTTPort,
+			MQTTTLSPort:           cfg.MQTTTLSPort,
+			TLSCertDir:            cf.tlsCertDir,
+			TLSClientAuth:         cf.tlsClientAuth,
+			TenantConfigCache:     tenantCache,
+			AutoProvisioningURL:   cfg.AutoProvisioningURL,
+			RedisClient:           rdb,
+			ClusterRegistry:       clusterRegistry,
+			ClusterFwd:            clusterFwd,
+			ClusterNodeID:         cf.nodeID,
+			OutputConnector:       outputConn,
+			SessionExpiryInterval: cfg.SessionExpiryInterval,
 		}, provider, fwd, log)
 		if err != nil {
 			log.Error("create MQTT broker", "error", err)

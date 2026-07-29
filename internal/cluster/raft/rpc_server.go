@@ -86,6 +86,11 @@ func (s *RPCServer) EvaluateACL(_ context.Context, req *pb.EvaluateACLRequest) (
 	return resp, nil
 }
 
+func (s *RPCServer) CurrentRedisPrimary(_ context.Context, _ *pb.CurrentRedisPrimaryRequest) (*pb.CurrentRedisPrimaryResponse, error) {
+	nodeID, ok := s.registry.CurrentRedisPrimary()
+	return &pb.CurrentRedisPrimaryResponse{NodeId: nodeID, Ok: ok}, nil
+}
+
 func (s *RPCServer) ACLSnapshot(_ context.Context, _ *pb.ACLSnapshotRequest) (*pb.ACLSnapshotResponse, error) {
 	admin, err := s.aclAdmin()
 	if err != nil {

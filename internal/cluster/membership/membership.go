@@ -38,9 +38,28 @@ type Config struct {
 	GRPCAddr        string // registry + dataplane RPC address, all roles
 	OlricAddr       string // core only, empty for edge — see NodeMeta.OlricAddr
 	OlricClientAddr string // core only, empty for edge — see NodeMeta.OlricClientAddr
+	RedisAddr       string // core only, empty for edge — see NodeMeta.RedisAddr
+
+	// RedisPassword authenticates admin commands (SLAVEOF/REPLICAOF) this
+	// node's failover loop issues against OTHER core nodes' co-located
+	// Redis instances — see redis_failover.go. Every core's Redis shares
+	// one password (same posture as the rest of this project's Redis
+	// config — see config.RedisPassword). Only meaningful when RedisAddr
+	// is also set.
+	RedisPassword string
+
+	// RedisPrimaryDeadThreshold bounds how long the currently-designated
+	// Redis primary can be missing from gossip before the failover loop
+	// promotes a replica — same debounce rationale as
+	// lifecycle.Monitor.Threshold (a blip must not trigger a failover).
+	// Zero defaults to 30s (matching cmd/server/main.go's own
+	// --heartbeat-threshold default for the analogous core-node-missing
+	// case).
+	RedisPrimaryDeadThreshold time.Duration
 
 	// RaftNode is non-nil only for core nodes. Membership uses it to
-	// AddVoter newly discovered core peers when this node is leader.
+	// AddVoter newly discovered core peers when this node is leader, and
+	// (see redis_failover.go) to read/write the Redis primary designation.
 	RaftNode *keelraft.Node
 }
 
@@ -67,6 +86,16 @@ type Membership struct {
 	members map[string]NodeMeta // keyed by memberlist node name (== NodeID)
 
 	stopReconcile chan struct{}
+
+	// Redis failover loop state — see redis_failover.go. Started only when
+	// Redis co-location is configured (New's cfg.RedisAddr != "").
+	redisPrimaryDeadThreshold time.Duration
+	redisAdmin                redisAdminClient    // overridable in tests; real impl otherwise
+	testVoterCount            func() (int, error) // overridable in tests only — see coreVoterCount's doc; nil in production (real raft.GetConfiguration() used instead)
+	stopRedisFailover         chan struct{}
+
+	muRedis           sync.Mutex
+	redisMissingSince map[string]time.Time // designated-primary nodeID -> first tick it was observed absent from gossip (absent entirely, since presence clears it)
 }
 
 // New creates and starts gossiping. If cfg.Peers is non-empty it attempts
@@ -81,14 +110,24 @@ func New(cfg Config, log *slog.Logger) (*Membership, error) {
 		GRPCAddr:        cfg.GRPCAddr,
 		OlricAddr:       cfg.OlricAddr,
 		OlricClientAddr: cfg.OlricClientAddr,
+		RedisAddr:       cfg.RedisAddr,
+	}
+
+	redisPrimaryDeadThreshold := cfg.RedisPrimaryDeadThreshold
+	if redisPrimaryDeadThreshold <= 0 {
+		redisPrimaryDeadThreshold = 30 * time.Second
 	}
 
 	m := &Membership{
-		raft:          cfg.RaftNode,
-		self:          self,
-		log:           log,
-		members:       make(map[string]NodeMeta),
-		stopReconcile: make(chan struct{}),
+		raft:                      cfg.RaftNode,
+		self:                      self,
+		log:                       log,
+		members:                   make(map[string]NodeMeta),
+		stopReconcile:             make(chan struct{}),
+		redisPrimaryDeadThreshold: redisPrimaryDeadThreshold,
+		redisAdmin:                realRedisAdmin{password: cfg.RedisPassword},
+		stopRedisFailover:         make(chan struct{}),
+		redisMissingSince:         make(map[string]time.Time),
 	}
 
 	mlConfig := memberlist.DefaultLANConfig()
@@ -135,6 +174,14 @@ func New(cfg Config, log *slog.Logger) (*Membership, error) {
 
 	if m.raft != nil {
 		go m.reconcileVotersLoop()
+		// Only meaningful when THIS node has a co-located Redis to
+		// coordinate — see redis_failover.go's doc. Zero cost (no
+		// goroutine at all) for a core node running without Redis
+		// co-location, or for edge/standalone nodes (m.raft nil there
+		// already excludes them).
+		if cfg.RedisAddr != "" {
+			go m.redisFailoverLoop()
+		}
 	}
 
 	return m, nil
@@ -144,6 +191,7 @@ func New(cfg Config, log *slog.Logger) (*Membership, error) {
 // down the local gossip agent. Called by the lifecycle drain command.
 func (m *Membership) Leave(timeout time.Duration) error {
 	close(m.stopReconcile)
+	close(m.stopRedisFailover) // safe even if redisFailoverLoop was never started — nothing reads a closed, unstarted channel
 	if err := m.ml.Leave(timeout); err != nil {
 		return fmt.Errorf("membership: leave: %w", err)
 	}
@@ -262,6 +310,23 @@ func (m *Membership) NodeGRPCAddr(nodeID string) (string, bool) {
 		return "", false
 	}
 	return meta.GRPCAddr, true
+}
+
+// RedisAddrForNode resolves a core node ID to its co-located Redis
+// instance's address. Used by whoever needs to reach a specific node's
+// Redis (the failover loop reconfiguring surviving replicas via
+// REPLICAOF, or a Redis client provider resolving the current primary's
+// address once it learns the nodeID from raft — see OpSetRedisPrimary).
+// Returns false for an edge node ID (RedisAddr is core-only) or an unknown
+// one.
+func (m *Membership) RedisAddrForNode(nodeID string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	meta, ok := m.members[nodeID]
+	if !ok || meta.RedisAddr == "" {
+		return "", false
+	}
+	return meta.RedisAddr, true
 }
 
 // ── memberlist.Delegate — only NodeMeta carries data for this PoC ────────

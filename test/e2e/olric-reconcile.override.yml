@@ -7,13 +7,21 @@
 # `!override` forces a wholesale replacement of each ports: list — compose
 # merges list-valued keys by concatenation otherwise (see
 # backup-restore.override.yml's comment, where this was first worked out).
+# redis-core-1/2/3 (one per co-located Redis instance — see risk #6 in
+# keel-design-doc.md) replace the single old "redis" service's remap.
 services:
   postgres:
     ports: !override
       - "25532:5432"
-  redis:
+  redis-core-1:
     ports: !override
       - "26479:6379"
+  redis-core-2:
+    ports: !override
+      - "26480:6379"
+  redis-core-3:
+    ports: !override
+      - "26481:6379"
   core-1:
     ports: !override
       - "28190:8090"

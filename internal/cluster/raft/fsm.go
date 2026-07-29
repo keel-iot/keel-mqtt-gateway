@@ -57,6 +57,12 @@ type state struct {
 	roles           map[string]acl.Role // role name -> role (rules)
 	bindings        map[string][]string // principal -> list of role names bound to it
 	enabledRulesets map[string]bool     // standard ruleset name -> enabled
+
+	// redisPrimary is the nodeID of the core currently designated primary
+	// for the co-located Redis primary+replica pair (see OpSetRedisPrimary).
+	// Empty until the first designation — e.g. before any failover loop has
+	// ever run, or on a fresh single-core cluster that hasn't set one yet.
+	redisPrimary string
 }
 
 func newState() *state {
@@ -173,6 +179,10 @@ func (f *FSM) Apply(log *hraft.Log) interface{} {
 		delete(f.state.enabledRulesets, cmd.RulesetName)
 		return applyResult{ok: true}
 
+	case OpSetRedisPrimary:
+		f.state.redisPrimary = cmd.NodeID
+		return applyResult{ok: true}
+
 	default:
 		return applyResult{err: fmt.Errorf("fsm: unknown op %q", cmd.Op)}
 	}
@@ -189,6 +199,7 @@ func (f *FSM) Snapshot() (hraft.FSMSnapshot, error) {
 		Roles:           make(map[string]acl.Role, len(f.state.roles)),
 		Bindings:        make(map[string][]string, len(f.state.bindings)),
 		EnabledRulesets: make(map[string]bool, len(f.state.enabledRulesets)),
+		RedisPrimary:    f.state.redisPrimary,
 	}
 	for clientID, nodeID := range f.state.sessions {
 		snap.Sessions[clientID] = nodeID
@@ -235,6 +246,7 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 	} else {
 		f.state.enabledRulesets = make(map[string]bool)
 	}
+	f.state.redisPrimary = snap.RedisPrimary
 	f.state.mu.Unlock()
 	return nil
 }
@@ -256,6 +268,14 @@ func (f *FSM) sessionsSnapshot() map[string]string {
 		sessions[k] = v
 	}
 	return sessions
+}
+
+// currentRedisPrimary returns the nodeID currently designated primary for
+// the co-located Redis pair, if one has ever been set.
+func (f *FSM) currentRedisPrimary() (string, bool) {
+	f.state.mu.RLock()
+	defer f.state.mu.RUnlock()
+	return f.state.redisPrimary, f.state.redisPrimary != ""
 }
 
 // ── ACL read helpers ─────────────────────────────────────────────────────
@@ -344,6 +364,7 @@ type snapshot struct {
 	Roles           map[string]acl.Role `json:"roles"`
 	Bindings        map[string][]string `json:"bindings"`
 	EnabledRulesets map[string]bool     `json:"enabled_rulesets"`
+	RedisPrimary    string              `json:"redis_primary,omitempty"`
 }
 
 func (s *snapshot) Persist(sink hraft.SnapshotSink) error {

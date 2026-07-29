@@ -25,6 +25,17 @@ service Registry {
   // EvaluateACL to a core node on every publish/subscribe.
   rpc ACLSnapshot(ACLSnapshotRequest) returns (ACLSnapshotResponse);
 
+  // CurrentRedisPrimary is a read, same fail-closed-safe/any-peer
+  // rationale as EvaluateACL/NodesFor — "who is the co-located Redis
+  // primary" is decided via raft.Apply (see internal/cluster/raft's
+  // OpSetRedisPrimary), not gossip, specifically so a leadership change
+  // mid-failover can't cause two nodes to disagree; but READING that
+  // decision never requires the leader specifically, same as any other
+  // FSM read here. Used by every node running a
+  // internal/cluster/redisrouter.Router (both core and edge) to redirect
+  // to a new primary's address after a failover.
+  rpc CurrentRedisPrimary(CurrentRedisPrimaryRequest) returns (CurrentRedisPrimaryResponse);
+
   // ACL mutation RPCs. Only used core-to-core, when a non-leader core node
   // forwards a management-API-originated write to the current leader (the
   // same fallback path ClaimSession/ReleaseSession already use) — edge
@@ -111,6 +122,12 @@ message ACLSnapshotResponse {
   repeated RoleEntry roles = 1;
   repeated BindingEntry bindings = 2;
   repeated string enabled_rulesets = 3;
+}
+
+message CurrentRedisPrimaryRequest {}
+message CurrentRedisPrimaryResponse {
+  string node_id = 1;
+  bool ok = 2; // false when no primary has ever been designated yet
 }
 
 message CreateRoleRequest {

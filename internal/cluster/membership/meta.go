@@ -25,6 +25,17 @@ type NodeMeta struct {
 	// edge nodes to build a thin store.NewRemoteOlricStore client (see
 	// internal/cluster/raft.EdgeRegistry).
 	OlricClientAddr string `json:"olric_client_addr,omitempty"`
+
+	// RedisAddr is core only — the host:port of the Redis instance
+	// co-located with this core node (primary+replica pair for QoS1/2 and
+	// session persistence, see internal/broker/redis_session.go). Pure
+	// configuration data (the "where"), gossiped like OlricAddr/GRPCAddr —
+	// deliberately NOT accompanied by a role field: "which node is primary
+	// right now" (the "who") is a single authoritative fact decided via
+	// raft.Apply (see internal/cluster/raft's OpSetRedisPrimary), not
+	// something gossip's eventually-consistent, best-effort propagation is
+	// safe to be the source of truth for.
+	RedisAddr string `json:"redis_addr,omitempty"`
 }
 
 func (m NodeMeta) encode() []byte {

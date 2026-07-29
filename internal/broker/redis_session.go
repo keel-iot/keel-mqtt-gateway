@@ -24,6 +24,8 @@ import (
 	"github.com/mochi-mqtt/server/v2/hooks/storage"
 	"github.com/mochi-mqtt/server/v2/packets"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
 )
 
 // Redis key prefixes — separate from any other consumers sharing the same
@@ -40,13 +42,16 @@ const (
 // session data is available during server startup.
 type RedisSessionHook struct {
 	mqtt.HookBase
-	rdb *redis.Client
-	log *slog.Logger
+	router *redisrouter.Router
+	log    *slog.Logger
 }
 
-// NewRedisSessionHook creates a hook using a pre-initialised Redis client.
-func NewRedisSessionHook(rdb *redis.Client, log *slog.Logger) *RedisSessionHook {
-	return &RedisSessionHook{rdb: rdb, log: log}
+// NewRedisSessionHook creates a hook using a pre-initialised Redis router
+// (see internal/cluster/redisrouter — the single indirection point every
+// Redis consumer goes through, so a primary failover updates them all at
+// once instead of needing a separate swap site here).
+func NewRedisSessionHook(router *redisrouter.Router, log *slog.Logger) *RedisSessionHook {
+	return &RedisSessionHook{router: router, log: log}
 }
 
 func (h *RedisSessionHook) ID() string { return "keel-redis-session" }
@@ -69,7 +74,7 @@ func (h *RedisSessionHook) Provides(b byte) bool {
 // Init is called by mochi-mqtt on hook registration.
 func (h *RedisSessionHook) Init(_ any) error {
 	// Ping to verify connectivity.
-	if err := h.rdb.Ping(context.Background()).Err(); err != nil {
+	if err := h.router.Client().Ping(context.Background()).Err(); err != nil {
 		return fmt.Errorf("redis session hook: ping failed: %w", err)
 	}
 	h.log.Info("mqtt-gateway: Redis session hook ready")
@@ -121,7 +126,7 @@ func (h *RedisSessionHook) saveClient(cl *mqtt.Client) {
 		h.log.Error("redis session: marshal client", "error", err, "id", cl.ID)
 		return
 	}
-	if err := h.rdb.HSet(context.Background(), redisClientHash, cl.ID, data).Err(); err != nil {
+	if err := h.router.Client().HSet(context.Background(), redisClientHash, cl.ID, data).Err(); err != nil {
 		h.log.Error("redis session: hset client", "error", err, "id", cl.ID)
 	}
 }
@@ -136,7 +141,7 @@ func (h *RedisSessionHook) OnDisconnect(cl *mqtt.Client, _ error, expire bool) {
 	if cl.StopCause() == packets.ErrSessionTakenOver {
 		return
 	}
-	if err := h.rdb.HDel(context.Background(), redisClientHash, cl.ID).Err(); err != nil {
+	if err := h.router.Client().HDel(context.Background(), redisClientHash, cl.ID).Err(); err != nil {
 		h.log.Error("redis session: hdel client", "error", err, "id", cl.ID)
 	}
 }
@@ -161,7 +166,7 @@ func (h *RedisSessionHook) OnSubscribed(cl *mqtt.Client, pk packets.Packet, reas
 			h.log.Error("redis session: marshal subscription", "error", err)
 			continue
 		}
-		if err := h.rdb.HSet(ctx, redisSubHash, subFieldKey(cl, f.Filter), data).Err(); err != nil {
+		if err := h.router.Client().HSet(ctx, redisSubHash, subFieldKey(cl, f.Filter), data).Err(); err != nil {
 			h.log.Error("redis session: hset subscription", "error", err)
 		}
 	}
@@ -171,7 +176,7 @@ func (h *RedisSessionHook) OnSubscribed(cl *mqtt.Client, pk packets.Packet, reas
 func (h *RedisSessionHook) OnUnsubscribed(cl *mqtt.Client, pk packets.Packet) {
 	ctx := context.Background()
 	for _, f := range pk.Filters {
-		if err := h.rdb.HDel(ctx, redisSubHash, subFieldKey(cl, f.Filter)).Err(); err != nil {
+		if err := h.router.Client().HDel(ctx, redisSubHash, subFieldKey(cl, f.Filter)).Err(); err != nil {
 			h.log.Error("redis session: hdel subscription", "error", err)
 		}
 	}
@@ -190,6 +195,7 @@ func (h *RedisSessionHook) OnQosPublish(cl *mqtt.Client, pk packets.Packet, sent
 		Payload:     pk.Payload,
 		Sent:        sent,
 		Created:     pk.Created,
+		PacketID:    pk.PacketID,
 		Properties: storage.MessageProperties{
 			PayloadFormat:          props.PayloadFormat,
 			MessageExpiryInterval:  props.MessageExpiryInterval,
@@ -206,14 +212,14 @@ func (h *RedisSessionHook) OnQosPublish(cl *mqtt.Client, pk packets.Packet, sent
 		h.log.Error("redis session: marshal inflight", "error", err)
 		return
 	}
-	if err := h.rdb.HSet(context.Background(), redisInflightHash, inflightFieldKey(cl, pk), data).Err(); err != nil {
+	if err := h.router.Client().HSet(context.Background(), redisInflightHash, inflightFieldKey(cl, pk), data).Err(); err != nil {
 		h.log.Error("redis session: hset inflight", "error", err)
 	}
 }
 
 // OnQosComplete removes a successfully acknowledged in-flight message.
 func (h *RedisSessionHook) OnQosComplete(cl *mqtt.Client, pk packets.Packet) {
-	if err := h.rdb.HDel(context.Background(), redisInflightHash, inflightFieldKey(cl, pk)).Err(); err != nil {
+	if err := h.router.Client().HDel(context.Background(), redisInflightHash, inflightFieldKey(cl, pk)).Err(); err != nil {
 		h.log.Error("redis session: hdel inflight", "error", err)
 	}
 }
@@ -228,7 +234,7 @@ func (h *RedisSessionHook) OnQosDropped(cl *mqtt.Client, pk packets.Packet) {
 // StoredClients returns all client records persisted in Redis.
 // Called by mochi-mqtt during server startup to restore clean and persistent sessions.
 func (h *RedisSessionHook) StoredClients() ([]storage.Client, error) {
-	rows, err := h.rdb.HGetAll(context.Background(), redisClientHash).Result()
+	rows, err := h.router.Client().HGetAll(context.Background(), redisClientHash).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return nil, fmt.Errorf("redis session: HGetAll clients: %w", err)
 	}
@@ -246,7 +252,7 @@ func (h *RedisSessionHook) StoredClients() ([]storage.Client, error) {
 
 // StoredSubscriptions returns all subscription records persisted in Redis.
 func (h *RedisSessionHook) StoredSubscriptions() ([]storage.Subscription, error) {
-	rows, err := h.rdb.HGetAll(context.Background(), redisSubHash).Result()
+	rows, err := h.router.Client().HGetAll(context.Background(), redisSubHash).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return nil, fmt.Errorf("redis session: HGetAll subscriptions: %w", err)
 	}
@@ -264,7 +270,7 @@ func (h *RedisSessionHook) StoredSubscriptions() ([]storage.Subscription, error)
 
 // StoredInflightMessages returns all in-flight messages persisted in Redis.
 func (h *RedisSessionHook) StoredInflightMessages() ([]storage.Message, error) {
-	rows, err := h.rdb.HGetAll(context.Background(), redisInflightHash).Result()
+	rows, err := h.router.Client().HGetAll(context.Background(), redisInflightHash).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return nil, fmt.Errorf("redis session: HGetAll inflight: %w", err)
 	}
@@ -284,4 +290,69 @@ func (h *RedisSessionHook) StoredInflightMessages() ([]storage.Message, error) {
 // persisted by this hook (they are handled by the mochi-mqtt in-memory store).
 func (h *RedisSessionHook) StoredRetainedMessages() ([]storage.Message, error) {
 	return nil, nil
+}
+
+// ── per-client lookup (session rehydration on reconnect) ─────────────────────
+//
+// Unlike Stored*() above (called once, at process boot, over every client),
+// these scan only the hash fields for one clientID — used by keelHook when a
+// persistent session reconnects to a node that never had it locally (e.g. a
+// different node than the one that originally owned it, or the same node
+// after MaximumSessionExpiryInterval already expired it locally but Redis
+// still has it). Field keys are "clientID:filter" / "clientID:packetID" (see
+// subFieldKey/inflightFieldKey), so HScan's MATCH pattern lets Redis do the
+// filtering server-side instead of fetching every client's data.
+
+// hscanAll drains every field/value pair matching pattern from key,
+// following HScan's cursor until exhausted.
+func (h *RedisSessionHook) hscanAll(ctx context.Context, key, pattern string) ([]string, error) {
+	var out []string
+	var cursor uint64
+	for {
+		batch, next, err := h.router.Client().HScan(ctx, key, cursor, pattern, 100).Result()
+		if err != nil && !errors.Is(err, redis.Nil) {
+			return nil, err
+		}
+		out = append(out, batch...)
+		if next == 0 {
+			return out, nil
+		}
+		cursor = next
+	}
+}
+
+// SubscriptionsForClient returns clientID's persisted subscriptions.
+func (h *RedisSessionHook) SubscriptionsForClient(clientID string) ([]storage.Subscription, error) {
+	fieldVals, err := h.hscanAll(context.Background(), redisSubHash, clientID+":*")
+	if err != nil {
+		return nil, fmt.Errorf("redis session: HScan subscriptions for %s: %w", clientID, err)
+	}
+	out := make([]storage.Subscription, 0, len(fieldVals)/2)
+	for i := 1; i < len(fieldVals); i += 2 { // odd indices are values, even are field names
+		var s storage.Subscription
+		if err := s.UnmarshalBinary([]byte(fieldVals[i])); err != nil {
+			h.log.Error("redis session: unmarshal subscription", "error", err, "client_id", clientID)
+			continue
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// InflightForClient returns clientID's persisted in-flight QoS1/2 messages.
+func (h *RedisSessionHook) InflightForClient(clientID string) ([]storage.Message, error) {
+	fieldVals, err := h.hscanAll(context.Background(), redisInflightHash, clientID+":*")
+	if err != nil {
+		return nil, fmt.Errorf("redis session: HScan inflight for %s: %w", clientID, err)
+	}
+	out := make([]storage.Message, 0, len(fieldVals)/2)
+	for i := 1; i < len(fieldVals); i += 2 {
+		var m storage.Message
+		if err := m.UnmarshalBinary([]byte(fieldVals[i])); err != nil {
+			h.log.Error("redis session: unmarshal inflight", "error", err, "client_id", clientID)
+			continue
+		}
+		out = append(out, m)
+	}
+	return out, nil
 }

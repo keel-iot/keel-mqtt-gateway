@@ -30,10 +30,46 @@ services:
       timeout: 3s
       retries: 15
 
-  redis:
+  # ── Redis, co-located per core node (design doc risk #6): primary+replica
+  # pair for QoS1/2 and session persistence (internal/broker/redis_session.go),
+  # NOT sharded/clustered — the dataset is small (bounded by pending message
+  # volume, not device count), so only failover is needed, not partitioning.
+  # docker-compose has no pod/sidecar concept, so "co-located" here means one
+  # small dedicated container per core rather than sharing a process — the
+  # closest equivalent, and enough to validate the real failover behavior
+  # (internal/cluster/membership's redisFailoverLoop + redisrouter.WatchPrimary).
+  # --appendonly yes + a volume gives each instance real restart-durability,
+  # matching what a K8s core pod's PVC would provide.
+  #
+  # Which of the three is actually primary at any moment is a raft-decided
+  # fact (OpSetRedisPrimary), not something fixed here — each core-N's own
+  # REDIS_ADDR below just tells it (and gossip) where ITS OWN co-located
+  # instance lives; core-1 being "first" is not privileged in any way beyond
+  # being deterministically preferred at first bootstrap (see
+  # membership.bootstrapRedisPrimary's doc).
+  redis-core-1:
     image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-core-1-data:/data
     ports:
       - "16379:6379"
+
+  redis-core-2:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-core-2-data:/data
+    ports:
+      - "16380:6379"
+
+  redis-core-3:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-core-3-data:/data
+    ports:
+      - "16381:6379"
 
   # ── Core nodes: raft + Olric quorum only. No MQTT port published — see the
   # KNOWN GAP note above for why the process itself isn't fully listener-free.
@@ -47,9 +83,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis-core-1:
+        condition: service_started
     environment:
       DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
-      REDIS_ADDR: "redis:6379"
+      REDIS_ADDR: "redis-core-1:6379"
       AUTH_BACKEND: "file"
       CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
       CREDENTIAL_CACHE_TTL: "${CREDENTIAL_CACHE_TTL:-30s}"
@@ -91,9 +129,11 @@ services:
         condition: service_healthy
       core-1:
         condition: service_started
+      redis-core-2:
+        condition: service_started
     environment:
       DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
-      REDIS_ADDR: "redis:6379"
+      REDIS_ADDR: "redis-core-2:6379"
       AUTH_BACKEND: "file"
       CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
       CREDENTIAL_CACHE_TTL: "${CREDENTIAL_CACHE_TTL:-30s}"
@@ -132,9 +172,11 @@ services:
         condition: service_healthy
       core-1:
         condition: service_started
+      redis-core-3:
+        condition: service_started
     environment:
       DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
-      REDIS_ADDR: "redis:6379"
+      REDIS_ADDR: "redis-core-3:6379"
       AUTH_BACKEND: "file"
       CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
       CREDENTIAL_CACHE_TTL: "${CREDENTIAL_CACHE_TTL:-30s}"
@@ -176,9 +218,15 @@ services:
         condition: service_healthy
       core-1:
         condition: service_started
+      redis-core-1:
+        condition: service_started
     environment:
       DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
-      REDIS_ADDR: "redis:6379"
+      # Seed only — this edge's actual read/write target is redirected by
+      # internal/cluster/redisrouter.WatchPrimary within one poll interval
+      # of startup, based on the raft-designated primary (see
+      # keel-design-doc.md's risk #6), not fixed to core-1 permanently.
+      REDIS_ADDR: "redis-core-1:6379"
       AUTH_BACKEND: "file"
       CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
       CREDENTIAL_CACHE_TTL: "${CREDENTIAL_CACHE_TTL:-30s}"
@@ -209,9 +257,15 @@ services:
         condition: service_healthy
       core-1:
         condition: service_started
+      redis-core-1:
+        condition: service_started
     environment:
       DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
-      REDIS_ADDR: "redis:6379"
+      # Seed only — this edge's actual read/write target is redirected by
+      # internal/cluster/redisrouter.WatchPrimary within one poll interval
+      # of startup, based on the raft-designated primary (see
+      # keel-design-doc.md's risk #6), not fixed to core-1 permanently.
+      REDIS_ADDR: "redis-core-1:6379"
       AUTH_BACKEND: "file"
       CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
       CREDENTIAL_CACHE_TTL: "${CREDENTIAL_CACHE_TTL:-30s}"
@@ -242,9 +296,15 @@ services:
         condition: service_healthy
       core-1:
         condition: service_started
+      redis-core-1:
+        condition: service_started
     environment:
       DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
-      REDIS_ADDR: "redis:6379"
+      # Seed only — this edge's actual read/write target is redirected by
+      # internal/cluster/redisrouter.WatchPrimary within one poll interval
+      # of startup, based on the raft-designated primary (see
+      # keel-design-doc.md's risk #6), not fixed to core-1 permanently.
+      REDIS_ADDR: "redis-core-1:6379"
       AUTH_BACKEND: "file"
       CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
       CREDENTIAL_CACHE_TTL: "${CREDENTIAL_CACHE_TTL:-30s}"
@@ -267,3 +327,6 @@ volumes:
   core-1-data:
   core-2-data:
   core-3-data:
+  redis-core-1-data:
+  redis-core-2-data:
+  redis-core-3-data:

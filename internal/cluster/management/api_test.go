@@ -39,6 +39,7 @@ func (f *fakeACLRegistry) ReleaseSession(clientID, nodeID string) error { return
 func (f *fakeACLRegistry) EvaluateACL(clientID, username, topic string, action acl.Action) acl.Decision {
 	return acl.Decision{}
 }
+func (f *fakeACLRegistry) CurrentRedisPrimary() (string, bool) { return "", false }
 
 // ACLAdmin interface.
 func (f *fakeACLRegistry) CreateRole(name string, rules []acl.ACLRule) error {

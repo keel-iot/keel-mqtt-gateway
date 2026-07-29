@@ -29,6 +29,19 @@ const (
 	OpDeleteBinding  Op = "acl.delete_binding"
 	OpEnableRuleset  Op = "acl.enable_ruleset"
 	OpDisableRuleset Op = "acl.disable_ruleset"
+
+	// OpSetRedisPrimary designates NodeID as the current primary for the
+	// co-located Redis primary+replica pair on core nodes (QoS1/2 and
+	// session persistence — see internal/broker/redis_session.go). Kept on
+	// this same FSM/log for the same reason session ownership is: "which
+	// node is primary" is a single, authoritative fact, not state a node
+	// can independently derive or reconstruct — unlike the routing table
+	// (Olric/AP) or the Redis address itself (gossip/NodeMeta, pure
+	// configuration data, not a decision). Written only by
+	// internal/cluster/membership's Redis failover loop, gated on
+	// IsLeader() exactly like reconcileVotersLoop — one arbiter, no second
+	// consensus mechanism.
+	OpSetRedisPrimary Op = "redis.set_primary"
 )
 
 // Command is the unit of replication applied to the FSM through raft.Apply.

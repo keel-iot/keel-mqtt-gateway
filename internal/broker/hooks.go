@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	mqtt "github.com/mochi-mqtt/server/v2"
+	"github.com/mochi-mqtt/server/v2/hooks/storage"
 	"github.com/mochi-mqtt/server/v2/packets"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -34,12 +35,12 @@ import (
 type keelHook struct {
 	mqtt.HookBase
 
-	provider         auth.AuthProvider
-	tenantCache      *auth.TenantConfigCache
-	fwd              *forwarder.Forwarder
-	autoProvURL      string
-	log              *slog.Logger
-	outputConnector  connector.OutputConnector
+	provider        auth.AuthProvider
+	tenantCache     *auth.TenantConfigCache
+	fwd             *forwarder.Forwarder
+	autoProvURL     string
+	log             *slog.Logger
+	outputConnector connector.OutputConnector
 
 	// Cluster wiring (see internal/cluster). Both nil when the gateway
 	// runs standalone (no --role flag / single-node mode) — every cluster
@@ -48,10 +49,31 @@ type keelHook struct {
 	clusterFwd      dataplane.Forwarder
 	clusterNodeID   string
 
+	// server is this node's own mochi-mqtt server, wired in broker.New right
+	// after construction — used by OnSessionEstablish to check whether THIS
+	// node already has local state for a reconnecting persistent session
+	// before reaching for sessionStore. Nil only in tests that don't exercise
+	// OnSessionEstablish's rehydration path.
+	server *mqtt.Server
+
+	// sessionStore provides per-client lookup of persisted subscriptions/
+	// inflight (backed by RedisSessionHook — see OnSessionEstablish). Nil
+	// when Redis is disabled: rehydration then simply doesn't happen, same
+	// as today, no different than standalone in-memory-only behavior.
+	sessionStore sessionStore
+
 	mu          sync.RWMutex
 	clients     map[string]*clientState
 	generation  map[string]uint64 // monotonic counter per client_id to detect stale OnDisconnect
 	tenantConns map[string]int    // per-tenant active connection counter for rate limiting
+}
+
+// sessionStore is satisfied by *RedisSessionHook; narrowed for testability —
+// see fakeRegistry/fakeForwarder for the same pattern elsewhere in this
+// package's tests.
+type sessionStore interface {
+	SubscriptionsForClient(clientID string) ([]storage.Subscription, error)
+	InflightForClient(clientID string) ([]storage.Message, error)
 }
 
 type clientState struct {
@@ -83,9 +105,11 @@ func (h *keelHook) ID() string { return "keel-auth-hook" }
 func (h *keelHook) Provides(b byte) bool {
 	return bytes.Contains([]byte{
 		byte(mqtt.OnConnectAuthenticate),
+		byte(mqtt.OnSessionEstablish),
 		byte(mqtt.OnACLCheck),
 		byte(mqtt.OnPublish),
 		byte(mqtt.OnDisconnect),
+		byte(mqtt.OnClientExpired),
 		byte(mqtt.OnSubscribed),
 		byte(mqtt.OnUnsubscribed),
 	}, []byte{b})
@@ -166,6 +190,81 @@ func (h *keelHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) boo
 		"auth_method", method,
 	)
 	return true
+}
+
+// OnSessionEstablish runs just before mochi-mqtt's own inheritClientSession
+// (see server.go's attachClient: OnSessionEstablish, then
+// inheritClientSession, then Clients.Add) — the last point at which it's
+// still meaningful to seed s.Clients with a prior session for this
+// client_id before mochi-mqtt decides whether this is a resumed session.
+//
+// Session resume normally only works when the reconnect lands on the same
+// node that already holds the client in its local s.Clients (in-process
+// resume, or after that node's own readStore() reloaded it from Redis at
+// boot). A persistent session reconnecting to a DIFFERENT node — one that
+// never had this client_id locally — found nothing to resume from even
+// though the exact same Redis data (subscriptions, inflight QoS1/2) was one
+// HScan away, because mochi-mqtt only ever reads storage once, at its own
+// boot, never per-connect. That silently dropped every queued message for
+// any persistent session that happened to reconnect elsewhere.
+//
+// The fix reuses mochi-mqtt's own restore mechanism instead of duplicating
+// it: build a ghost *Client exactly the way its loadClients/loadSubscriptions/
+// loadInflight do at boot (see server.go), register it under cl.ID in
+// s.Clients, and let the real inheritClientSession — called right after this
+// hook returns — merge/take over/resend through its own already-correct,
+// already-tested code path. This only ever populates in-memory state; it
+// never itself writes to the wire, so there's no risk of racing the
+// CONNACK mochi-mqtt sends after inheritClientSession returns.
+//
+// A no-op whenever: standalone/no cluster wiring isn't relevant here (this
+// runs regardless — Redis persistence is independent of cluster mode), no
+// Redis configured (h.sessionStore nil), a clean session (nothing to
+// resume by definition), or this node already has local state for cl.ID
+// (the common case — in-place resume already works via mochi-mqtt itself,
+// don't second-guess it or duplicate its ghost with our own).
+func (h *keelHook) OnSessionEstablish(cl *mqtt.Client, pk packets.Packet) {
+	if h.server == nil || h.sessionStore == nil || pk.Connect.Clean {
+		return
+	}
+	if _, ok := h.server.Clients.Get(cl.ID); ok {
+		return
+	}
+
+	subs, err := h.sessionStore.SubscriptionsForClient(cl.ID)
+	if err != nil {
+		h.log.Error("session rehydrate: fetch subscriptions failed", "client_id", cl.ID, "error", err)
+		return
+	}
+	inflight, err := h.sessionStore.InflightForClient(cl.ID)
+	if err != nil {
+		h.log.Error("session rehydrate: fetch inflight failed", "client_id", cl.ID, "error", err)
+		return
+	}
+	if len(subs) == 0 && len(inflight) == 0 {
+		return // nothing persisted for this client_id anywhere — genuinely new or clean
+	}
+
+	ghost := h.server.NewClient(nil, cl.Net.Listener, cl.ID, false)
+	ghost.Properties.Clean = false
+	ghost.Properties.ProtocolVersion = cl.Properties.ProtocolVersion
+	for _, s := range subs {
+		ghost.State.Subscriptions.Add(s.Filter, packets.Subscription{
+			Filter:            s.Filter,
+			RetainHandling:    s.RetainHandling,
+			Qos:               s.Qos,
+			RetainAsPublished: s.RetainAsPublished,
+			NoLocal:           s.NoLocal,
+			Identifier:        s.Identifier,
+		})
+	}
+	for _, m := range inflight {
+		ghost.State.Inflight.Set(m.ToPacket())
+	}
+	h.server.Clients.Add(ghost)
+
+	h.log.Info("session rehydrate: seeded from Redis for reconnect on a different node",
+		"client_id", cl.ID, "subscriptions", len(subs), "inflight", len(inflight))
 }
 
 // claimClusterSession claims clientID for this node in the cluster's
@@ -541,24 +640,66 @@ func (h *keelHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet
 	return pk, nil
 }
 
-// OnDisconnect decrements the active-connections gauge and clears this
-// node's cluster-wide routing entries for whatever the client was still
-// subscribed to.
+// OnDisconnect decrements the active-connections gauge and releases cluster
+// session ownership unconditionally — "which node holds the live
+// connection" ends the moment the socket closes, regardless of session
+// persistence. The ACL identity (h.clients/h.generation) and cluster-wide
+// routing entries are a different matter: for a persistent session
+// (expire == false) they must survive this disconnect, so only torn down
+// here when the session itself is truly ending (expire == true, same
+// clean-session/v5-session-expiry-interval-0 semantics mochi-mqtt itself
+// uses to decide whether to delete its own Client object — see
+// server.go's attachClient). For a persistent session that cleanup instead
+// happens later, in OnClientExpired, when mochi-mqtt's own expiry sweep
+// decides the session has genuinely timed out with no reconnect.
+//
+// Keeping h.clients alive past a persistent session's disconnect matters
+// because mochi-mqtt keeps delivering (and re-invoking OnACLCheck for)
+// queued QoS1/2 messages against that same, still-registered Client object
+// while it's offline — deleting h.clients unconditionally on disconnect
+// made OnACLCheck fail-closed for every one of those deliveries, silently
+// dropping them before they ever reached Inflight/Redis. Similarly,
+// clearing the cluster routing entry unconditionally broke cross-node
+// forwarding to that offline session immediately, independent of any node
+// crash.
+//
 // Uses the generation counter to avoid removing an entry that was already
 // replaced by a newer connection with the same client_id — the same guard
 // covers the cluster routing cleanup, since a superseded connection's
 // filters may have already been legitimately re-subscribed by the newer
 // connection on this same node (routing entries are per (topic, nodeID),
 // not per client_id).
-func (h *keelHook) OnDisconnect(cl *mqtt.Client, _ error, _ bool) {
+func (h *keelHook) OnDisconnect(cl *mqtt.Client, _ error, expire bool) {
+	// A disconnect caused by our own cluster-level Evict (see
+	// claimClusterSession/cmd/server/main.go's SubscribeEvict handler) means
+	// this client_id's session has definitely moved to a different node —
+	// unlike an ordinary network disconnect, there's no ambiguity to
+	// preserve here even for a persistent session. Treating it like expire
+	// avoids leaving a stale "ghost": local ACL identity plus a duplicate
+	// cluster routing entry that would otherwise sit on this node until
+	// OnClientExpired's sweep eventually clears it. Same signal
+	// RedisSessionHook.OnDisconnect already keys off for the same reason
+	// (see that method's ErrSessionTakenOver check).
+	//
+	// Client.Stop only closes the connection and returns — OnDisconnect
+	// itself fires later, asynchronously, once the blocked Read notices —
+	// so this check (evaluated here, inside the one guaranteed call) is the
+	// race-free way to act on it, instead of a second explicit cleanup call
+	// racing against this same hook from the Evict handler.
+	evicted := cl.StopCause() == packets.ErrSessionTakenOver
+	cleanup := expire || evicted
+
 	h.mu.Lock()
 	state, ok := h.clients[cl.ID]
-	// Only delete if this disconnect belongs to the current generation.
+	// Only act if this disconnect belongs to the current generation.
 	// A higher generation means a newer connection has already taken over.
 	if ok && state.generation == h.generation[cl.ID] {
-		delete(h.clients, cl.ID)
 		if ts := state.info.TenantID.String(); h.tenantConns[ts] > 0 {
 			h.tenantConns[ts]--
+		}
+		if cleanup {
+			delete(h.clients, cl.ID)
+			delete(h.generation, cl.ID)
 		}
 	} else {
 		ok = false // suppress metrics decrement and cluster cleanup below
@@ -570,7 +711,9 @@ func (h *keelHook) OnDisconnect(cl *mqtt.Client, _ error, _ bool) {
 		if h.fwd != nil {
 			h.fwd.PublishConnection(context.Background(), state.info.TenantID.String(), state.info.ID.String(), "offline")
 		}
-		h.unsubscribeClusterFilters(cl)
+		if cleanup {
+			h.unsubscribeClusterFilters(cl)
+		}
 		if h.clusterRegistry != nil {
 			// Guarded by nodeID: a no-op if this node was already
 			// superseded by a newer ClaimSession elsewhere (see
@@ -581,7 +724,37 @@ func (h *keelHook) OnDisconnect(cl *mqtt.Client, _ error, _ bool) {
 			}
 		}
 	}
-	h.log.Info("mqtt-gateway: device disconnected", "client_id", cl.ID)
+	h.log.Info("mqtt-gateway: device disconnected", "client_id", cl.ID, "session_expired", expire, "evicted", evicted)
+}
+
+// OnClientExpired is called by mochi-mqtt when a persistent session's
+// offline window has genuinely elapsed with no reconnect — see broker.go's
+// New (Options.Capabilities.MaximumSessionExpiryInterval) and mochi-mqtt's
+// own clearExpiredClients. This is the true end-of-life event OnDisconnect
+// deliberately doesn't act on for a persistent session (expire == false
+// there): only now are the ACL identity and cluster routing entry finally
+// torn down.
+//
+// A same-client_id reconnect before expiry needs no explicit invalidation
+// here: OnConnectAuthenticate unconditionally overwrites h.clients[cl.ID]
+// with the new connection's fresh state, and mochi-mqtt's own s.Clients map
+// is similarly overwritten under the same key — so a reconnected client's
+// entry is never "disconnected" from clearExpiredClients's point of view,
+// and this hook is never called for it.
+func (h *keelHook) OnClientExpired(cl *mqtt.Client) {
+	h.mu.Lock()
+	state, ok := h.clients[cl.ID]
+	if ok {
+		delete(h.clients, cl.ID)
+		delete(h.generation, cl.ID)
+	}
+	h.mu.Unlock()
+
+	if !ok {
+		return // already cleaned up (e.g. reconnected and took over)
+	}
+	h.unsubscribeClusterFilters(cl)
+	h.log.Info("mqtt-gateway: persistent session expired", "client_id", cl.ID, "tenant", state.info.TenantID)
 }
 
 // unsubscribeClusterFilters removes this node's cluster-wide routing

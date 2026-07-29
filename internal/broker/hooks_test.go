@@ -9,6 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	mqtt "github.com/mochi-mqtt/server/v2"
+	"github.com/mochi-mqtt/server/v2/hooks/storage"
+	"github.com/mochi-mqtt/server/v2/packets"
 
 	"github.com/keel-iot/keel-mqtt-gateway/internal/auth"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/acl"
@@ -30,17 +32,27 @@ type fakeRegistry struct {
 	// in this file rely on).
 	claimFn func(clientID, nodeID string) (string, error)
 
-	mu           sync.Mutex
-	releaseCalls []releaseCall
+	mu               sync.Mutex
+	releaseCalls     []releaseCall
+	unsubscribeCalls []unsubscribeCall
 }
 
 type releaseCall struct {
 	clientID, nodeID string
 }
 
-func (f *fakeRegistry) Subscribe(topic, nodeID string) error   { return nil }
-func (f *fakeRegistry) Unsubscribe(topic, nodeID string) error { return nil }
-func (f *fakeRegistry) NodesFor(topic string) []string         { return nil }
+type unsubscribeCall struct {
+	topic, nodeID string
+}
+
+func (f *fakeRegistry) Subscribe(topic, nodeID string) error { return nil }
+func (f *fakeRegistry) Unsubscribe(topic, nodeID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unsubscribeCalls = append(f.unsubscribeCalls, unsubscribeCall{topic, nodeID})
+	return nil
+}
+func (f *fakeRegistry) NodesFor(topic string) []string { return nil }
 func (f *fakeRegistry) ClaimSession(clientID, nodeID string) (string, error) {
 	if f.claimFn != nil {
 		return f.claimFn(clientID, nodeID)
@@ -57,6 +69,7 @@ func (f *fakeRegistry) EvaluateACL(clientID, username, topic string, action acl.
 	f.lastCall.clientID, f.lastCall.username, f.lastCall.topic, f.lastCall.action = clientID, username, topic, action
 	return f.decision
 }
+func (f *fakeRegistry) CurrentRedisPrimary() (string, bool) { return "", false }
 
 // fakeForwarder is a minimal dataplane.Forwarder stand-in that records
 // Evict calls — used to verify claimClusterSession tells the previous
@@ -375,6 +388,144 @@ func TestOnDisconnect_ReleasesClusterSession(t *testing.T) {
 	}
 }
 
+// TestOnDisconnect_PersistentSessionKeepsRouting verifies a persistent
+// (non-expiring) session's disconnect releases cluster session ownership
+// but leaves its cluster-wide routing entries alone — clearing them broke
+// cross-node delivery to a QoS1/2 offline subscriber immediately, before
+// any node crash was even involved.
+func TestOnDisconnect_PersistentSessionKeepsRouting(t *testing.T) {
+	reg := &fakeRegistry{}
+	h := newClusterTestHook(reg, &fakeForwarder{}, "edge-1")
+	h.tenantConns = map[string]int{}
+	h.generation = map[string]uint64{}
+	h.clients["device-1"] = deviceState("dev-1")
+
+	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+
+	h.OnDisconnect(cl, nil, false) // expire=false: persistent session, not ending
+
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	if len(reg.unsubscribeCalls) != 0 {
+		t.Fatalf("expected no Unsubscribe call for a persistent session disconnect, got %+v", reg.unsubscribeCalls)
+	}
+	if len(reg.releaseCalls) != 1 {
+		t.Fatalf("expected cluster session ownership to still be released, got %d calls", len(reg.releaseCalls))
+	}
+}
+
+// TestOnDisconnect_ExpiringSessionClearsRouting verifies a clean/expiring
+// session's disconnect does clear its cluster-wide routing entries, since
+// the session (and therefore the subscription) is genuinely gone.
+func TestOnDisconnect_ExpiringSessionClearsRouting(t *testing.T) {
+	reg := &fakeRegistry{}
+	h := newClusterTestHook(reg, &fakeForwarder{}, "edge-1")
+	h.tenantConns = map[string]int{}
+	h.generation = map[string]uint64{}
+	h.clients["device-1"] = deviceState("dev-1")
+
+	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+
+	h.OnDisconnect(cl, nil, true) // expire=true: clean session, truly ending
+
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	if len(reg.unsubscribeCalls) != 1 || reg.unsubscribeCalls[0].topic != "telemetry/tenant/device-1" {
+		t.Fatalf("expected exactly 1 Unsubscribe call for telemetry/tenant/device-1, got %+v", reg.unsubscribeCalls)
+	}
+}
+
+// TestOnDisconnect_PersistentSessionKeepsACLIdentity verifies a persistent
+// session's disconnect leaves h.clients/h.generation alone — OnACLCheck
+// must keep succeeding for that client_id while mochi-mqtt still delivers
+// queued QoS1/2 messages to it offline. Deleting these unconditionally on
+// disconnect made every such delivery fail-closed before ever reaching
+// Inflight/Redis.
+func TestOnDisconnect_PersistentSessionKeepsACLIdentity(t *testing.T) {
+	reg := &fakeRegistry{}
+	h := newClusterTestHook(reg, &fakeForwarder{}, "edge-1")
+	h.tenantConns = map[string]int{}
+	// OnConnectAuthenticate always sets h.generation[cl.ID] on connect (see
+	// hooks.go); pre-populate it here to match that real invariant instead
+	// of relying on Go's zero-value-for-missing-key behavior, which would
+	// make the "still present" assertion below pass for the wrong reason.
+	h.generation = map[string]uint64{"device-1": 0}
+	h.clients["device-1"] = deviceState("dev-1")
+
+	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	h.OnDisconnect(cl, nil, false) // expire=false: persistent session, not ending
+
+	h.mu.RLock()
+	_, stillPresent := h.clients["device-1"]
+	_, genStillPresent := h.generation["device-1"]
+	h.mu.RUnlock()
+	if !stillPresent {
+		t.Fatalf("expected h.clients entry to survive a persistent session's disconnect")
+	}
+	if !genStillPresent {
+		t.Fatalf("expected h.generation entry to survive a persistent session's disconnect")
+	}
+}
+
+// TestOnClientExpired_CleansUpACLIdentityAndRouting verifies the true
+// end-of-life event (mochi-mqtt's own session-expiry sweep) finally tears
+// down what OnDisconnect left alone for a persistent session: ACL identity,
+// generation counter, and cluster routing entries.
+func TestOnClientExpired_CleansUpACLIdentityAndRouting(t *testing.T) {
+	reg := &fakeRegistry{}
+	h := newClusterTestHook(reg, &fakeForwarder{}, "edge-1")
+	h.tenantConns = map[string]int{}
+	h.generation = map[string]uint64{"device-1": 3}
+	h.clients["device-1"] = deviceState("dev-1")
+
+	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+
+	h.OnClientExpired(cl)
+
+	h.mu.RLock()
+	_, clientsPresent := h.clients["device-1"]
+	_, genPresent := h.generation["device-1"]
+	h.mu.RUnlock()
+	if clientsPresent {
+		t.Fatalf("expected h.clients entry to be removed on true session expiry")
+	}
+	if genPresent {
+		t.Fatalf("expected h.generation entry to be removed on true session expiry")
+	}
+
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	if len(reg.unsubscribeCalls) != 1 || reg.unsubscribeCalls[0].topic != "telemetry/tenant/device-1" {
+		t.Fatalf("expected exactly 1 Unsubscribe call for telemetry/tenant/device-1, got %+v", reg.unsubscribeCalls)
+	}
+}
+
+// TestOnClientExpired_AlreadyReconnectedIsNoop verifies that if the
+// client_id was already overwritten by a newer connection's fresh state
+// (reconnect before expiry), a stale OnClientExpired call for the old
+// Client object does not clear the new connection's identity or routing.
+func TestOnClientExpired_AlreadyReconnectedIsNoop(t *testing.T) {
+	reg := &fakeRegistry{}
+	h := newClusterTestHook(reg, &fakeForwarder{}, "edge-1")
+	h.tenantConns = map[string]int{}
+	h.generation = map[string]uint64{}
+	h.clients = map[string]*clientState{} // no entry: as if never registered / already cleaned up
+
+	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+
+	h.OnClientExpired(cl)
+
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	if len(reg.unsubscribeCalls) != 0 {
+		t.Fatalf("expected no Unsubscribe call when h.clients has no entry for client_id, got %+v", reg.unsubscribeCalls)
+	}
+}
+
 // TestOnDisconnect_StaleGenerationSkipsRelease verifies a disconnect from
 // a superseded (lower-generation) connection does not release the
 // *newer* local connection's session ownership.
@@ -392,5 +543,164 @@ func TestOnDisconnect_StaleGenerationSkipsRelease(t *testing.T) {
 
 	if len(reg.releaseCalls) != 0 {
 		t.Fatalf("expected no ReleaseSession call for a stale-generation disconnect, got %+v", reg.releaseCalls)
+	}
+}
+
+// TestOnDisconnect_EvictedPersistentSessionClearsRouting verifies that a
+// disconnect caused by our own cluster-level Evict (cl.StopCause() ==
+// ErrSessionTakenOver) tears down ACL identity and cluster routing even
+// for a persistent session (expire == false) — the session has
+// definitively moved to a different node, so there's no "genuinely still
+// offline" ambiguity left to preserve, unlike an ordinary disconnect.
+// Without this, a live client reconnecting to a different node while the
+// old node stays up would leave a stale duplicate route (and a leaked ACL
+// identity entry) behind on the old node until OnClientExpired's sweep
+// eventually caught it.
+func TestOnDisconnect_EvictedPersistentSessionClearsRouting(t *testing.T) {
+	reg := &fakeRegistry{}
+	h := newClusterTestHook(reg, &fakeForwarder{}, "edge-1")
+	h.tenantConns = map[string]int{}
+	h.generation = map[string]uint64{"device-1": 0}
+	h.clients["device-1"] = deviceState("dev-1")
+
+	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+	cl.Stop(packets.ErrSessionTakenOver) // mirrors cmd/server/main.go's SubscribeEvict handler
+
+	h.OnDisconnect(cl, nil, false) // expire=false: persistent session per MQTT semantics
+
+	h.mu.RLock()
+	_, stillPresent := h.clients["device-1"]
+	h.mu.RUnlock()
+	if stillPresent {
+		t.Fatalf("expected h.clients entry to be cleared on an evicted disconnect, even for a persistent session")
+	}
+
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	if len(reg.unsubscribeCalls) != 1 || reg.unsubscribeCalls[0].topic != "telemetry/tenant/device-1" {
+		t.Fatalf("expected exactly 1 Unsubscribe call for telemetry/tenant/device-1, got %+v", reg.unsubscribeCalls)
+	}
+}
+
+// fakeSessionStore is a minimal sessionStore stand-in for OnSessionEstablish
+// tests — see RedisSessionHook.SubscriptionsForClient/InflightForClient.
+type fakeSessionStore struct {
+	subs     []storage.Subscription
+	inflight []storage.Message
+}
+
+func (f *fakeSessionStore) SubscriptionsForClient(clientID string) ([]storage.Subscription, error) {
+	return f.subs, nil
+}
+
+func (f *fakeSessionStore) InflightForClient(clientID string) ([]storage.Message, error) {
+	return f.inflight, nil
+}
+
+// TestOnSessionEstablish_CleanSessionNoop verifies a clean-session connect
+// never triggers Redis rehydration — there's nothing to resume by
+// definition.
+func TestOnSessionEstablish_CleanSessionNoop(t *testing.T) {
+	server := mqtt.New(nil)
+	store := &fakeSessionStore{subs: []storage.Subscription{{Filter: "telemetry/x"}}}
+	h := &keelHook{log: slog.Default(), server: server, sessionStore: store}
+
+	cl := server.NewClient(nil, "tcp", "device-1", false)
+	h.OnSessionEstablish(cl, packets.Packet{Connect: packets.ConnectParams{Clean: true}})
+
+	if _, ok := server.Clients.Get("device-1"); ok {
+		t.Fatalf("expected no ghost client registered for a clean-session connect")
+	}
+}
+
+// TestOnSessionEstablish_NoSessionStoreNoop verifies standalone/no-Redis
+// mode (sessionStore nil) never touches server.Clients.
+func TestOnSessionEstablish_NoSessionStoreNoop(t *testing.T) {
+	server := mqtt.New(nil)
+	h := &keelHook{log: slog.Default(), server: server}
+
+	cl := server.NewClient(nil, "tcp", "device-1", false)
+	h.OnSessionEstablish(cl, packets.Packet{Connect: packets.ConnectParams{Clean: false}})
+
+	if _, ok := server.Clients.Get("device-1"); ok {
+		t.Fatalf("expected no ghost client registered when sessionStore is nil")
+	}
+}
+
+// TestOnSessionEstablish_AlreadyLocalNoop verifies that when this node
+// already has local state for client_id (in-place resume — the common
+// case, e.g. same-node reconnect or a restart that already ran readStore
+// at boot), OnSessionEstablish doesn't second-guess it with its own ghost.
+func TestOnSessionEstablish_AlreadyLocalNoop(t *testing.T) {
+	server := mqtt.New(nil)
+	store := &fakeSessionStore{subs: []storage.Subscription{{Filter: "telemetry/x"}}}
+	h := &keelHook{log: slog.Default(), server: server, sessionStore: store}
+
+	existing := server.NewClient(nil, "tcp", "device-1", false)
+	server.Clients.Add(existing)
+
+	cl := server.NewClient(nil, "tcp", "device-1", false)
+	h.OnSessionEstablish(cl, packets.Packet{Connect: packets.ConnectParams{Clean: false}})
+
+	got, ok := server.Clients.Get("device-1")
+	if !ok {
+		t.Fatalf("expected the pre-existing local client entry to remain")
+	}
+	if got != existing {
+		t.Fatalf("expected OnSessionEstablish not to replace the pre-existing local client entry")
+	}
+}
+
+// TestOnSessionEstablish_NothingPersistedNoop verifies that when the
+// session store has no subscriptions or inflight for this client_id, no
+// ghost is created — there's nothing to rehydrate.
+func TestOnSessionEstablish_NothingPersistedNoop(t *testing.T) {
+	server := mqtt.New(nil)
+	store := &fakeSessionStore{}
+	h := &keelHook{log: slog.Default(), server: server, sessionStore: store}
+
+	cl := server.NewClient(nil, "tcp", "device-1", false)
+	h.OnSessionEstablish(cl, packets.Packet{Connect: packets.ConnectParams{Clean: false}})
+
+	if _, ok := server.Clients.Get("device-1"); ok {
+		t.Fatalf("expected no ghost client registered when nothing is persisted for this client_id")
+	}
+}
+
+// TestOnSessionEstablish_RehydratesFromRedis verifies the core fix: a
+// persistent session reconnecting to a node with no local state for
+// client_id, but with subscriptions/inflight persisted in Redis, gets a
+// ghost client seeded so mochi-mqtt's own inheritClientSession (called
+// right after this hook returns) can merge/resend them through its
+// already-correct takeover path.
+func TestOnSessionEstablish_RehydratesFromRedis(t *testing.T) {
+	server := mqtt.New(nil)
+	store := &fakeSessionStore{
+		subs: []storage.Subscription{
+			{Filter: "telemetry/tenant/device-1", Qos: 1},
+		},
+		inflight: []storage.Message{
+			{PacketID: 7, TopicName: "telemetry/tenant/device-1", Payload: []byte("seq=1")},
+		},
+	}
+	h := &keelHook{log: slog.Default(), server: server, sessionStore: store}
+
+	cl := server.NewClient(nil, "tcp", "device-1", false)
+	h.OnSessionEstablish(cl, packets.Packet{Connect: packets.ConnectParams{Clean: false}, ProtocolVersion: 4})
+
+	ghost, ok := server.Clients.Get("device-1")
+	if !ok {
+		t.Fatalf("expected a ghost client to be registered for rehydration")
+	}
+	if ghost.Properties.Clean {
+		t.Fatalf("expected ghost.Properties.Clean to be false")
+	}
+	subs := ghost.State.Subscriptions.GetAll()
+	if _, ok := subs["telemetry/tenant/device-1"]; !ok {
+		t.Fatalf("expected ghost to carry the persisted subscription, got %+v", subs)
+	}
+	if ghost.State.Inflight.Len() != 1 {
+		t.Fatalf("expected ghost to carry 1 persisted inflight message, got %d", ghost.State.Inflight.Len())
 	}
 }

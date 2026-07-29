@@ -1,0 +1,42 @@
+# Compose override used only by redis-single-core.sh: remaps every host
+# port docker-compose.core-edge-split.yml publishes so this e2e run never
+# collides with another already-running stack — same convention as the
+# other e2e scripts' overrides. Own 24xxx range (unused: qos-crash-loss
+# 29xxx, olric-reconcile 25xxx/26xxx/28xxx, redis-failover 27xxx,
+# backup-restore 19xxx/155xx/164xx on docker-compose.yml).
+#
+# Only core-1/redis-core-1/edge-1/postgres are ever started by the script
+# (core-2/3, redis-core-2/3, edge-2/3 are never brought up) — their
+# overrides below exist only so `docker compose config` still validates
+# the full file; they're unused in practice.
+services:
+  postgres:
+    ports: !override
+      - "24532:5432"
+  redis-core-1:
+    ports: !override
+      - "24479:6379"
+  redis-core-2:
+    ports: !override
+      - "24480:6379"
+  redis-core-3:
+    ports: !override
+      - "24481:6379"
+  core-1:
+    ports: !override
+      - "24190:8090"
+  core-2:
+    ports: !override
+      - "24290:8090"
+  core-3:
+    ports: !override
+      - "24390:8090"
+  edge-1:
+    ports: !override
+      - "24183:1883"
+  edge-2:
+    ports: !override
+      - "24283:1883"
+  edge-3:
+    ports: !override
+      - "24383:1883"

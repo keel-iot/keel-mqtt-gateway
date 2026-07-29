@@ -7,15 +7,16 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/keel-iot/keel-mqtt-gateway/internal/auth"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/dataplane"
 	keelraft "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/raft"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/connector"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/forwarder"
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/listeners"
-	"github.com/redis/go-redis/v9"
 )
 
 // Config holds broker-specific settings extracted from the global config.
@@ -46,11 +47,14 @@ type Config struct {
 	// that authenticate via X.509 for the first time. Empty = disabled.
 	AutoProvisioningURL string
 
-	// RedisClient is an optional pre-initialised Redis client.
+	// RedisClient is an optional pre-initialised Redis router (see
+	// internal/cluster/redisrouter — the single swappable indirection point
+	// every Redis consumer shares, so a primary failover updates all of
+	// them at once).
 	// When non-nil, a RedisSessionHook is installed to persist sessions,
 	// subscriptions, and in-flight messages across broker restarts.
 	// When nil the broker uses in-memory session state only.
-	RedisClient *redis.Client
+	RedisClient *redisrouter.Router
 
 	// ClusterRegistry and ClusterForwarder wire this node into a keel MQTT
 	// cluster (see internal/cluster): subscribe/unsubscribe/publish hooks
@@ -64,6 +68,12 @@ type Config struct {
 	// OutputConnector forwards device messages to external systems (e.g., Ditto via Hono Kafka).
 	// Nil = no external forwarding (default).
 	OutputConnector connector.OutputConnector
+
+	// SessionExpiryInterval bounds how long a persistent (clean_session=false)
+	// session's offline QoS1/2 queue, ACL identity (keelHook.OnClientExpired),
+	// and cluster routing entry survive after a disconnect with no reconnect.
+	// Zero uses mochi-mqtt's own default (effectively unbounded).
+	SessionExpiryInterval time.Duration
 }
 
 // parseClientAuth maps a TLSClientAuth config string to a tls.ClientAuthType.
@@ -85,19 +95,30 @@ func parseClientAuth(v string) (tls.ClientAuthType, error) {
 // listener was configured; callers that expose a readiness endpoint should gate
 // on its Ready() method — see cmd/server/main.go's /readyz handler.
 func New(cfg Config, provider auth.AuthProvider, fwd *forwarder.Forwarder, log *slog.Logger) (*mqtt.Server, *CertReloader, error) {
-	server := mqtt.New(&mqtt.Options{
+	opts := &mqtt.Options{
 		Logger: slog.New(slog.NewJSONHandler(os.Stdout, nil)),
 		// InlineClient is required for any server-side Server.Publish()
 		// call — used by the commander (platform→device push) and, new in
 		// this change, the cluster dataplane's inbound forward handler
 		// (see cmd/server/main.go's gForwarder.Subscribe wiring).
 		InlineClient: true,
-	})
+	}
+	if cfg.SessionExpiryInterval > 0 {
+		// Bounds how long mochi-mqtt keeps a persistent (clean_session=false)
+		// session's Client object — and therefore its offline QoS1/2 queue —
+		// alive after a disconnect with no reconnect. keelHook.OnClientExpired
+		// is called exactly when this elapses, which is where the matching
+		// ACL identity (h.clients) and cluster routing entry are torn down.
+		opts.Capabilities = mqtt.NewDefaultServerCapabilities()
+		opts.Capabilities.MaximumSessionExpiryInterval = uint32(cfg.SessionExpiryInterval.Seconds())
+	}
+	server := mqtt.New(opts)
 
 	// Redis session hook must be registered BEFORE the keel hook so that
 	// stored sessions are available by the time the auth hook runs.
+	var redisHook *RedisSessionHook
 	if cfg.RedisClient != nil {
-		redisHook := NewRedisSessionHook(cfg.RedisClient, log)
+		redisHook = NewRedisSessionHook(cfg.RedisClient, log)
 		if err := server.AddHook(redisHook, nil); err != nil {
 			return nil, nil, fmt.Errorf("add redis session hook: %w", err)
 		}
@@ -105,15 +126,22 @@ func New(cfg Config, provider auth.AuthProvider, fwd *forwarder.Forwarder, log *
 	}
 
 	hook := &keelHook{
-		provider:         provider,
-		tenantCache:      cfg.TenantConfigCache,
-		fwd:              fwd,
-		autoProvURL:      cfg.AutoProvisioningURL,
-		log:              log,
-		clusterRegistry:  cfg.ClusterRegistry,
-		clusterFwd:       cfg.ClusterFwd,
+		provider:        provider,
+		tenantCache:     cfg.TenantConfigCache,
+		fwd:             fwd,
+		autoProvURL:     cfg.AutoProvisioningURL,
+		log:             log,
+		clusterRegistry: cfg.ClusterRegistry,
+		clusterFwd:      cfg.ClusterFwd,
 		clusterNodeID:   cfg.ClusterNodeID,
 		outputConnector: cfg.OutputConnector,
+		server:          server,
+	}
+	// Typed nil guard: an interface value holding a nil *RedisSessionHook is
+	// itself non-nil, which would defeat OnSessionEstablish's `h.sessionStore
+	// == nil` check — only assign when Redis is actually configured.
+	if redisHook != nil {
+		hook.sessionStore = redisHook
 	}
 	if err := server.AddHook(hook, nil); err != nil {
 		return nil, nil, fmt.Errorf("add keel hook: %w", err)

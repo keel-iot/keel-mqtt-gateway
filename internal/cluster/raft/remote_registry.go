@@ -177,6 +177,30 @@ func (r *RemoteRegistry) EvaluateACL(clientID, username, topic string, action ac
 	return decision
 }
 
+// CurrentRedisPrimary is best-effort/any-peer, same rationale as
+// EvaluateACL/NodesFor: this read never needs the leader specifically.
+// Returns ok=false on total failure (unreachable cluster), same posture
+// as a fresh FSM with nothing designated yet — the caller
+// (internal/cluster/redisrouter's watcher) simply doesn't redirect until
+// a real answer comes back, rather than erroring.
+func (r *RemoteRegistry) CurrentRedisPrimary() (string, bool) {
+	var nodeID string
+	var found bool
+	err := r.forEachPeer(func(c pb.RegistryClient, ctx context.Context) error {
+		resp, err := c.CurrentRedisPrimary(ctx, &pb.CurrentRedisPrimaryRequest{})
+		if err != nil {
+			return err
+		}
+		nodeID = resp.GetNodeId()
+		found = resp.GetOk()
+		return nil
+	})
+	if err != nil {
+		return "", false
+	}
+	return nodeID, found
+}
+
 // ACLSnapshot fetches the full ACL state (custom roles, bindings, enabled
 // standard rulesets) from any reachable core node — used by ACLCache to
 // populate/refresh edge nodes' local ACL cache. Same any-peer rationale

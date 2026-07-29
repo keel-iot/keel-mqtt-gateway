@@ -47,6 +47,14 @@ type Registry interface {
 	// been superseded by a newer ClaimSession is a safe no-op.
 	ReleaseSession(clientID, nodeID string) error
 	EvaluateACL(clientID, username, topic string, action acl.Action) acl.Decision
+	// CurrentRedisPrimary returns the nodeID currently designated primary
+	// for the co-located Redis pair (see fsm.go's OpSetRedisPrimary), if
+	// one has ever been set. Part of the base interface (like
+	// EvaluateACL, not an optional capability) because every node running
+	// an internal/cluster/redisrouter.Router — core or edge — needs it to
+	// redirect after a failover, the same way every node needs
+	// EvaluateACL on every connect/publish.
+	CurrentRedisPrimary() (nodeID string, ok bool)
 }
 
 // ACLAdmin is an optional Registry extension for ACL mutations (role/
@@ -230,6 +238,24 @@ func (l *LocalRegistry) BindingsSnapshot() map[string][]string {
 // ruleset names for the management API.
 func (l *LocalRegistry) EnabledRulesetsSnapshot() []string {
 	return l.fsm.enabledRulesetsSnapshot()
+}
+
+// ── Redis primary designation ────────────────────────────────────────────
+// See fsm.go's OpSetRedisPrimary doc for why this is a raft command rather
+// than gossip state.
+
+// SetRedisPrimary designates nodeID as the current primary for the
+// co-located Redis pair. Called only by internal/cluster/membership's
+// failover loop, itself gated on IsLeader() — see that package.
+func (l *LocalRegistry) SetRedisPrimary(nodeID string) error {
+	_, err := l.apply(Command{Op: OpSetRedisPrimary, NodeID: nodeID})
+	return err
+}
+
+// CurrentRedisPrimary returns the nodeID currently designated primary, if
+// any has ever been set.
+func (l *LocalRegistry) CurrentRedisPrimary() (string, bool) {
+	return l.fsm.currentRedisPrimary()
 }
 
 // IsLeader reports whether the local raft node currently holds leadership.

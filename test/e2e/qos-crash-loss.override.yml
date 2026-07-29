@@ -1,0 +1,41 @@
+# Compose override used only by qos-crash-loss.sh: remaps every host port
+# docker-compose.core-edge-split.yml publishes so this e2e run never collides
+# with another already-running stack based on the same file, or with
+# olric-reconcile.sh's (28xxx) or backup-restore.sh's (19xxx/155xx/164xx) own
+# ranges — see those scripts' override files for the port-collision history.
+# redis-core-1/2/3 (one per co-located Redis instance — see risk #6 in
+# keel-design-doc.md) replace the single old "redis" service's remap.
+#
+# `!override` forces a wholesale replacement of each ports: list — compose
+# merges list-valued keys by concatenation otherwise.
+services:
+  postgres:
+    ports: !override
+      - "29532:5432"
+  redis-core-1:
+    ports: !override
+      - "29479:6379"
+  redis-core-2:
+    ports: !override
+      - "29480:6379"
+  redis-core-3:
+    ports: !override
+      - "29481:6379"
+  core-1:
+    ports: !override
+      - "29190:8090"
+  core-2:
+    ports: !override
+      - "29290:8090"
+  core-3:
+    ports: !override
+      - "29390:8090"
+  edge-1:
+    ports: !override
+      - "29183:1883"
+  edge-2:
+    ports: !override
+      - "29283:1883"
+  edge-3:
+    ports: !override
+      - "29383:1883"

@@ -19,19 +19,20 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Registry_Subscribe_FullMethodName      = "/keel.cluster.Registry/Subscribe"
-	Registry_Unsubscribe_FullMethodName    = "/keel.cluster.Registry/Unsubscribe"
-	Registry_NodesFor_FullMethodName       = "/keel.cluster.Registry/NodesFor"
-	Registry_ClaimSession_FullMethodName   = "/keel.cluster.Registry/ClaimSession"
-	Registry_ReleaseSession_FullMethodName = "/keel.cluster.Registry/ReleaseSession"
-	Registry_EvaluateACL_FullMethodName    = "/keel.cluster.Registry/EvaluateACL"
-	Registry_ACLSnapshot_FullMethodName    = "/keel.cluster.Registry/ACLSnapshot"
-	Registry_CreateRole_FullMethodName     = "/keel.cluster.Registry/CreateRole"
-	Registry_DeleteRole_FullMethodName     = "/keel.cluster.Registry/DeleteRole"
-	Registry_CreateBinding_FullMethodName  = "/keel.cluster.Registry/CreateBinding"
-	Registry_DeleteBinding_FullMethodName  = "/keel.cluster.Registry/DeleteBinding"
-	Registry_EnableRuleset_FullMethodName  = "/keel.cluster.Registry/EnableRuleset"
-	Registry_DisableRuleset_FullMethodName = "/keel.cluster.Registry/DisableRuleset"
+	Registry_Subscribe_FullMethodName           = "/keel.cluster.Registry/Subscribe"
+	Registry_Unsubscribe_FullMethodName         = "/keel.cluster.Registry/Unsubscribe"
+	Registry_NodesFor_FullMethodName            = "/keel.cluster.Registry/NodesFor"
+	Registry_ClaimSession_FullMethodName        = "/keel.cluster.Registry/ClaimSession"
+	Registry_ReleaseSession_FullMethodName      = "/keel.cluster.Registry/ReleaseSession"
+	Registry_EvaluateACL_FullMethodName         = "/keel.cluster.Registry/EvaluateACL"
+	Registry_ACLSnapshot_FullMethodName         = "/keel.cluster.Registry/ACLSnapshot"
+	Registry_CurrentRedisPrimary_FullMethodName = "/keel.cluster.Registry/CurrentRedisPrimary"
+	Registry_CreateRole_FullMethodName          = "/keel.cluster.Registry/CreateRole"
+	Registry_DeleteRole_FullMethodName          = "/keel.cluster.Registry/DeleteRole"
+	Registry_CreateBinding_FullMethodName       = "/keel.cluster.Registry/CreateBinding"
+	Registry_DeleteBinding_FullMethodName       = "/keel.cluster.Registry/DeleteBinding"
+	Registry_EnableRuleset_FullMethodName       = "/keel.cluster.Registry/EnableRuleset"
+	Registry_DisableRuleset_FullMethodName      = "/keel.cluster.Registry/DisableRuleset"
 )
 
 // RegistryClient is the client API for Registry service.
@@ -57,6 +58,16 @@ type RegistryClient interface {
 	// (internal/cluster/raft.ACLCache) instead of round-tripping
 	// EvaluateACL to a core node on every publish/subscribe.
 	ACLSnapshot(ctx context.Context, in *ACLSnapshotRequest, opts ...grpc.CallOption) (*ACLSnapshotResponse, error)
+	// CurrentRedisPrimary is a read, same fail-closed-safe/any-peer
+	// rationale as EvaluateACL/NodesFor — "who is the co-located Redis
+	// primary" is decided via raft.Apply (see internal/cluster/raft's
+	// OpSetRedisPrimary), not gossip, specifically so a leadership change
+	// mid-failover can't cause two nodes to disagree; but READING that
+	// decision never requires the leader specifically, same as any other
+	// FSM read here. Used by every node running a
+	// internal/cluster/redisrouter.Router (both core and edge) to redirect
+	// to a new primary's address after a failover.
+	CurrentRedisPrimary(ctx context.Context, in *CurrentRedisPrimaryRequest, opts ...grpc.CallOption) (*CurrentRedisPrimaryResponse, error)
 	// ACL mutation RPCs. Only used core-to-core, when a non-leader core node
 	// forwards a management-API-originated write to the current leader (the
 	// same fallback path ClaimSession/ReleaseSession already use) — edge
@@ -149,6 +160,16 @@ func (c *registryClient) ACLSnapshot(ctx context.Context, in *ACLSnapshotRequest
 	return out, nil
 }
 
+func (c *registryClient) CurrentRedisPrimary(ctx context.Context, in *CurrentRedisPrimaryRequest, opts ...grpc.CallOption) (*CurrentRedisPrimaryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CurrentRedisPrimaryResponse)
+	err := c.cc.Invoke(ctx, Registry_CurrentRedisPrimary_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *registryClient) CreateRole(ctx context.Context, in *CreateRoleRequest, opts ...grpc.CallOption) (*CreateRoleResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateRoleResponse)
@@ -232,6 +253,16 @@ type RegistryServer interface {
 	// (internal/cluster/raft.ACLCache) instead of round-tripping
 	// EvaluateACL to a core node on every publish/subscribe.
 	ACLSnapshot(context.Context, *ACLSnapshotRequest) (*ACLSnapshotResponse, error)
+	// CurrentRedisPrimary is a read, same fail-closed-safe/any-peer
+	// rationale as EvaluateACL/NodesFor — "who is the co-located Redis
+	// primary" is decided via raft.Apply (see internal/cluster/raft's
+	// OpSetRedisPrimary), not gossip, specifically so a leadership change
+	// mid-failover can't cause two nodes to disagree; but READING that
+	// decision never requires the leader specifically, same as any other
+	// FSM read here. Used by every node running a
+	// internal/cluster/redisrouter.Router (both core and edge) to redirect
+	// to a new primary's address after a failover.
+	CurrentRedisPrimary(context.Context, *CurrentRedisPrimaryRequest) (*CurrentRedisPrimaryResponse, error)
 	// ACL mutation RPCs. Only used core-to-core, when a non-leader core node
 	// forwards a management-API-originated write to the current leader (the
 	// same fallback path ClaimSession/ReleaseSession already use) — edge
@@ -274,6 +305,9 @@ func (UnimplementedRegistryServer) EvaluateACL(context.Context, *EvaluateACLRequ
 }
 func (UnimplementedRegistryServer) ACLSnapshot(context.Context, *ACLSnapshotRequest) (*ACLSnapshotResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ACLSnapshot not implemented")
+}
+func (UnimplementedRegistryServer) CurrentRedisPrimary(context.Context, *CurrentRedisPrimaryRequest) (*CurrentRedisPrimaryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CurrentRedisPrimary not implemented")
 }
 func (UnimplementedRegistryServer) CreateRole(context.Context, *CreateRoleRequest) (*CreateRoleResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateRole not implemented")
@@ -440,6 +474,24 @@ func _Registry_ACLSnapshot_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Registry_CurrentRedisPrimary_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CurrentRedisPrimaryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RegistryServer).CurrentRedisPrimary(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Registry_CurrentRedisPrimary_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RegistryServer).CurrentRedisPrimary(ctx, req.(*CurrentRedisPrimaryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Registry_CreateRole_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateRoleRequest)
 	if err := dec(in); err != nil {
@@ -582,6 +634,10 @@ var Registry_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ACLSnapshot",
 			Handler:    _Registry_ACLSnapshot_Handler,
+		},
+		{
+			MethodName: "CurrentRedisPrimary",
+			Handler:    _Registry_CurrentRedisPrimary_Handler,
 		},
 		{
 			MethodName: "CreateRole",

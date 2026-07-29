@@ -95,6 +95,13 @@ type Config struct {
 	// Only affects the file auth provider (AuthBackend == "file").
 	CredentialCacheTTL time.Duration
 
+	// SessionExpiryInterval bounds how long a persistent (clean_session=false)
+	// MQTT session's offline QoS1/2 queue, ACL identity, and cluster routing
+	// entry are kept alive after a client disconnects without reconnecting.
+	// Passed to mochi-mqtt as Options.Capabilities.MaximumSessionExpiryInterval
+	// — see internal/broker.New and keelHook.OnClientExpired. Defaults to 24h.
+	SessionExpiryInterval time.Duration
+
 	// RedisAddr is the address of the Redis server used for session persistence
 	// and data-volume rate limiting.  Empty string disables Redis entirely.
 	RedisAddr string
@@ -234,6 +241,13 @@ func Load() (*Config, error) {
 		}
 	}
 
+	sessionExpiryInterval := 24 * time.Hour
+	if v := os.Getenv("SESSION_EXPIRY_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			sessionExpiryInterval = d
+		}
+	}
+
 	return &Config{
 		MQTTPort:              mqttPort,
 		MQTTTLSPort:           mqttTLSPort,
@@ -256,6 +270,7 @@ func Load() (*Config, error) {
 		AutoProvisioningURL:   os.Getenv("AUTO_PROV_URL"),
 		TenantCacheTTL:        tenantCacheTTL,
 		CredentialCacheTTL:    credCacheTTL,
+		SessionExpiryInterval: sessionExpiryInterval,
 		RedisAddr:             os.Getenv("REDIS_ADDR"),
 		RedisPassword:         os.Getenv("REDIS_PASSWORD"),
 		AuthBackend:           os.Getenv("AUTH_BACKEND"),

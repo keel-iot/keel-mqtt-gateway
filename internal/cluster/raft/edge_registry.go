@@ -80,6 +80,15 @@ func (e *EdgeRegistry) EvaluateACL(clientID, username, topic string, action acl.
 	return e.aclCache.EvaluateACL(clientID, username, topic, action)
 }
 
+// CurrentRedisPrimary forwards to RemoteRegistry — no local cache for
+// this the way EvaluateACL has ACLCache, since it's a single small value
+// polled directly by internal/cluster/redisrouter's watcher rather than
+// consulted per-message; a per-poll gRPC round-trip is cheap enough not
+// to need one.
+func (e *EdgeRegistry) CurrentRedisPrimary() (string, bool) {
+	return e.remote.CurrentRedisPrimary()
+}
+
 // Close releases the router and ACL cache's background goroutines/store
 // connection. Does not close remote (RemoteRegistry owns no background
 // resources — just lazily-dialed gRPC connections).
