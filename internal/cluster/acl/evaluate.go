@@ -49,7 +49,7 @@ func Evaluate(clientID, username, topic string, action Action, enabledRulesets [
 		if !r.allowsAction(action) {
 			return
 		}
-		if !matchTopic(r.resolvedFilter(clientID, username), topic) {
+		if !MatchTopic(r.resolvedFilter(clientID, username), topic) {
 			return
 		}
 		s := specificity(r.TopicFilter)

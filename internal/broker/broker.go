@@ -130,18 +130,23 @@ func New(cfg Config, provider auth.AuthProvider, fwd *forwarder.Forwarder, log *
 	// Redis session hook must be registered BEFORE the keel hook so that
 	// stored sessions are available by the time the auth hook runs.
 	var redisHook *RedisSessionHook
+	var retainedStore *RetainedStore
 	if cfg.RedisClient != nil {
 		redisHook = NewRedisSessionHook(cfg.RedisClient, log)
 		if err := server.AddHook(redisHook, nil); err != nil {
 			return nil, nil, fmt.Errorf("add redis session hook: %w", err)
 		}
 		log.Info("mqtt-gateway: Redis session persistence enabled")
+
+		retainedStore = NewRetainedStore(cfg.RedisClient)
+		log.Info("mqtt-gateway: Redis-backed retained messages enabled")
 	}
 
 	hook := &keelHook{
 		provider:        provider,
 		tenantCache:     cfg.TenantConfigCache,
 		jwksCache:       cfg.JWKSCache,
+		retainedStore:   retainedStore,
 		fwd:             fwd,
 		autoProvURL:     cfg.AutoProvisioningURL,
 		log:             log,

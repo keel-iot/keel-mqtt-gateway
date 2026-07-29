@@ -2,7 +2,7 @@ package acl
 
 import "strings"
 
-// matchTopic reports whether filter (an MQTT subscription filter, with +/#
+// MatchTopic reports whether filter (an MQTT subscription filter, with +/#
 // wildcards) matches topic (a concrete publish/subscribe topic that itself
 // may contain + or # in this ACL context, since we also match subscribe
 // filters requested by clients against rule filters — MQTT allows a client
@@ -13,7 +13,11 @@ import "strings"
 // mochi-mqtt's packets.TopicsIndex): "#" only valid as the last filter
 // segment and matches it plus everything after; "+" matches exactly one
 // segment; a leading "$" topic is never matched by a top-level wildcard.
-func matchTopic(filter, topic string) bool {
+//
+// Exported for reuse outside this package (e.g. internal/broker's
+// Redis-backed retained-message wildcard matching) — same semantics,
+// no reason to duplicate it.
+func MatchTopic(filter, topic string) bool {
 	if filter == topic {
 		return true
 	}

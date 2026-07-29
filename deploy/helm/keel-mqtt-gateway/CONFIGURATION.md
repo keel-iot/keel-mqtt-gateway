@@ -297,3 +297,12 @@ kubectl exec <release>-core-0 -- \
   before its cluster state has fully converged on that front.
 - No bundled CronJob for scheduled backups (see section 9) — manual or
   external scheduling for now.
+- Retained messages are cluster-wide (Redis-backed) only when
+  `REDIS_ADDR` is configured; without Redis they fall back to
+  mochi-mqtt's own per-node, in-memory retained store (a subscriber only
+  sees retained messages published on that exact node, and they're lost
+  on restart). With Redis configured, wildcard retained lookups
+  (`SUBSCRIBE state/#`) scan the full retained-topic index — fine at
+  typical volumes, a known bottleneck at tens of thousands of unique
+  retained topics. Retained backfill from Redis is also QoS 0 only,
+  regardless of the subscriber's requested QoS.

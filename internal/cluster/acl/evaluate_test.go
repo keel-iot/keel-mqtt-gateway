@@ -19,9 +19,9 @@ func TestMatchTopic(t *testing.T) {
 		{"#", "$SYS/foo", false}, // top-level wildcard must not match $ topics
 	}
 	for _, c := range cases {
-		got := matchTopic(c.filter, c.topic)
+		got := MatchTopic(c.filter, c.topic)
 		if got != c.want {
-			t.Errorf("matchTopic(%q, %q) = %v, want %v", c.filter, c.topic, got, c.want)
+			t.Errorf("MatchTopic(%q, %q) = %v, want %v", c.filter, c.topic, got, c.want)
 		}
 	}
 }

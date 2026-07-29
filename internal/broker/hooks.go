@@ -38,6 +38,7 @@ type keelHook struct {
 	provider        auth.AuthProvider
 	tenantCache     *auth.TenantConfigCache
 	jwksCache       *auth.JWKSCache
+	retainedStore   *RetainedStore
 	fwd             *forwarder.Forwarder
 	autoProvURL     string
 	log             *slog.Logger
@@ -118,6 +119,7 @@ func (h *keelHook) Provides(b byte) bool {
 		byte(mqtt.OnClientExpired),
 		byte(mqtt.OnSubscribed),
 		byte(mqtt.OnUnsubscribed),
+		byte(mqtt.OnRetainMessage),
 	}, []byte{b})
 }
 
@@ -802,15 +804,85 @@ func (h *keelHook) unsubscribeClusterFilters(cl *mqtt.Client) {
 // OnSubscribed registers this node in the cluster routing table for every
 // filter a client just subscribed to, so OnPublish on any other node
 // knows to forward matching messages here. No-op when running standalone
-// (clusterRegistry == nil).
+// (clusterRegistry == nil). Also triggers Redis-backed retained-message
+// backfill (see deliverRetainedBackfill) when configured.
 func (h *keelHook) OnSubscribed(cl *mqtt.Client, pk packets.Packet, _ []byte) {
-	if h.clusterRegistry == nil {
+	if h.clusterRegistry != nil {
+		for _, f := range pk.Filters {
+			if err := h.clusterRegistry.Subscribe(f.Filter, h.clusterNodeID); err != nil {
+				h.log.Error("cluster: subscribe failed", "topic", f.Filter, "error", err)
+			}
+		}
+	}
+	if h.retainedStore != nil {
+		// Dispatched async: mochi-mqtt itself sends SUBACK, then its own
+		// (local-only) retained messages, synchronously right after this
+		// hook returns. Running our Redis-backed backfill inline here would
+		// risk it reaching the client before SUBACK; async also means a
+		// slow/unavailable Redis never blocks the subscribe path.
+		filters := append([]packets.Subscription(nil), pk.Filters...)
+		go h.deliverRetainedBackfill(cl, filters)
+	}
+}
+
+// deliverRetainedBackfill sends retained messages from Redis that mochi's
+// own local (per-node, in-memory) retained store did NOT already deliver
+// for these filters — i.e. messages retained on a different node than the
+// one this client happens to be connected to, or retained before this
+// node's last restart. Local matches are excluded via h.server.Topics so a
+// subscriber never receives the same retained message twice. QoS0 only —
+// full QoS1/2 delivery would require mochi-mqtt's private inflight/packet-ID
+// machinery, which isn't reachable from this package; a known, deliberate
+// V1 simplification (see CONFIGURATION.md).
+func (h *keelHook) deliverRetainedBackfill(cl *mqtt.Client, filters []packets.Subscription) {
+	ctx := context.Background()
+	for _, f := range filters {
+		if mqtt.IsSharedFilter(f.Filter) {
+			continue // 4.8.2 non-normative: shared subscriptions get no retained messages on subscribe
+		}
+
+		var exclude map[string]struct{}
+		if h.server != nil {
+			local := h.server.Topics.Messages(f.Filter)
+			exclude = make(map[string]struct{}, len(local))
+			for _, pk := range local {
+				exclude[pk.TopicName] = struct{}{}
+			}
+		}
+
+		msgs, err := h.retainedStore.Match(ctx, f.Filter, exclude)
+		if err != nil {
+			h.log.Error("retained: match failed", "client_id", cl.ID, "filter", f.Filter, "error", err)
+			continue
+		}
+		for _, m := range msgs {
+			if !h.OnACLCheck(cl, m.Topic, false) {
+				continue
+			}
+			pk := packets.Packet{
+				FixedHeader: packets.FixedHeader{Type: packets.Publish, Qos: 0, Retain: true},
+				TopicName:   m.Topic,
+				Payload:     m.Payload,
+				Created:     time.Now().Unix(),
+			}
+			if err := cl.WritePacket(pk); err != nil {
+				h.log.Debug("retained: write to client failed", "client_id", cl.ID, "topic", m.Topic, "error", err)
+			}
+		}
+	}
+}
+
+// OnRetainMessage mirrors every retained publish (and retained Will, on
+// disconnect — mochi-mqtt calls this hook for both) into Redis, so it
+// survives this node's restart and is visible to every other node's
+// deliverRetainedBackfill. No-op when Redis isn't configured (retained
+// then behaves exactly as vanilla mochi-mqtt: per-node, in-memory only).
+func (h *keelHook) OnRetainMessage(_ *mqtt.Client, pk packets.Packet, _ int64) {
+	if h.retainedStore == nil {
 		return
 	}
-	for _, f := range pk.Filters {
-		if err := h.clusterRegistry.Subscribe(f.Filter, h.clusterNodeID); err != nil {
-			h.log.Error("cluster: subscribe failed", "topic", f.Filter, "error", err)
-		}
+	if err := h.retainedStore.Set(context.Background(), pk.TopicName, pk.Payload); err != nil {
+		h.log.Error("retained: persist to redis failed", "topic", pk.TopicName, "error", err)
 	}
 }
 
