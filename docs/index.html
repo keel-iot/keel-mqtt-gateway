@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keel MQTT Gateway - Cloud-native MQTT Broker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="icon" href="data:,">
+    <style>
+        body { background-color: #111713; color: #ffffff; }
+        .text-keel-green { color: #5DCAA5; }
+        .text-keel-accent { color: #9FE1CB; }
+        .btn-primary { background-color: #5DCAA5; color: #111713; }
+        .btn-primary:hover { background-color: #9FE1CB; }
+    </style>
+</head>
+<body class="font-sans antialiased">
+
+    <!-- Hero Section -->
+    <header class="container mx-auto px-6 py-16 text-center">
+        <div class="flex justify-center mb-6">
+            <svg viewBox="20 15 100 130" xmlns="http://www.w3.org/2000/svg" class="w-20 h-24" role="img" aria-label="Keel logo">
+                <line x1="44" y1="28" x2="44" y2="132" stroke="#5DCAA5" stroke-width="3" stroke-linecap="round"/>
+                <line x1="44" y1="80" x2="90" y2="28" stroke="#5DCAA5" stroke-width="3" stroke-linecap="round"/>
+                <line x1="44" y1="80" x2="94" y2="132" stroke="#5DCAA5" stroke-width="3" stroke-linecap="round"/>
+                <line x1="90" y1="28" x2="94" y2="132" stroke="#5DCAA5" stroke-width="1.2" stroke-linecap="round" stroke-dasharray="4,3" opacity="0.4"/>
+                <line x1="67" y1="54" x2="106" y2="46" stroke="#5DCAA5" stroke-width="1.2" stroke-linecap="round" stroke-dasharray="4,3" opacity="0.3"/>
+                <circle cx="44" cy="28" r="5.5" fill="#5DCAA5"/>
+                <circle cx="44" cy="80" r="5.5" fill="#5DCAA5"/>
+                <circle cx="44" cy="132" r="5.5" fill="#5DCAA5"/>
+                <circle cx="90" cy="28" r="5.5" fill="#5DCAA5"/>
+                <circle cx="94" cy="132" r="5.5" fill="#5DCAA5"/>
+                <circle cx="67" cy="54" r="3.5" fill="#9FE1CB" opacity="0.7"/>
+                <circle cx="106" cy="46" r="3.5" fill="#9FE1CB" opacity="0.5"/>
+                <circle cx="44" cy="80" r="11" fill="none" stroke="#5DCAA5" stroke-width="0.8" opacity="0.3"/>
+                <circle cx="44" cy="80" r="17" fill="none" stroke="#5DCAA5" stroke-width="0.5" opacity="0.15"/>
+            </svg>
+        </div>
+        <h1 class="text-5xl font-bold mb-4">Keel MQTT Gateway</h1>
+        <p class="text-xl text-gray-400 mb-8">Cloud-native MQTT Broker for Kubernetes</p>
+        <div class="space-x-4">
+            <a href="https://github.com/keel-iot/keel-mqtt-gateway" target="_blank" class="btn-primary px-6 py-3 rounded-md font-semibold transition">Get Started</a>
+            <a href="https://github.com/keel-iot/keel-mqtt-gateway/blob/main/docs/keel-design-doc.md" target="_blank" class="border border-gray-600 text-white px-6 py-3 rounded-md font-semibold hover:bg-gray-800 transition">Read the Docs</a>
+        </div>
+    </header>
+
+    <!-- Quick Start Section -->
+    <section class="container mx-auto px-6 py-12">
+        <h2 class="text-3xl font-bold text-center mb-8">Quick Start</h2>
+        <div class="bg-gray-900 rounded-lg p-6 max-w-3xl mx-auto font-mono text-sm text-gray-300 overflow-x-auto">
+            <div class="mb-4"><span class="text-keel-green">#</span> git clone https://github.com/keel-iot/keel-mqtt-gateway.git</div>
+            <div class="mb-4"><span class="text-keel-green">#</span> cd keel-mqtt-gateway</div>
+            <div class="mb-4"><span class="text-keel-green">#</span> docker-compose -f docker-compose.core-edge-split.yml up -d</div>
+            <div><span class="text-keel-green">#</span> mosquitto_pub -h localhost -p 1883 -t "telemetry/device-1" -m "Hello Keel"</div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section class="container mx-auto px-6 py-12">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-8 text-center">
+            <div class="p-6 border border-gray-800 rounded-lg">
+                <h3 class="text-xl font-semibold mb-2 text-keel-green">Core/Edge Architecture</h3>
+                <p class="text-gray-400">Stateless edge nodes scale horizontally via HPA, while stateful core nodes maintain cluster state.</p>
+            </div>
+            <div class="p-6 border border-gray-800 rounded-lg">
+                <h3 class="text-xl font-semibold mb-2 text-keel-green">CP/AP Split</h3>
+                <p class="text-gray-400">Raft for session ownership (Strong Consistency). Olric for routing (High Availability).</p>
+            </div>
+            <div class="p-6 border border-gray-800 rounded-lg">
+                <h3 class="text-xl font-semibold mb-2 text-keel-green">Direct gRPC Data Plane</h3>
+                <p class="text-gray-400">Messages forwarded directly between edge nodes, bypassing control plane for low latency.</p>
+            </div>
+            <div class="p-6 border border-gray-800 rounded-lg">
+                <h3 class="text-xl font-semibold mb-2 text-keel-green">QoS Persistence</h3>
+                <p class="text-gray-400">Redis co-located on core nodes (Primary+Replica) ensures message durability.</p>
+            </div>
+            <div class="p-6 border border-gray-800 rounded-lg">
+                <h3 class="text-xl font-semibold mb-2 text-keel-green">Kafka/Ditto Integration</h3>
+                <p class="text-gray-400">Built-in connectors to forward telemetry to Redpanda/Kafka with Hono/Ditto schemas.</p>
+            </div>
+            <div class="p-6 border border-gray-800 rounded-lg">
+                <h3 class="text-xl font-semibold mb-2 text-keel-green">mTLS & Hot Reload</h3>
+                <p class="text-gray-400">Native TLS termination with certificate hot-reloading. No pod restarts needed.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="container mx-auto px-6 py-8 text-center text-gray-500 border-t border-gray-800 mt-12">
+        <p>Apache 2.0 License</p>
+        <p class="mt-2"><a href="https://github.com/keel-iot/keel-mqtt-gateway" target="_blank" class="hover:text-keel-green">GitHub Repository</a></p>
+    </footer>
+
+</body>
+</html>
