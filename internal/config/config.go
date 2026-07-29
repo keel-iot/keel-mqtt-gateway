@@ -90,6 +90,11 @@ type Config struct {
 	// Defaults to 5 minutes.
 	TenantCacheTTL time.Duration
 
+	// JWKSCacheTTL controls how long a tenant's fetched JWKS is cached
+	// before a refresh is attempted (kid misses still trigger an immediate
+	// refresh regardless of TTL). Defaults to 5 minutes.
+	JWKSCacheTTL time.Duration
+
 	// CredentialCacheTTL controls how long successful password validations are cached
 	// to reduce bcrypt load during reconnect storms. Defaults to 30 seconds.
 	// Only affects the file auth provider (AuthBackend == "file").
@@ -234,6 +239,13 @@ func Load() (*Config, error) {
 		}
 	}
 
+	jwksCacheTTL := 5 * time.Minute
+	if v := os.Getenv("JWKS_CACHE_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			jwksCacheTTL = d
+		}
+	}
+
 	credCacheTTL := 30 * time.Second
 	if v := os.Getenv("CREDENTIAL_CACHE_TTL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -269,6 +281,7 @@ func Load() (*Config, error) {
 		MetricsAddr:           metricsAddr,
 		AutoProvisioningURL:   os.Getenv("AUTO_PROV_URL"),
 		TenantCacheTTL:        tenantCacheTTL,
+		JWKSCacheTTL:          jwksCacheTTL,
 		CredentialCacheTTL:    credCacheTTL,
 		SessionExpiryInterval: sessionExpiryInterval,
 		RedisAddr:             os.Getenv("REDIS_ADDR"),

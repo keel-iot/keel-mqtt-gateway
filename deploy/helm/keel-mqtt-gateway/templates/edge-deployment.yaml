@@ -149,6 +149,8 @@ spec:
               value: {{ .Values.sessionExpiryInterval | quote }}
             - name: TENANT_CACHE_TTL
               value: {{ .Values.tenantCacheTTL | quote }}
+            - name: JWKS_CACHE_TTL
+              value: {{ .Values.jwksCacheTTL | quote }}
             {{- if .Values.autoProvisioningUrl }}
             - name: AUTO_PROV_URL
               value: {{ .Values.autoProvisioningUrl | quote }}

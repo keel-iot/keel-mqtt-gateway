@@ -247,6 +247,7 @@ logLevel: info
 otlpEndpoint: "" # empty disables tracing
 sessionExpiryInterval: 24h
 tenantCacheTTL: 5m
+jwksCacheTTL: 5m
 autoProvisioningUrl: ""
 
 serviceAccount:

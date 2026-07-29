@@ -547,6 +547,9 @@ func runServer() {
 	// ── Tenant config cache ───────────────────────────────────────────────────
 	tenantCache := auth.NewTenantConfigCache(pool, cfg.TenantCacheTTL)
 
+	// ── JWKS cache (per-tenant JWT key rotation, e.g. Clavex) ─────────────────
+	jwksCache := auth.NewJWKSCache(cfg.JWKSCacheTTL)
+
 	// Re-init tracer with tenant-aware sampler now that tenantCache is ready.
 	if cfg.OTLPEndpoint != "" {
 		_ = tracerShutdown(context.Background()) // close the no-op provider
@@ -919,7 +922,14 @@ func runServer() {
 	metricsMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	metricsMux.HandleFunc("/readyz", newReadyzHandler(cf.tlsEnabled, &certReloader))
+	// currentRedisPrimary stays nil outside cluster mode (clusterRegistry
+	// nil): readyz's Redis check then reduces to "can we Ping it", which is
+	// still the right check for the single-node case.
+	var currentRedisPrimary func() (string, bool)
+	if clusterRegistry != nil {
+		currentRedisPrimary = clusterRegistry.CurrentRedisPrimary
+	}
+	metricsMux.HandleFunc("/readyz", newReadyzHandler(cf.tlsEnabled, &certReloader, rdb, currentRedisPrimary))
 	// TEMPORARY diagnostic instrumentation for the devicesim churn-scenario
 	// memory investigation (2026-07-24): mounts net/http/pprof on the same
 	// metrics listener, gated behind an env var so it's a no-op unless
@@ -1046,6 +1056,7 @@ func runServer() {
 			TLSCertDir:            cf.tlsCertDir,
 			TLSClientAuth:         cf.tlsClientAuth,
 			TenantConfigCache:     tenantCache,
+			JWKSCache:             jwksCache,
 			AutoProvisioningURL:   cfg.AutoProvisioningURL,
 			RedisClient:           rdb,
 			ClusterRegistry:       clusterRegistry,
@@ -1187,7 +1198,7 @@ func runServer() {
 		}
 
 		// ── HTTP adapter ────────────────────────────────────────────────────
-		httpHandler := httpapi.NewWithCache(validator, tenantCache, fwd, log)
+		httpHandler := httpapi.NewWithCache(validator, tenantCache, jwksCache, fwd, log)
 		httpServer = &http.Server{
 			Addr:         fmt.Sprintf(":%d", cfg.HTTPPort),
 			Handler:      httpHandler.Router(),

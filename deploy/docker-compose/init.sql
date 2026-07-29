@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS devices.tenant_gateway_config (
     jwt_auth_enabled       BOOLEAN NOT NULL DEFAULT false,
     cert_auth_enabled      BOOLEAN NOT NULL DEFAULT false,
     jwt_public_key_pem     TEXT,
+    jwks_url               TEXT,
     trusted_ca_pems        TEXT[],
     auto_provisioning      BOOLEAN NOT NULL DEFAULT false,
     max_connections        INT,

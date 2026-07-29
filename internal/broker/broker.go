@@ -44,6 +44,12 @@ type Config struct {
 	// When nil, all tenant lookups return the safe default (password-auth only).
 	TenantConfigCache *auth.TenantConfigCache
 
+	// JWKSCache resolves per-tenant JWT signing keys by "kid" for tenants
+	// configured with TenantGatewayConfig.JWKSURL instead of a static PEM.
+	// Nil disables JWKS-based auth — tenants with JWKSURL set will fail every
+	// JWT connect until this is configured.
+	JWKSCache *auth.JWKSCache
+
 	// AutoProvisioningURL is the device-service base URL used to register devices
 	// that authenticate via X.509 for the first time. Empty = disabled.
 	AutoProvisioningURL string
@@ -135,6 +141,7 @@ func New(cfg Config, provider auth.AuthProvider, fwd *forwarder.Forwarder, log *
 	hook := &keelHook{
 		provider:        provider,
 		tenantCache:     cfg.TenantConfigCache,
+		jwksCache:       cfg.JWKSCache,
 		fwd:             fwd,
 		autoProvURL:     cfg.AutoProvisioningURL,
 		log:             log,

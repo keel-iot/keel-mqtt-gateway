@@ -14,8 +14,13 @@ type TenantGatewayConfig struct {
 	PasswordAuthEnabled bool
 	JWTAuthEnabled      bool
 	CertAuthEnabled     bool
-	JWTPublicKeyPEM     string   // RSA or EC public key in PEM format
-	TrustedCAPEMs       []string // PEM CA certificates for X.509 device auth
+	JWTPublicKeyPEM     string // RSA or EC public key in PEM format — static key, used when JWKSURL is empty
+	// JWKSURL, when set, takes precedence over JWTPublicKeyPEM: JWTs are
+	// verified by resolving their "kid" header against this tenant's JWKS
+	// endpoint (see JWKSCache) instead of a single static key. Enables key
+	// rotation (e.g. Clavex-issued device tokens) without a config update.
+	JWKSURL       string
+	TrustedCAPEMs []string // PEM CA certificates for X.509 device auth
 	AutoProvisioning    bool
 	MaxConnections      int   // 0 = unlimited
 	MaxBytesPerDay      int64 // 0 = unlimited
@@ -87,6 +92,7 @@ SELECT
     jwt_auth_enabled,
     cert_auth_enabled,
     COALESCE(jwt_public_key_pem, ''),
+    COALESCE(jwks_url, ''),
     COALESCE(trusted_ca_pems, '{}'),
     auto_provisioning,
     COALESCE(max_connections, 0),
@@ -106,6 +112,7 @@ func (c *TenantConfigCache) load(ctx context.Context, tenantID string) (*TenantG
 		&cfg.JWTAuthEnabled,
 		&cfg.CertAuthEnabled,
 		&cfg.JWTPublicKeyPEM,
+		&cfg.JWKSURL,
 		&cfg.TrustedCAPEMs,
 		&cfg.AutoProvisioning,
 		&cfg.MaxConnections,

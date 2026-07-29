@@ -34,6 +34,7 @@ import (
 type Handler struct {
 	validator   *auth.Validator
 	tenantCache *auth.TenantConfigCache
+	jwksCache   *auth.JWKSCache
 	fwd         *forwarder.Forwarder
 	log         *slog.Logger
 }
@@ -46,12 +47,14 @@ func New(validator *auth.Validator, fwd *forwarder.Forwarder, log *slog.Logger) 
 	return &Handler{validator: validator, fwd: fwd, log: log}
 }
 
-// NewWithCache creates a Handler that also supports per-tenant JWT authentication.
-func NewWithCache(validator *auth.Validator, cache *auth.TenantConfigCache, fwd *forwarder.Forwarder, log *slog.Logger) *Handler {
+// NewWithCache creates a Handler that also supports per-tenant JWT
+// authentication. jwks may be nil if no tenant uses JWKSURL — tenants that
+// do will fail JWT auth until it's provided.
+func NewWithCache(validator *auth.Validator, cache *auth.TenantConfigCache, jwks *auth.JWKSCache, fwd *forwarder.Forwarder, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{validator: validator, tenantCache: cache, fwd: fwd, log: log}
+	return &Handler{validator: validator, tenantCache: cache, jwksCache: jwks, fwd: fwd, log: log}
 }
 
 // Router returns the chi router for the HTTP adapter.
@@ -148,7 +151,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (*auth.De
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return nil, nil, false
 		}
-		if jwtErr := auth.ValidateJWT(tenantID, deviceID, []byte(token), cfg.JWTPublicKeyPEM); jwtErr != nil {
+		if jwtErr := auth.ValidateJWT(r.Context(), tenantID, deviceID, []byte(token), cfg, h.jwksCache); jwtErr != nil {
 			h.log.Warn("http-adapter: JWT validation failed", "device", deviceID, "error", jwtErr)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return nil, nil, false

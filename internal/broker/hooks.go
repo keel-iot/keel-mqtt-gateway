@@ -37,6 +37,7 @@ type keelHook struct {
 
 	provider        auth.AuthProvider
 	tenantCache     *auth.TenantConfigCache
+	jwksCache       *auth.JWKSCache
 	fwd             *forwarder.Forwarder
 	autoProvURL     string
 	log             *slog.Logger
@@ -354,7 +355,7 @@ func (h *keelHook) authenticate(ctx context.Context, cl *mqtt.Client, pk packets
 			return nil, method, false
 		}
 		start := time.Now()
-		if err := auth.ValidateJWTFromClientID(tid, did, password, tenantCfg.JWTPublicKeyPEM); err != nil {
+		if err := auth.ValidateJWTFromClientID(ctx, tid, did, password, tenantCfg, h.jwksCache); err != nil {
 			h.log.Warn("mqtt-gateway: JWT auth failed (client-id mode)", "tenant", tid, "device", did, "error", err)
 			telemetry.ConnectionsTotal.WithLabelValues(tid, "auth_failed").Inc()
 			telemetry.AuthDuration.WithLabelValues(tid, string(method)).Observe(time.Since(start).Seconds())
@@ -397,7 +398,7 @@ func (h *keelHook) authenticate(ctx context.Context, cl *mqtt.Client, pk packets
 			telemetry.ConnectionsTotal.WithLabelValues(tenantID, "auth_failed").Inc()
 			return nil, method, false
 		}
-		if err := auth.ValidateJWT(tenantID, deviceID, password, tenantCfg.JWTPublicKeyPEM); err != nil {
+		if err := auth.ValidateJWT(ctx, tenantID, deviceID, password, tenantCfg, h.jwksCache); err != nil {
 			h.log.Warn("mqtt-gateway: JWT auth failed", "tenant", tenantID, "device", deviceID, "error", err)
 			telemetry.ConnectionsTotal.WithLabelValues(tenantID, "auth_failed").Inc()
 			return nil, method, false

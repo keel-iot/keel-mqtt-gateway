@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/x509"
@@ -11,6 +12,16 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// ErrAuthNotConfigured is returned when a tenant has JWT auth enabled but
+// neither JWKSURL nor JWTPublicKeyPEM is set — there is no key source to
+// verify against.
+var ErrAuthNotConfigured = errors.New("jwt: no key source configured for tenant")
+
+// ErrInvalidKid is returned when a JWKS-configured tenant's token carries a
+// "kid" that could not be resolved to a key — unknown kid, or the JWKS
+// refresh itself failed with no cached fallback available.
+var ErrInvalidKid = errors.New("jwt: kid not found in JWKS")
 
 // AuthMethod distinguishes how a device presented its credentials.
 type AuthMethod string
@@ -30,7 +41,10 @@ func DetectAuthMethod(password []byte) AuthMethod {
 	return AuthMethodPassword
 }
 
-// ValidateJWT verifies a device-signed JWT against the tenant's public key PEM.
+// ValidateJWT verifies a device-signed JWT against the tenant's configured
+// key source — JWKS (per-kid, when cfg.JWKSURL is set) or a single static
+// PEM key (cfg.JWTPublicKeyPEM) otherwise. Exactly one of the two must be
+// configured; jwks may be nil only when cfg.JWKSURL is empty.
 //
 // Expected claims:
 //   - sub: <deviceID>
@@ -41,63 +55,12 @@ func DetectAuthMethod(password []byte) AuthMethod {
 //
 // Supported algorithms: RS256/384/512 (RSA) and ES256/384/512 (EC).
 // Returns nil on success, a descriptive error on failure.
-func ValidateJWT(tenantID, deviceID string, tokenBytes []byte, pubKeyPEM string) error {
-	if pubKeyPEM == "" {
-		return errors.New("jwt: no public key configured for tenant")
-	}
-
-	pubKey, err := parsePublicKeyPEM(pubKeyPEM)
+func ValidateJWT(ctx context.Context, tenantID, deviceID string, tokenBytes []byte, cfg *TenantGatewayConfig, jwks *JWKSCache) error {
+	keyFunc, err := jwtKeyFunc(ctx, tenantID, cfg, jwks)
 	if err != nil {
-		return fmt.Errorf("jwt: invalid tenant public key: %w", err)
+		return err
 	}
-
-	parsed, err := jwt.ParseWithClaims(
-		string(tokenBytes),
-		&jwt.MapClaims{},
-		func(t *jwt.Token) (any, error) {
-			switch pubKey.(type) {
-			case *rsa.PublicKey:
-				if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
-					return nil, fmt.Errorf("jwt: unexpected signing method %q, expected RSA", t.Header["alg"])
-				}
-			case *ecdsa.PublicKey:
-				if _, ok := t.Method.(*jwt.SigningMethodECDSA); !ok {
-					return nil, fmt.Errorf("jwt: unexpected signing method %q, expected ECDSA", t.Header["alg"])
-				}
-			default:
-				return nil, fmt.Errorf("jwt: unsupported key type %T", pubKey)
-			}
-			return pubKey, nil
-		},
-		jwt.WithAudience("keel-gateway"),
-		jwt.WithIssuedAt(),
-		jwt.WithExpirationRequired(),
-	)
-	if err != nil {
-		return fmt.Errorf("jwt: %w", err)
-	}
-	if !parsed.Valid {
-		return errors.New("jwt: token is not valid")
-	}
-
-	claims, ok := parsed.Claims.(*jwt.MapClaims)
-	if !ok {
-		return errors.New("jwt: cannot read claims")
-	}
-
-	// sub must match the connecting device
-	sub, _ := claims.GetSubject()
-	if sub != deviceID {
-		return fmt.Errorf("jwt: sub %q does not match device %q", sub, deviceID)
-	}
-
-	// tid custom claim must match tenantID
-	tid, _ := (*claims)["tid"].(string)
-	if tid != "" && tid != tenantID {
-		return fmt.Errorf("jwt: tid %q does not match tenant %q", tid, tenantID)
-	}
-
-	return nil
+	return validateJWTClaims(tokenBytes, keyFunc, tenantID, deviceID, true)
 }
 
 // VerifyCertificate parses the device/tenant identity from the certificate
@@ -162,41 +125,89 @@ func ParseClientIdentifier(clientID string) (tenantID, deviceID string, ok bool)
 
 // ValidateJWTFromClientID verifies a JWT in the Google IoT Core client-id
 // mode where tenantID and deviceID come from the MQTT client-id field rather
-// than from the username.
+// than from the username. Key resolution (JWKS vs static PEM) is identical
+// to ValidateJWT.
 //
 // Differences from ValidateJWT:
 //   - The "tid" claim is NOT required (tenantID is already authenticated via the
 //     client-id prefix "tenants/<tid>/...").
 //   - The "sub" claim is checked when present but not required.
 //   - All other validation rules (aud, exp, key algorithm) are identical.
-func ValidateJWTFromClientID(tenantID, deviceID string, tokenBytes []byte, pubKeyPEM string) error {
-	if pubKeyPEM == "" {
-		return errors.New("jwt: no public key configured for tenant")
-	}
-
-	pubKey, err := parsePublicKeyPEM(pubKeyPEM)
+func ValidateJWTFromClientID(ctx context.Context, tenantID, deviceID string, tokenBytes []byte, cfg *TenantGatewayConfig, jwks *JWKSCache) error {
+	keyFunc, err := jwtKeyFunc(ctx, tenantID, cfg, jwks)
 	if err != nil {
-		return fmt.Errorf("jwt: invalid tenant public key: %w", err)
+		return err
 	}
+	return validateJWTClaims(tokenBytes, keyFunc, tenantID, deviceID, false)
+}
 
+// jwtKeyFunc builds the jwt.Keyfunc for tenantID's configured key source.
+// JWKSURL takes precedence over JWTPublicKeyPEM when both happen to be set.
+func jwtKeyFunc(ctx context.Context, tenantID string, cfg *TenantGatewayConfig, jwks *JWKSCache) (jwt.Keyfunc, error) {
+	switch {
+	case cfg.JWKSURL != "":
+		if jwks == nil {
+			return nil, errors.New("jwt: tenant has JWKSURL configured but no JWKSCache was provided")
+		}
+		return func(t *jwt.Token) (any, error) {
+			kid, _ := t.Header["kid"].(string)
+			if kid == "" {
+				return nil, fmt.Errorf("%w: token has no kid header", ErrInvalidKid)
+			}
+			key, err := jwks.Key(ctx, tenantID, cfg.JWKSURL, kid)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %s", ErrInvalidKid, err)
+			}
+			if err := checkSigningMethod(t, key); err != nil {
+				return nil, err
+			}
+			return key, nil
+		}, nil
+
+	case cfg.JWTPublicKeyPEM != "":
+		pubKey, err := parsePublicKeyPEM(cfg.JWTPublicKeyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("jwt: invalid tenant public key: %w", err)
+		}
+		return func(t *jwt.Token) (any, error) {
+			if err := checkSigningMethod(t, pubKey); err != nil {
+				return nil, err
+			}
+			return pubKey, nil
+		}, nil
+
+	default:
+		return nil, ErrAuthNotConfigured
+	}
+}
+
+// checkSigningMethod rejects an algorithm/key-type mismatch (e.g. a token
+// claiming RS256 verified against an EC key) before the key is used.
+func checkSigningMethod(t *jwt.Token, pubKey any) error {
+	switch pubKey.(type) {
+	case *rsa.PublicKey:
+		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+			return fmt.Errorf("jwt: unexpected signing method %q, expected RSA", t.Header["alg"])
+		}
+	case *ecdsa.PublicKey:
+		if _, ok := t.Method.(*jwt.SigningMethodECDSA); !ok {
+			return fmt.Errorf("jwt: unexpected signing method %q, expected ECDSA", t.Header["alg"])
+		}
+	default:
+		return fmt.Errorf("jwt: unsupported key type %T", pubKey)
+	}
+	return nil
+}
+
+// validateJWTClaims runs the shared parse+claims-check logic for both
+// ValidateJWT and ValidateJWTFromClientID. requireSub controls whether the
+// "sub" claim must be present and match deviceID (true) or is optional but
+// still checked when present (false, client-id mode).
+func validateJWTClaims(tokenBytes []byte, keyFunc jwt.Keyfunc, tenantID, deviceID string, requireSub bool) error {
 	parsed, err := jwt.ParseWithClaims(
 		string(tokenBytes),
 		&jwt.MapClaims{},
-		func(t *jwt.Token) (any, error) {
-			switch pubKey.(type) {
-			case *rsa.PublicKey:
-				if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
-					return nil, fmt.Errorf("jwt: unexpected signing method %q, expected RSA", t.Header["alg"])
-				}
-			case *ecdsa.PublicKey:
-				if _, ok := t.Method.(*jwt.SigningMethodECDSA); !ok {
-					return nil, fmt.Errorf("jwt: unexpected signing method %q, expected ECDSA", t.Header["alg"])
-				}
-			default:
-				return nil, fmt.Errorf("jwt: unsupported key type %T", pubKey)
-			}
-			return pubKey, nil
-		},
+		keyFunc,
 		jwt.WithAudience("keel-gateway"),
 		jwt.WithIssuedAt(),
 		jwt.WithExpirationRequired(),
@@ -213,14 +224,18 @@ func ValidateJWTFromClientID(tenantID, deviceID string, tokenBytes []byte, pubKe
 		return errors.New("jwt: cannot read claims")
 	}
 
-	// sub is optional in client-id mode (identity comes from the client-id prefix),
-	// but when present it must match the device.
 	sub, _ := claims.GetSubject()
-	if sub != "" && sub != deviceID {
+	if requireSub {
+		if sub != deviceID {
+			return fmt.Errorf("jwt: sub %q does not match device %q", sub, deviceID)
+		}
+	} else if sub != "" && sub != deviceID {
 		return fmt.Errorf("jwt: sub %q does not match device %q", sub, deviceID)
 	}
 
-	// tid is optional in client-id mode; if present, it must still match.
+	// tid custom claim, when present, must match tenantID (required in
+	// username mode's doc, but the original implementation only enforced
+	// it when present — preserved as-is here).
 	tid, _ := (*claims)["tid"].(string)
 	if tid != "" && tid != tenantID {
 		return fmt.Errorf("jwt: tid %q does not match tenant %q", tid, tenantID)
