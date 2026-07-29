@@ -1,0 +1,258 @@
+{{- $coreSvc := include "keel.core.fullname" . -}}
+{{- $coreReplicas := int .Values.core.replicaCount -}}
+{{- $corePeers := list -}}
+{{- range $i := until $coreReplicas }}
+{{- $corePeers = append $corePeers (printf "%s-%d.%s:7946" $coreSvc $i $coreSvc) }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "keel.edge.fullname" . }}
+  labels:
+    {{- include "keel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: edge
+spec:
+  {{- if not .Values.edge.autoscaling.enabled }}
+  replicas: {{ .Values.edge.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "keel.edge.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "keel.edge.selectorLabels" . | nindent 8 }}
+        {{- with .Values.edge.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.edge.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "keel.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.edge.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.edge.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.edge.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: keel-mqtt-gateway
+          image: {{ include "keel.image" (dict "root" . "override" .Values.edge.image) }}
+          imagePullPolicy: {{ include "keel.imagePullPolicy" (dict "root" . "override" .Values.edge.image) }}
+          command: ["/bin/sh", "-c"]
+          # $(POD_NAME)/$(POD_IP): downward API, defined in env below — a
+          # Deployment pod has no stable DNS identity the way a
+          # StatefulSet pod does, so gossip/grpc must advertise the pod's
+          # actual routable IP, not a hostname.
+          args:
+            - |
+              set -e
+              exec /usr/local/bin/keel-mqtt-cluster \
+                --role=edge \
+                --node-id="$POD_NAME" \
+                --gossip-bind=0.0.0.0 \
+                --gossip-port=7946 \
+                --gossip-advertise="$POD_IP" \
+                --gossip-peers={{ join "," $corePeers | quote }} \
+                --grpc-bind=0.0.0.0:7100 \
+                --grpc-advertise="$POD_IP:7100" \
+                --routing-reconciler-interval={{ .Values.edge.routingReconcilerInterval }} \
+                --edge-connections-limit={{ .Values.edge.edgeConnectionsLimit }} \
+                --edge-load-score-interval={{ .Values.edge.edgeLoadScoreInterval }} \
+                --forwarder-buffer-size={{ .Values.edge.forwarderBufferSize }}{{ if .Values.tls.enabled }} \
+                --tls-enabled=true \
+                --tls-cert-dir=/etc/keel/tls \
+                --tls-client-auth={{ .Values.tls.clientAuth }}{{ end }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/usr/local/bin/keel-mqtt-cluster", "drain"]
+          ports:
+            - name: mqtt
+              containerPort: 1883
+            {{- if .Values.tls.enabled }}
+            - name: mqtt-tls
+              containerPort: 8883
+            {{- end }}
+            - name: http
+              containerPort: 8085
+            - name: gossip-tcp
+              containerPort: 7946
+              protocol: TCP
+            - name: gossip-udp
+              containerPort: 7946
+              protocol: UDP
+            - name: grpc
+              containerPort: 7100
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                {{- include "keel.envSecretRef" (dict "root" . "existingSecret" .Values.postgresql.external.existingSecret "existingSecretKey" .Values.postgresql.external.existingSecretPasswordKey "generatedKey" "postgresql-password") | nindent 16 }}
+            - name: DATABASE_URL
+              value: {{ printf "postgres://%s:$(POSTGRES_PASSWORD)@%s:%d/%s?sslmode=%s" .Values.postgresql.external.username .Values.postgresql.external.host (int .Values.postgresql.external.port) .Values.postgresql.external.database .Values.postgresql.external.sslmode | quote }}
+            # Seed only — internal/cluster/redisrouter.WatchPrimary
+            # redirects this edge to whichever core is raft-designated
+            # primary within one poll interval of startup, same as the
+            # docker-compose deployment (see docker-compose.core-edge-split.yml's
+            # comment on this exact env var).
+            - name: REDIS_ADDR
+              value: {{ printf "%s-0.%s:6379" $coreSvc $coreSvc | quote }}
+            {{- if .Values.core.redis.password }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "keel.generatedSecretName" . }}
+                  key: redis-password
+            {{- end }}
+            - name: AUTH_BACKEND
+              value: {{ .Values.auth.backend | quote }}
+            {{- if eq .Values.auth.backend "file" }}
+            - name: CREDENTIAL_FILE
+              value: /etc/keel/credentials/credentials.yaml
+            {{- else if eq .Values.auth.backend "grpc" }}
+            - name: KEEL_CORE_GRPC_ADDR
+              value: {{ .Values.auth.grpc.keelCoreAddr | quote }}
+            {{- end }}
+            - name: CREDENTIAL_CACHE_TTL
+              value: {{ .Values.auth.credentialCacheTTL | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: METRICS_ADDR
+              value: {{ printf ":%d" (int .Values.metrics.port) | quote }}
+            {{- if .Values.otlpEndpoint }}
+            - name: OTLP_ENDPOINT
+              value: {{ .Values.otlpEndpoint | quote }}
+            {{- end }}
+            - name: SESSION_EXPIRY_INTERVAL
+              value: {{ .Values.sessionExpiryInterval | quote }}
+            - name: TENANT_CACHE_TTL
+              value: {{ .Values.tenantCacheTTL | quote }}
+            {{- if .Values.autoProvisioningUrl }}
+            - name: AUTO_PROV_URL
+              value: {{ .Values.autoProvisioningUrl | quote }}
+            {{- end }}
+            - name: MQTT_PORT
+              value: "1883"
+            {{- if .Values.tls.enabled }}
+            - name: MQTT_TLS_PORT
+              value: "8883"
+            {{- end }}
+            - name: HTTP_PORT
+              value: "8085"
+            {{- if .Values.redpanda.enabled }}
+            - name: REDPANDA_BROKERS
+              value: {{ join "," .Values.redpanda.external.brokers | quote }}
+            {{- if .Values.redpanda.external.saslUsername }}
+            - name: REDPANDA_SASL_USER
+              value: {{ .Values.redpanda.external.saslUsername | quote }}
+            - name: REDPANDA_SASL_PASS
+              valueFrom:
+                {{- include "keel.envSecretRef" (dict "root" . "existingSecret" .Values.redpanda.external.existingSecret "existingSecretKey" .Values.redpanda.external.existingSecretPasswordKey "generatedKey" "redpanda-sasl-password") | nindent 16 }}
+            {{- end }}
+            - name: TWIN_INBOUND_TOPIC
+              value: {{ .Values.redpanda.topics.twinInbound | quote }}
+            - name: OTA_STATUS_TOPIC
+              value: {{ .Values.redpanda.topics.otaStatus | quote }}
+            - name: CA_STATUS_TOPIC
+              value: {{ .Values.redpanda.topics.caStatus | quote }}
+            - name: COMMANDS_TOPIC
+              value: {{ .Values.redpanda.topics.commands | quote }}
+            - name: DEVICE_CONNECTION_TOPIC
+              value: {{ .Values.redpanda.topics.deviceConnection | quote }}
+            - name: DITTO_COMPAT
+              value: {{ .Values.redpanda.dittoCompat.enabled | quote }}
+            {{- if .Values.redpanda.dittoCompat.enabled }}
+            - name: DITTO_INBOUND_TOPIC
+              value: {{ .Values.redpanda.dittoCompat.inboundTopic | quote }}
+            {{- end }}
+            - name: HONO_COMPAT
+              value: {{ .Values.redpanda.honoCompat.enabled | quote }}
+            {{- end }}
+            {{- if .Values.outputConnector.kafkaHono.enabled }}
+            - name: OUTPUT_CONNECTOR
+              value: "kafka-hono"
+            - name: KAFKA_HONO_BROKERS
+              value: {{ join "," .Values.outputConnector.kafkaHono.external.brokers | quote }}
+            {{- if .Values.outputConnector.kafkaHono.external.saslUsername }}
+            - name: KAFKA_HONO_SASL_USER
+              value: {{ .Values.outputConnector.kafkaHono.external.saslUsername | quote }}
+            - name: KAFKA_HONO_SASL_PASS
+              valueFrom:
+                {{- include "keel.envSecretRef" (dict "root" . "existingSecret" .Values.outputConnector.kafkaHono.external.existingSecret "existingSecretKey" .Values.outputConnector.kafkaHono.external.existingSecretPasswordKey "generatedKey" "kafka-hono-sasl-password") | nindent 16 }}
+            {{- end }}
+            - name: KAFKA_HONO_TOPIC_PREFIX
+              value: {{ .Values.outputConnector.kafkaHono.topicPrefix | quote }}
+            {{- end }}
+            {{- with .Values.edge.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          {{- with .Values.edge.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or .Values.tls.enabled (and (eq .Values.auth.backend "file") .Values.auth.file.existingSecret) .Values.edge.extraVolumeMounts }}
+          volumeMounts:
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /etc/keel/tls
+              readOnly: true
+            {{- end }}
+            {{- if and (eq .Values.auth.backend "file") .Values.auth.file.existingSecret }}
+            - name: credentials
+              mountPath: /etc/keel/credentials
+              readOnly: true
+            {{- end }}
+            {{- with .Values.edge.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+      {{- if or .Values.tls.enabled (and (eq .Values.auth.backend "file") .Values.auth.file.existingSecret) .Values.edge.extraVolumes }}
+      volumes:
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret | default .Values.tls.certManager.secretName | default (printf "%s-tls" (include "keel.edge.fullname" .)) }}
+        {{- end }}
+        {{- if and (eq .Values.auth.backend "file") .Values.auth.file.existingSecret }}
+        - name: credentials
+          secret:
+            secretName: {{ .Values.auth.file.existingSecret }}
+        {{- end }}
+        {{- with .Values.edge.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}

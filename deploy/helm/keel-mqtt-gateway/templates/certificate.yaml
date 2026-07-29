@@ -1,0 +1,22 @@
+{{- if .Values.tls.certManager.enabled }}
+{{/*
+cert-manager Certificate for the edge MQTT TLS listener — see
+keel-design-doc.md's TLS section: internal/broker.CertReloader watches
+the resulting Secret's mounted volume and rotates without a restart, no
+extra wiring needed here beyond mounting the Secret (see
+edge-deployment.yaml's "tls" volume).
+*/}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "keel.edge.fullname" . }}-tls
+  labels:
+    {{- include "keel.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.tls.certManager.secretName | default (printf "%s-tls" (include "keel.edge.fullname" .)) }}
+  issuerRef:
+    name: {{ .Values.tls.certManager.issuerRef.name }}
+    kind: {{ .Values.tls.certManager.issuerRef.kind }}
+  dnsNames:
+    {{- toYaml .Values.tls.certManager.dnsNames | nindent 4 }}
+{{- end }}

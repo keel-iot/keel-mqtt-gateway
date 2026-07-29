@@ -1,0 +1,23 @@
+{{- if .Values.podDisruptionBudget.core.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "keel.core.fullname" . }}
+  labels:
+    {{- include "keel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: core
+spec:
+  {{- if .Values.podDisruptionBudget.core.minAvailable }}
+  minAvailable: {{ .Values.podDisruptionBudget.core.minAvailable }}
+  {{- else }}
+  # Raft majority of the CONFIGURED replica count — a voluntary disruption
+  # (node drain, etc.) must never be allowed to take the cluster below the
+  # quorum it needs to keep committing (session ownership, ACL, Redis
+  # primary designation all go through this). Computed as
+  # floor(replicaCount/2)+1, e.g. 2 for a 3-node cluster.
+  minAvailable: {{ add (div (int .Values.core.replicaCount) 2) 1 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "keel.core.selectorLabels" . | nindent 6 }}
+{{- end }}

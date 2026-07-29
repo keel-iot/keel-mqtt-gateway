@@ -1,0 +1,241 @@
+{{- $fullname := include "keel.core.fullname" . -}}
+{{- $svc := include "keel.core.fullname" . -}}
+{{- $replicas := int .Values.core.replicaCount -}}
+{{- $peers := list -}}
+{{- range $i := until $replicas }}
+{{- $peers = append $peers (printf "%s-%d.%s:7946" $fullname $i $svc) }}
+{{- end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "keel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: core
+spec:
+  serviceName: {{ $svc }}
+  replicas: {{ $replicas }}
+  # Parallel, not the OrderedReady default: raft/gossip bootstrap wants
+  # every core pod created together so they can discover each other, not
+  # pod-1 blocked waiting for pod-0 to pass readiness first (which itself
+  # may depend on discovering siblings) — same reasoning etcd/Cassandra-
+  # style StatefulSet charts use.
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "keel.core.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "keel.core.selectorLabels" . | nindent 8 }}
+        {{- with .Values.core.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.core.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "keel.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.core.terminationGracePeriodSeconds }}
+      {{- if .Values.core.affinity }}
+      affinity:
+        {{- toYaml .Values.core.affinity | nindent 8 }}
+      {{- else }}
+      affinity:
+        # Default: spread core pods across nodes — a raft quorum sharing a
+        # node defeats the point of tolerating node loss. Preferred, not
+        # required, so a single-node dev/test cluster still schedules.
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "keel.core.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      {{- with .Values.core.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.core.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: keel-mqtt-gateway
+          image: {{ include "keel.image" (dict "root" . "override" .Values.core.image) }}
+          imagePullPolicy: {{ include "keel.imagePullPolicy" (dict "root" . "override" .Values.core.image) }}
+          command: ["/bin/sh", "-c"]
+          # Uses $POD_NAME (downward API, set below in env — NOT $HOSTNAME:
+          # that's only reliably exported in interactive shells, not
+          # guaranteed for a non-interactive busybox `sh -c` script) to
+          # derive both this pod's ordinal (for --bootstrap) and its own
+          # stable DNS name (for raft-bind/gossip-advertise/grpc-advertise/
+          # olric-advertise) — a StatefulSet pod's name is always
+          # "<statefulset-name>-<ordinal>".
+          args:
+            - |
+              set -e
+              ORDINAL=$(echo "$POD_NAME" | grep -o '[0-9]*$')
+              BOOTSTRAP=false
+              if [ "$ORDINAL" = "{{ .Values.core.bootstrapOrdinal }}" ]; then BOOTSTRAP=true; fi
+              exec /usr/local/bin/keel-mqtt-cluster \
+                --role=core \
+                --node-id="$POD_NAME" \
+                --bootstrap=$BOOTSTRAP \
+                --raft-bind="$POD_NAME.{{ $svc }}:7000" \
+                --raft-data-dir=/data/raft \
+                --raft-snapshot-interval={{ .Values.core.raftSnapshotInterval }} \
+                --gossip-bind=0.0.0.0 \
+                --gossip-port=7946 \
+                --gossip-advertise="$POD_NAME.{{ $svc }}" \
+                --gossip-peers={{ join "," $peers | quote }} \
+                --grpc-bind=0.0.0.0:7100 \
+                --grpc-advertise="$POD_NAME.{{ $svc }}:7100" \
+                --management-addr=0.0.0.0:{{ .Values.core.managementApi.port }} \
+                --heartbeat-threshold={{ .Values.core.heartbeatThreshold }} \
+                --routing-sweep-threshold={{ .Values.core.routingSweepThreshold }} \
+                --olric-bind=0.0.0.0 \
+                --olric-port=7300 \
+                --olric-gossip-port=7301 \
+                --olric-advertise="$POD_NAME.{{ $svc }}" \
+                --olric-bootstrap-wait={{ .Values.core.olric.bootstrapWait }} \
+                --olric-join-retry-interval={{ .Values.core.olric.joinRetryInterval }} \
+                --olric-max-join-attempts={{ .Values.core.olric.maxJoinAttempts }}
+          lifecycle:
+            preStop:
+              exec:
+                # See internal/cluster/lifecycle/drain.go — leadership
+                # transfer if this node is leader, notify voluntary exit —
+                # matches keel-design-doc.md's "Uscita pianificata" design.
+                command: ["/usr/local/bin/keel-mqtt-cluster", "drain"]
+          ports:
+            - name: raft
+              containerPort: 7000
+            - name: gossip-tcp
+              containerPort: 7946
+              protocol: TCP
+            - name: gossip-udp
+              containerPort: 7946
+              protocol: UDP
+            - name: grpc
+              containerPort: 7100
+            - name: mgmt
+              containerPort: {{ .Values.core.managementApi.port }}
+            - name: olric
+              containerPort: 7300
+            - name: olric-gossip
+              containerPort: 7301
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                {{- include "keel.envSecretRef" (dict "root" . "existingSecret" .Values.postgresql.external.existingSecret "existingSecretKey" .Values.postgresql.external.existingSecretPasswordKey "generatedKey" "postgresql-password") | nindent 16 }}
+            - name: DATABASE_URL
+              value: {{ printf "postgres://%s:$(POSTGRES_PASSWORD)@%s:%d/%s?sslmode=%s" .Values.postgresql.external.username .Values.postgresql.external.host (int .Values.postgresql.external.port) .Values.postgresql.external.database .Values.postgresql.external.sslmode | quote }}
+            - name: REDIS_ADDR
+              value: "$(POD_NAME).{{ $svc }}:6379"
+            {{- if .Values.core.redis.password }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "keel.generatedSecretName" . }}
+                  key: redis-password
+            {{- end }}
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: METRICS_ADDR
+              value: {{ printf ":%d" (int .Values.metrics.port) | quote }}
+            {{- if .Values.otlpEndpoint }}
+            - name: OTLP_ENDPOINT
+              value: {{ .Values.otlpEndpoint | quote }}
+            {{- end }}
+            {{- with .Values.core.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          {{- with .Values.core.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: raft-data
+              mountPath: /data/raft
+            {{- with .Values.core.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        - name: redis
+          image: "{{ .Values.core.redis.image.repository }}:{{ .Values.core.redis.image.tag }}"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              if [ -n "$REDIS_PASSWORD" ]; then
+                exec redis-server --appendonly yes --requirepass "$REDIS_PASSWORD"
+              fi
+              exec redis-server --appendonly yes
+          {{- if .Values.core.redis.password }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "keel.generatedSecretName" . }}
+                  key: redis-password
+          {{- end }}
+          ports:
+            - name: redis
+              containerPort: 6379
+          {{- with .Values.core.redis.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      {{- with .Values.core.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: raft-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.core.persistence.raft.storageClassName }}
+        storageClassName: {{ .Values.core.persistence.raft.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.core.persistence.raft.size }}
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.core.persistence.redis.storageClassName }}
+        storageClassName: {{ .Values.core.persistence.redis.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.core.persistence.redis.size }}

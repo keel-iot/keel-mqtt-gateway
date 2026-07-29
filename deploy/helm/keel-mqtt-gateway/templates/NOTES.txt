@@ -1,0 +1,31 @@
+keel-mqtt-gateway deployed.
+
+Core (raft quorum, {{ .Values.core.replicaCount }} replicas): {{ include "keel.core.fullname" . }}
+Edge (MQTT client-facing, {{ if .Values.edge.autoscaling.enabled }}HPA {{ .Values.edge.autoscaling.minReplicas }}-{{ .Values.edge.autoscaling.maxReplicas }}{{ else }}{{ .Values.edge.replicaCount }} replicas{{ end }}): {{ include "keel.edge.fullname" . }}
+
+{{- if not .Values.postgresql.external.host }}
+
+WARNING: postgresql.external.host is empty — the gateway will fail to
+connect to PostgreSQL. Set it (and either
+postgresql.external.existingSecret or postgresql.external.password).
+{{- end }}
+
+Check cluster status once core pods are ready:
+  kubectl -n {{ .Release.Namespace }} exec {{ include "keel.core.fullname" . }}-0 -- \
+    wget -qO- http://localhost:{{ .Values.core.managementApi.port }}/api/cluster/nodes
+
+MQTT endpoint:
+{{- if eq .Values.edge.service.type "LoadBalancer" }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "keel.edge.fullname" . }} -w
+  (external IP may take a minute to be assigned by your cloud provider)
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "keel.edge.fullname" . }} 1883:{{ .Values.edge.service.mqttPort }}
+{{- end }}
+
+{{- if .Values.edge.autoscaling.enabled }}
+
+HPA is enabled and requires custom.metrics.k8s.io to be serving
+keel_edge_load_score (see values.yaml's metrics.prometheusAdapter, or an
+already-installed adapter) — without it, the HPA will show
+<unknown>/FailedGetPodsMetric.
+{{- end }}

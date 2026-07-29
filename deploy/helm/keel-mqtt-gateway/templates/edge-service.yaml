@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "keel.edge.fullname" . }}
+  labels:
+    {{- include "keel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: edge
+  {{- with .Values.edge.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.edge.service.type }}
+  selector:
+    {{- include "keel.edge.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: mqtt
+      port: {{ .Values.edge.service.mqttPort }}
+      targetPort: mqtt
+    {{- if .Values.tls.enabled }}
+    - name: mqtt-tls
+      port: {{ .Values.edge.service.mqttTlsPort }}
+      targetPort: mqtt-tls
+    {{- end }}
+    - name: http
+      port: {{ .Values.edge.service.httpPort }}
+      targetPort: http
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics

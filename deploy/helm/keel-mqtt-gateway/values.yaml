@@ -1,0 +1,268 @@
+# Default values for keel-mqtt-gateway.
+#
+# Topology default: core (pure, --role=core) + edge (pure, --role=edge),
+# not "combined" — this is the topology keel-design-doc.md's "Test
+# topologia core/edge separata" section validated as the real production
+# shape; "combined" only exists for a single-process all-in-one
+# docker-compose convenience, not recommended for K8s.
+#
+# External dependencies (IMPORTANT): PostgreSQL and Redpanda/Kafka are
+# ALWAYS treated as pre-existing, externally-managed services — this chart
+# never deploys a database or a broker itself. Every such dependency below
+# follows the same shape: a `host`/`brokers` pointer plus either
+# `existingSecret` (references a Secret you already manage) or an inline
+# `password`/`saslPassword` (only for quick local testing — the chart then
+# creates its own Secret from it). Never set both.
+
+image:
+  repository: ghcr.io/keel-iot/keel-mqtt-gateway
+  tag: "" # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ── PostgreSQL — always external, never bundled ──────────────────────────
+# Backs internal/config's DATABASE_URL (devices.device_credentials, tenant
+# config). Only consulted when auth.backend == "postgres" (the default) —
+# irrelevant when auth.backend == "file".
+postgresql:
+  external:
+    host: ""
+    port: 5432
+    database: keel_devices
+    username: postgres
+    sslmode: disable # postgres sslmode query param — "disable" | "require" | "verify-full" | ...
+    # Exactly one of the two below. existingSecret takes precedence if both are set.
+    existingSecret: "" # Secret name, must contain existingSecretPasswordKey
+    existingSecretPasswordKey: password
+    password: "" # inline password — chart creates its own Secret; local/dev use only
+
+# ── Redpanda/Kafka — always external, never bundled ──────────────────────
+# Feeds internal/forwarder (keel-native topics: twin inbound, OTA/CA
+# status mirrors, commands, device connection events) — see
+# internal/config.Config's RedpandaBrokers/RedpandaSASLUser/Pass. Disabled
+# by default (REDPANDA_BROKERS unset means the forwarder becomes a no-op —
+# see cmd/server/main.go's "REDPANDA_BROKERS not set" warning path).
+redpanda:
+  enabled: false
+  external:
+    brokers: [] # e.g. ["redpanda-0.redpanda.svc:9092", "redpanda-1.redpanda.svc:9092"]
+    saslUsername: ""
+    saslMechanism: SCRAM-SHA-512 # SCRAM-SHA-256 | SCRAM-SHA-512 — see vendor-pkg/redpanda/producer.go
+    existingSecret: ""
+    existingSecretPasswordKey: password
+    saslPassword: "" # inline — local/dev use only
+  topics:
+    twinInbound: keel.twin.inbound
+    otaStatus: platform.ota.status
+    caStatus: platform.ca.status
+    commands: platform.commands
+    deviceConnection: keel.device.connection
+  dittoCompat:
+    enabled: false
+    inboundTopic: ditto.inbound
+  honoCompat:
+    enabled: false
+
+# ── Output connector (device→platform export, e.g. to Eclipse Ditto via
+# Hono-shaped Kafka topics) — separate broker/credentials from redpanda
+# above on purpose: internal/config.Config keeps KafkaHonoBrokers distinct
+# from RedpandaBrokers, and in practice this is very often a THIRD PARTY's
+# Kafka (the customer's Ditto/Hono deployment), not the same cluster keel
+# uses for its own internal topics.
+outputConnector:
+  kafkaHono:
+    enabled: false
+    external:
+      brokers: [] # e.g. ["kafka.customer.example.com:9092"]
+      saslUsername: ""
+      existingSecret: ""
+      existingSecretPasswordKey: password
+      saslPassword: "" # inline — local/dev use only
+    topicPrefix: hono
+
+# ── Auth backend ──────────────────────────────────────────────────────────
+auth:
+  backend: postgres # "postgres" (default, uses postgresql.external above) | "file" | "grpc"
+  file:
+    # Only used when backend == "file". Must be a Secret with key
+    # "credentials.yaml" (see cmd/devicesim/gen_credentials.go's format,
+    # or deploy/docker-compose/credentials.yaml for the shape by hand).
+    existingSecret: ""
+  grpc:
+    keelCoreAddr: "" # only used when backend == "grpc"
+  credentialCacheTTL: 30s
+
+# ── Core nodes: StatefulSet, quorum-sized, own Raft log + co-located Redis ─
+core:
+  replicaCount: 3 # keep odd — raft quorum
+  # Ordinal that gets --bootstrap=true. Only matters the very first time
+  # the StatefulSet's PVCs are created from empty — raft.Node.Bootstrap is
+  # a no-op on an existing log (see cmd/server/main.go: "raft log already
+  # exists, skipping bootstrap (restart)"), so this is safe to leave as-is
+  # across upgrades/restarts, never re-triggers a second cluster.
+  bootstrapOrdinal: 0
+
+  image: {} # overrides top-level `image` for core only, if set (repository/tag/pullPolicy)
+  resources: {}
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {} # default (see template): required podAntiAffinity across core pods by hostname
+  terminationGracePeriodSeconds: 60 # covers raft.LeadershipTransfer() + drain, see preStop hook
+
+  persistence:
+    raft:
+      size: 2Gi
+      storageClassName: ""
+    redis:
+      size: 2Gi
+      storageClassName: ""
+
+  # Co-located Redis (primary+replica across cores) — see risk #6 in
+  # keel-design-doc.md. This is NOT an "external" dependency like
+  # postgresql/redpanda above: it's part of keel's own topology, one
+  # instance per core pod, managed entirely by this chart.
+  redis:
+    image:
+      repository: redis
+      tag: 7-alpine
+    resources: {}
+    password: "" # optional — same password shared by every co-located instance; empty = no auth
+
+  # Raft/gossip/olric/grpc/mgmt tuning — see cmd/server/main.go flag docs
+  # for full detail on each. Left at binary defaults unless overridden.
+  raftDataDir: /data/raft
+  raftSnapshotInterval: 30s
+  heartbeatThreshold: 30s
+  routingSweepThreshold: 15m
+  olric:
+    bootstrapWait: 3s
+    joinRetryInterval: 300ms
+    maxJoinAttempts: 5
+
+  service:
+    # Headless (ClusterIP: None) — required for StatefulSet stable pod DNS
+    # (raft-bind/gossip-advertise/grpc-advertise/redis-advertise all rely
+    # on <pod>.<this-service> resolving), not meant to be user-facing.
+    annotations: {}
+
+  managementApi:
+    # Internal-only by default (no separate Service beyond the headless
+    # one) — expose via port-forward or a NetworkPolicy-scoped Service if
+    # you need it reachable from outside the cluster.
+    port: 8090
+
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# ── Edge nodes: Deployment, stateless, HPA-driven ────────────────────────
+edge:
+  replicaCount: 3
+
+  image: {} # overrides top-level `image` for edge only, if set
+  resources: {}
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  routingReconcilerInterval: 20s
+  edgeConnectionsLimit: 2000 # denominator of edge_load_score's connections term — tune to your real per-pod MQTT connection target
+  edgeLoadScoreInterval: 15s
+
+  forwarderBufferSize: 1000
+
+  service:
+    type: LoadBalancer
+    annotations: {}
+    mqttPort: 1883
+    mqttTlsPort: 8883
+    httpPort: 8085
+    # loadBalancerIP / externalTrafficPolicy left to the provider defaults
+    # unless set here.
+
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 30
+    # Composite metric already implemented server-side
+    # (internal/telemetry — keel_gateway_edge_load_score, 0..1) and exposed
+    # as custom.metrics.k8s.io via deploy/k8s/prometheus-adapter-config.yaml
+    # — requires prometheus-adapter.enabled below, or an equivalent adapter
+    # already installed separately.
+    targetLoadScoreMilli: 700 # 0.7, expressed as a milli-quantity like the HPA spec wants
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        percent: 100
+        periodSeconds: 60
+      scaleDown:
+        stabilizationWindowSeconds: 900 # long cooldown — see design doc's HPA risk #5
+        percent: 10
+        periodSeconds: 60
+
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# ── TLS (MQTT client-facing listener) ────────────────────────────────────
+# See keel-design-doc.md's TLS section: terminated IN the application
+# (mochi-mqtt listener), never at a load balancer in front — same
+# "identical on K8s/VM/Docker Compose" constraint driving the rest of the
+# design. internal/broker.CertReloader watches the mounted secret and
+# rotates without a restart.
+tls:
+  enabled: false
+  clientAuth: request # "none" | "request" | "require-and-verify" — see --tls-client-auth
+  # Exactly one of the two below.
+  certManager:
+    enabled: false
+    issuerRef:
+      name: ""
+      kind: ClusterIssuer # or Issuer
+    dnsNames: []
+    secretName: "" # defaults to <fullname>-edge-tls
+  existingSecret: "" # a pre-existing tls.crt/tls.key Secret (e.g. from an external ACME client)
+
+# ── Observability ─────────────────────────────────────────────────────────
+metrics:
+  port: 9090
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    additionalLabels: {}
+  # See deploy/k8s/prometheus-adapter-config.yaml — only needed if
+  # edge.autoscaling.enabled is true and no adapter is installed separately.
+  prometheusAdapter:
+    installConfigMap: false
+    namespace: monitoring
+
+logLevel: info
+otlpEndpoint: "" # empty disables tracing
+sessionExpiryInterval: 24h
+tenantCacheTTL: 5m
+autoProvisioningUrl: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podDisruptionBudget:
+  core:
+    enabled: true
+    # minAvailable expressed as quorum-preserving: replicaCount - 1 would
+    # allow a voluntary disruption to take the cluster below quorum on a
+    # 3-node cluster if a second node is already down for any reason: keep
+    # this at the raft majority ((replicaCount/2)+1) — computed in the
+    # template from core.replicaCount unless overridden here.
+    minAvailable: "" # empty = computed automatically
+  edge:
+    enabled: true
+    minAvailable: 1

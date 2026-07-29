@@ -1,0 +1,54 @@
+{{/*
+Headless Service (ClusterIP: None) backing the core StatefulSet — required
+for stable per-pod DNS (<pod-ordinal>.<this-service>.<namespace>.svc...),
+which raft-bind/gossip-advertise/grpc-advertise/olric-advertise and this
+pod's own Redis sidecar address (REDIS_ADDR, gossiped to peers as-is —
+see internal/cluster/membership's NodeMeta.RedisAddr) all depend on. Not
+meant to be consumed directly outside the cluster.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "keel.core.fullname" . }}
+  labels:
+    {{- include "keel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: core
+  {{- with .Values.core.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "keel.core.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: raft
+      port: 7000
+      targetPort: raft
+    - name: gossip-tcp
+      port: 7946
+      targetPort: gossip-tcp
+      protocol: TCP
+    - name: gossip-udp
+      port: 7946
+      targetPort: gossip-udp
+      protocol: UDP
+    - name: grpc
+      port: 7100
+      targetPort: grpc
+    - name: mgmt
+      port: {{ .Values.core.managementApi.port }}
+      targetPort: mgmt
+    - name: olric
+      port: 7300
+      targetPort: olric
+    - name: olric-gossip
+      port: 7301
+      targetPort: olric-gossip
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+    - name: redis
+      port: 6379
+      targetPort: redis

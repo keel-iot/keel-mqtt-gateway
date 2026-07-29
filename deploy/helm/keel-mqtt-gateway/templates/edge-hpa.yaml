@@ -1,0 +1,46 @@
+{{- if .Values.edge.autoscaling.enabled }}
+{{/*
+Driven by keel_gateway_edge_load_score (internal/telemetry — see design
+doc HPA risk #5), a 0..1 composite already computed server-side, exposed
+as the custom.metrics.k8s.io metric "keel_edge_load_score" — requires
+prometheus-adapter (or equivalent) scraping it; see
+deploy/k8s/prometheus-adapter-config.yaml and
+.Values.metrics.prometheusAdapter. Without a working adapter this HPA is
+created successfully but shows <unknown>/FailedGetPodsMetric forever.
+*/}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "keel.edge.fullname" . }}
+  labels:
+    {{- include "keel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: edge
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "keel.edge.fullname" . }}
+  minReplicas: {{ .Values.edge.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.edge.autoscaling.maxReplicas }}
+  metrics:
+    - type: Pods
+      pods:
+        metric:
+          name: keel_edge_load_score
+        target:
+          type: AverageValue
+          averageValue: {{ printf "%dm" (int .Values.edge.autoscaling.targetLoadScoreMilli) | quote }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: {{ .Values.edge.autoscaling.behavior.scaleUp.stabilizationWindowSeconds }}
+      policies:
+        - type: Percent
+          value: {{ .Values.edge.autoscaling.behavior.scaleUp.percent }}
+          periodSeconds: {{ .Values.edge.autoscaling.behavior.scaleUp.periodSeconds }}
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.edge.autoscaling.behavior.scaleDown.stabilizationWindowSeconds }}
+      policies:
+        - type: Percent
+          value: {{ .Values.edge.autoscaling.behavior.scaleDown.percent }}
+          periodSeconds: {{ .Values.edge.autoscaling.behavior.scaleDown.periodSeconds }}
+{{- end }}

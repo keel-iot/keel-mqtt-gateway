@@ -1,0 +1,14 @@
+{{- if .Values.podDisruptionBudget.edge.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "keel.edge.fullname" . }}
+  labels:
+    {{- include "keel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: edge
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.edge.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "keel.edge.selectorLabels" . | nindent 6 }}
+{{- end }}

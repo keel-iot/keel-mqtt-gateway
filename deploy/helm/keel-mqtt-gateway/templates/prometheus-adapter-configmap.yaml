@@ -1,0 +1,30 @@
+{{- if .Values.metrics.prometheusAdapter.installConfigMap }}
+{{/*
+Prometheus Adapter rule exposing keel_gateway_edge_load_score as the
+custom.metrics.k8s.io metric "keel_edge_load_score", consumed by
+edge-hpa.yaml. Rendering this ConfigMap alone does nothing — it must be
+mounted by an actual prometheus-adapter deployment (not installed by this
+chart) via --config=/etc/adapter/config.yaml. See
+deploy/k8s/prometheus-adapter-config.yaml for the original, hand-written
+version this mirrors.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "keel.fullname" . }}-prometheus-adapter-config
+  namespace: {{ .Values.metrics.prometheusAdapter.namespace }}
+  labels:
+    {{- include "keel.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    rules:
+      - seriesQuery: 'keel_gateway_edge_load_score{namespace!="",pod!=""}'
+        resources:
+          overrides:
+            namespace: {resource: "namespace"}
+            pod: {resource: "pod"}
+        name:
+          matches: "^keel_gateway_edge_load_score$"
+          as: "keel_edge_load_score"
+        metricsQuery: 'keel_gateway_edge_load_score{<<.LabelMatchers>>}'
+{{- end }}

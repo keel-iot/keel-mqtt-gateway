@@ -1,0 +1,22 @@
+apiVersion: v2
+name: keel-mqtt-gateway
+description: >-
+  Custom MQTT clustering gateway (core/edge split, hashicorp/raft +
+  memberlist + Olric) — see keel-design-doc.md for the full architecture.
+  PostgreSQL and Redpanda/Kafka are always treated as external, pre-existing
+  services (see values.yaml's postgresql.external / redpanda.external /
+  outputConnector.kafkaHono.external) — this chart never bundles or deploys
+  them itself.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/keel-iot/keel-mqtt-gateway
+sources:
+  - https://github.com/keel-iot/keel-mqtt-gateway
+keywords:
+  - mqtt
+  - iot
+  - raft
+  - olric
+maintainers:
+  - name: keel-iot
