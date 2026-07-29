@@ -1,0 +1,41 @@
+# Compose override used only by olric-quorum-loss.sh: remaps every host
+# port docker-compose.core-edge-split.yml publishes so this e2e run never
+# collides with another already-running stack — same convention as the
+# other e2e scripts. Own 22xxx range (unused: kafka-redpanda 20xxx,
+# redis-single-core 24xxx, olric-reconcile 25xxx/26xxx/28xxx,
+# redis-failover 27xxx, qos-crash-loss 29xxx, backup-restore
+# 19xxx/155xx/164xx).
+#
+# `!override` forces a wholesale replacement of each ports: list — compose
+# merges list-valued keys by concatenation otherwise.
+services:
+  postgres:
+    ports: !override
+      - "22532:5432"
+  redis-core-1:
+    ports: !override
+      - "22479:6379"
+  redis-core-2:
+    ports: !override
+      - "22480:6379"
+  redis-core-3:
+    ports: !override
+      - "22481:6379"
+  core-1:
+    ports: !override
+      - "22190:8090"
+  core-2:
+    ports: !override
+      - "22290:8090"
+  core-3:
+    ports: !override
+      - "22390:8090"
+  edge-1:
+    ports: !override
+      - "22183:1883"
+  edge-2:
+    ports: !override
+      - "22283:1883"
+  edge-3:
+    ports: !override
+      - "22383:1883"

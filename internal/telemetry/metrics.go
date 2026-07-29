@@ -95,4 +95,29 @@ var (
 		Name:      "forwarder_dropped_total",
 		Help:      "Messages dropped from the output-connector forwarder buffer, by reason.",
 	}, []string{"connector", "reason"})
+
+	// RaftApplyDuration measures the time a single raft.Apply takes on the
+	// leader (internal/cluster/raft.LocalRegistry.apply) — the control-plane
+	// cost keel-design-doc.md's PoC checklist asks to isolate, distinct from
+	// end-to-end connect latency (which also includes auth, gossip lookups,
+	// network hops). op: "claim_session" | "release_session" | "set_redis_primary"
+	// | "acl.*". result: "success" | "error" — a raft.Apply that times out
+	// waiting for quorum still completes (it returns an error), so duration
+	// is recorded either way, not just on success.
+	//
+	// Buckets extend to 30s, well past applyTimeout (registry.go, 2s):
+	// found under a real 1500-device reconnect storm that applyTimeout only
+	// bounds how long raft.Apply blocks trying to ENQUEUE the command (per
+	// hashicorp/raft's own semantics) — once enqueued, waiting for actual
+	// commit+FSM-apply completion is unbounded, so a "success" result can
+	// legitimately take much longer than applyTimeout under heavy
+	// concurrent load. Narrower buckets silently clipped that tail into a
+	// single +Inf bucket, hiding exactly the number this metric exists to
+	// surface.
+	RaftApplyDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "keel_gateway",
+		Name:      "raft_apply_duration_seconds",
+		Help:      "Time spent in a single raft.Apply call on the leader, by command op and outcome.",
+		Buckets:   []float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 30.0},
+	}, []string{"op", "result"})
 )

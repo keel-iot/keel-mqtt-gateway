@@ -8,6 +8,7 @@ import (
 	hraft "github.com/hashicorp/raft"
 
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/acl"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
 // applyTimeout bounds how long a single raft.Apply is allowed to take
@@ -129,17 +130,29 @@ func NewLocalRegistry(r *hraft.Raft, fsm *FSM) *LocalRegistry {
 }
 
 func (l *LocalRegistry) apply(cmd Command) (applyResult, error) {
+	start := time.Now()
+	result := "success"
+	defer func() {
+		telemetry.RaftApplyDuration.WithLabelValues(string(cmd.Op), result).Observe(time.Since(start).Seconds())
+	}()
+
 	b, err := json.Marshal(cmd)
 	if err != nil {
+		result = "error"
 		return applyResult{}, fmt.Errorf("registry: marshal command: %w", err)
 	}
 	future := l.raft.Apply(b, applyTimeout)
 	if err := future.Error(); err != nil {
+		result = "error"
 		return applyResult{}, fmt.Errorf("registry: apply: %w", err)
 	}
 	res, ok := future.Response().(applyResult)
 	if !ok {
+		result = "error"
 		return applyResult{}, fmt.Errorf("registry: unexpected apply response type %T", future.Response())
+	}
+	if res.err != nil {
+		result = "error"
 	}
 	return res, res.err
 }

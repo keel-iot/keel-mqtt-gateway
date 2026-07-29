@@ -74,6 +74,21 @@ type Config struct {
 // reason about that ordering.
 const reconcileInterval = 2 * time.Second
 
+// rejoinInterval controls how often an isolated node (one that currently
+// sees no gossip peers at all) retries joining via its originally
+// configured seed addresses. Needed because memberlist.Join is otherwise
+// only ever called once, at startup (see New) — if every peer a node
+// knows about dies at once (e.g. all 3 core nodes going down together)
+// and later comes back, a long-running node that never restarts its own
+// process (typically an edge) has no other path back into the mesh: SWIM
+// anti-entropy only syncs with members it already knows about, and it
+// knows about none. Found via test/e2e/olric-quorum-loss.sh: after
+// killing and restarting all 3 cores, edges never regained
+// CoreGRPCAddrs()/CorePeers() and every new connect stayed refused
+// indefinitely (raft.RemoteRegistry: "no known core peers"), even though
+// the cores themselves had already re-elected a leader and were healthy.
+const rejoinInterval = 3 * time.Second
+
 // Membership wraps a memberlist.Memberlist instance and the address
 // directory derived from gossiped NodeMeta.
 type Membership struct {
@@ -85,7 +100,9 @@ type Membership struct {
 	mu      sync.RWMutex
 	members map[string]NodeMeta // keyed by memberlist node name (== NodeID)
 
+	peers         []string // seed addresses from Config.Peers, retried by rejoinLoop when isolated
 	stopReconcile chan struct{}
+	stopRejoin    chan struct{}
 
 	// Redis failover loop state — see redis_failover.go. Started only when
 	// Redis co-location is configured (New's cfg.RedisAddr != "").
@@ -123,7 +140,9 @@ func New(cfg Config, log *slog.Logger) (*Membership, error) {
 		self:                      self,
 		log:                       log,
 		members:                   make(map[string]NodeMeta),
+		peers:                     cfg.Peers,
 		stopReconcile:             make(chan struct{}),
+		stopRejoin:                make(chan struct{}),
 		redisPrimaryDeadThreshold: redisPrimaryDeadThreshold,
 		redisAdmin:                realRedisAdmin{password: cfg.RedisPassword},
 		stopRedisFailover:         make(chan struct{}),
@@ -184,6 +203,13 @@ func New(cfg Config, log *slog.Logger) (*Membership, error) {
 		}
 	}
 
+	// Runs on every role (core and edge alike) — any node can end up
+	// isolated, not just edges. No-op (skipped entirely) when there are
+	// no seed addresses to retry against at all.
+	if len(cfg.Peers) > 0 {
+		go m.rejoinLoop()
+	}
+
 	return m, nil
 }
 
@@ -191,6 +217,7 @@ func New(cfg Config, log *slog.Logger) (*Membership, error) {
 // down the local gossip agent. Called by the lifecycle drain command.
 func (m *Membership) Leave(timeout time.Duration) error {
 	close(m.stopReconcile)
+	close(m.stopRejoin)        // safe even if rejoinLoop was never started (no peers configured) — nothing reads a closed, unstarted channel
 	close(m.stopRedisFailover) // safe even if redisFailoverLoop was never started — nothing reads a closed, unstarted channel
 	if err := m.ml.Leave(timeout); err != nil {
 		return fmt.Errorf("membership: leave: %w", err)
@@ -237,6 +264,60 @@ func (m *Membership) reconcileVoters() {
 			continue
 		}
 		m.log.Info("membership: added core node as raft voter (reconcile)", "node_id", meta.NodeID, "raft_addr", meta.RaftAddr)
+	}
+}
+
+// rejoinLoop retries the original seed join whenever this node currently
+// sees no core peer at all — see rejoinInterval's doc for why this can't
+// be event-driven (there is no event to react to once every core peer
+// this node knew about is gone). A successful Join triggers memberlist's
+// own push/pull anti-entropy, which repopulates m.members via the
+// existing NotifyJoin callback — no extra bookkeeping needed here beyond
+// calling Join again.
+func (m *Membership) rejoinLoop() {
+	ticker := time.NewTicker(rejoinInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.stopRejoin:
+			return
+		case <-ticker.C:
+			m.rejoinIfIsolated()
+		}
+	}
+}
+
+// isIsolated reports whether no core node OTHER than self is currently
+// known. This is "no core peer visible", not "no peer visible at all" —
+// an edge losing every core still sees its sibling edges over gossip
+// (they never went anywhere), so a raw member-count check would never
+// trigger. Core peers specifically are what
+// raft.RemoteRegistry.CorePeers()/CoreGRPCAddrs() need, so that's the
+// condition that actually matters (found the hard way: an earlier version
+// of this check used len(m.Members()) and silently never fired against a
+// live edge, only against an isolated single-node unit test). Compares by
+// NodeID, not GRPCAddr — NodeID is always set and unique, unlike GRPCAddr,
+// which some configs may leave empty.
+func (m *Membership) isIsolated() bool {
+	for _, meta := range m.Members() {
+		if meta.Role == RoleCore && meta.NodeID != m.self.NodeID {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *Membership) rejoinIfIsolated() {
+	if !m.isIsolated() {
+		return
+	}
+	n, err := m.ml.Join(m.peers)
+	if err != nil {
+		m.log.Warn("membership: rejoin attempt failed, still isolated", "peers", m.peers, "error", err)
+		return
+	}
+	if n > 0 {
+		m.log.Info("membership: rejoined cluster after isolation", "peers", m.peers, "contacted", n)
 	}
 }
 

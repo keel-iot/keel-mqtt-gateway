@@ -1,0 +1,70 @@
+# Compose override used only by kafka-redpanda.sh: adds a single-node
+# Redpanda broker (Kafka-compatible, no ZooKeeper — the "simplest option"
+# for validating the kafka-hono OutputConnector against a real broker
+# instead of only unit tests, per keel-design-doc.md's PoC checklist).
+#
+# No host port published for redpanda: verification reads the topic
+# straight from inside the container (`docker exec ... rpk topic consume`),
+# same convention already used for the redis-cli/redis_role checks in the
+# other e2e scripts — one less host port to manage, and the gateway
+# containers reach it over the default compose network at redpanda:9092.
+#
+# Every other host port remaps to this script's own 20xxx range, same
+# convention as the other e2e scripts (`!override` forces replacement of
+# each ports: list; compose otherwise merges list-valued keys by
+# concatenation — see qos-crash-loss.override.yml's comment, worked out
+# there first). Unused by any other e2e script's override (redis-single-core:
+# 24xxx, olric-reconcile: 25xxx/26xxx/28xxx, redis-failover: 27xxx,
+# qos-crash-loss: 29xxx, backup-restore: 19xxx/155xx/164xx).
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.18
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+
+  postgres:
+    ports: !override
+      - "20532:5432"
+  redis-core-1:
+    ports: !override
+      - "20479:6379"
+  redis-core-2:
+    ports: !override
+      - "20480:6379"
+  redis-core-3:
+    ports: !override
+      - "20481:6379"
+  core-1:
+    ports: !override
+      - "20190:8090"
+  core-2:
+    ports: !override
+      - "20290:8090"
+  core-3:
+    ports: !override
+      - "20390:8090"
+  edge-1:
+    depends_on:
+      redpanda:
+        condition: service_started
+    environment:
+      OUTPUT_CONNECTOR: "kafka-hono"
+      KAFKA_HONO_BROKERS: "redpanda:9092"
+      KAFKA_HONO_TOPIC_PREFIX: "hono"
+    ports: !override
+      - "20183:1883"
+  edge-2:
+    ports: !override
+      - "20283:1883"
+  edge-3:
+    ports: !override
+      - "20383:1883"

@@ -1,0 +1,44 @@
+# Compose override for the Raft Apply latency PoC measurement
+# (keel-design-doc.md's PoC checklist: "overhead reale di latenza
+# introdotto da Raft sul piano di controllo... a scala Kimera (1-2k
+# device)"). Adds host ports for the Prometheus /metrics endpoint on each
+# combined node — docker-compose.yml doesn't expose 9090 by default,
+# only used internally — and swaps the credentials file for one with 1500
+# generated devicesim devices merged in (see
+# deploy/docker-compose/credentials.devicesim.yaml, generated via
+# `devicesim gen-credentials -merge-with deploy/docker-compose/credentials.yaml`).
+#
+# `!override` forces a wholesale replacement of each volumes: list —
+# compose merges list-valued keys by concatenation otherwise, which would
+# otherwise try to mount two different files at the same
+# /etc/keel/credentials.yaml target (see the e2e overrides' comments,
+# where this was first worked out for ports: lists).
+#
+# Reuses the plain docker-compose.yml (3 combined core+broker nodes, no
+# separate edge) rather than docker-compose.core-edge-split.yml
+# deliberately: on a combined node, ClaimSession is a direct in-process
+# raft.Apply() call (the node IS the core registry), with no
+# RemoteRegistry/gRPC hop added on top — the histogram
+# (keel_gateway_raft_apply_duration_seconds, internal/cluster/raft's
+# LocalRegistry.apply) already isolates raft.Apply's own cost regardless
+# of topology, but combined mode avoids conflating it with network-hop
+# latency in the surrounding scenario as well.
+services:
+  core-1:
+    ports:
+      - "19091:9090"
+    volumes: !override
+      - ./deploy/docker-compose/credentials.devicesim.yaml:/etc/keel/credentials.yaml:ro
+      - core-1-data:/data
+  core-2:
+    ports:
+      - "19092:9090"
+    volumes: !override
+      - ./deploy/docker-compose/credentials.devicesim.yaml:/etc/keel/credentials.yaml:ro
+      - core-2-data:/data
+  core-3:
+    ports:
+      - "19093:9090"
+    volumes: !override
+      - ./deploy/docker-compose/credentials.devicesim.yaml:/etc/keel/credentials.yaml:ro
+      - core-3-data:/data
