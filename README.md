@@ -137,6 +137,102 @@ No MQTT payload is replicated through Raft. No MQTT packet is routed through Olr
 
 ---
 
+## Data Flows
+
+### 1. CONNECT sequence
+
+When a client connects, the edge node claims the session via Raft to guarantee global uniqueness.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant E as Edge Node
+    participant R as Raft (Core)
+
+    C->>E: CONNECT
+    E->>R: ClaimSession(clientID)
+    R-->>E: OK (Ownership Acquired)
+    E->>E: ACL Check (Local Cache)
+    E->>C: CONNACK
+```
+
+### 2. PUBLISH sequence
+
+Messages are routed directly between edge nodes using a local cache, falling back to Olric only when necessary.
+
+```mermaid
+sequenceDiagram
+    participant P as Publisher
+    participant E1 as Edge 1
+    participant E2 as Edge 2
+    participant O as Olric (Core)
+
+    P->>E1: PUBLISH
+    E1->>E1: Check Local Topic Cache
+    alt Subscriber on E1
+        E1->>P: PUBACK
+        E1->>P_sub: Local Delivery
+    else Subscriber on E2
+        E1->>E2: Forward via gRPC
+        E2->>P_sub: Remote Delivery
+        E1->>P: PUBACK
+    else Unknown Route
+        E1->>O: Lookup Topic
+        O-->>E1: Return Node List
+        E1->>E2: Forward via gRPC
+    end
+```
+
+### 3. FAILOVER sequence
+
+If a core node crashes, Raft elects a new leader and Redis is promoted to avoid QoS data loss.
+
+```mermaid
+sequenceDiagram
+    participant Core1 as Core 1 (Leader)
+    participant Core2 as Core 2 (Follower)
+    participant Core3 as Core 3 (Follower)
+    participant Redis as Redis Primary
+
+    Core1--xCore1: CRASH!
+    Note over Core2,Core3: Heartbeat timeout
+    Core2->>Core2: Request Election
+    Core3->>Core2: Vote
+    Core2->>Core2: Elected Leader
+
+    Note over Core2,Redis: Redis Failover Loop triggers
+    Core2->>Redis: PROMOTE REPLICA (SLAVEOF NO ONE)
+    Redis-->>Core2: OK
+    Core2->>Core3: Update Raft State (New Primary)
+
+    Note over Core2,Core3: Traffic Continues
+```
+
+---
+
+## Kubernetes Deployment
+
+```mermaid
+graph TD
+    LB[LoadBalancer / Ingress] --> EDP[Edge Deployment]
+
+    subgraph Edge Layer
+        EDP --> EP1[Edge Pod 1]
+        EDP --> EP2[Edge Pod 2]
+        EDP --> EP3[Edge Pod N...]
+    end
+
+    EP1 & EP2 & EP3 --> CS[Core StatefulSet]
+
+    subgraph Core Layer
+        CS --> CP1["Core Pod 1<br>Raft + Olric + Redis P"]
+        CS --> CP2["Core Pod 2<br>Raft + Olric + Redis R"]
+        CS --> CP3["Core Pod 3<br>Raft + Olric + Redis R"]
+    end
+```
+
+---
+
 ## Quick start
 
 Requires Docker and Docker Compose.
@@ -188,7 +284,6 @@ Keel is currently production-ready for its core feature set.
 ## Documentation
 
 See:
-- `keel-design-doc.md` (Full architectural deep-dive)
 - `CONTRIBUTING.md`
 
 ---
