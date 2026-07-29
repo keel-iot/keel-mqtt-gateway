@@ -44,6 +44,11 @@ For quick local/dev testing only, you can skip the Secret and set
 `postgresql.external.password` inline instead — the chart then creates
 its own Secret from it. Never set both `existingSecret` and `password`.
 
+The gateway owns its schema — it applies its own versioned migrations
+(`internal/db`, tracked in `devices.schema_migrations`) on every startup.
+No separate init script or manual `CREATE TABLE` step is needed; a fresh
+empty database is enough.
+
 ## 2. Auth backend
 
 Three options (`auth.backend`):
@@ -77,6 +82,27 @@ Three options (`auth.backend`):
     grpc:
       keelCoreAddr: keel-core.keel-core.svc.cluster.local:9000
   ```
+
+### Per-tenant JWT device auth
+
+Devices can also authenticate with a signed JWT instead of the
+password/credential-file/gRPC options above (detected automatically —
+MQTT passwords starting with `eyJ` are treated as a JWT). This is
+independent of `auth.backend` and controlled per-tenant via
+`devices.tenant_gateway_config` (`jwt_auth_enabled`, plus one of the two
+key sources below):
+
+- `jwt_public_key_pem` — a single static RSA/EC public key (PEM). Simple,
+  but rotating the key means updating this column directly.
+- `jwks_url` — a JWKS endpoint; the key is resolved per-token by its `kid`
+  header and cached (`JWKS_CACHE_TTL` env var, default `5m`). Takes
+  precedence over `jwt_public_key_pem` when both are set. This is the
+  path a future Clavex-issued device-token integration would use — lets
+  the IdP rotate signing keys without a config change here.
+
+`TENANT_CACHE_TTL` (default `5m`) controls how long the tenant's gateway
+config itself (which of the two sources is active, whether JWT is enabled
+at all, ...) is cached before re-reading from PostgreSQL.
 
 ## 3. Redpanda/Kafka — keel-native event forwarding (optional)
 
