@@ -1,9 +1,11 @@
 # keel-mqtt-cluster — docker-compose PoC
 
-3 core nodes, no edge nodes (per the design doc's phase-1 scope). Postgres
-holds only `devices.tenant_gateway_config` (empty — the query's safe
-default applies); `AUTH_BACKEND=file` with `credentials.yaml` supplies two
-test devices so no real device database is needed.
+3 core nodes, no edge nodes (per the design doc's phase-1 scope). The
+gateway migrates its own schema on startup (see `internal/db`) against an
+otherwise-empty Postgres — `devices.tenant_gateway_config` ends up empty
+(the query's safe default applies); `AUTH_BACKEND=file` with
+`credentials.yaml` supplies two test devices so no real device database is
+needed.
 
 ```
 docker compose up -d --build

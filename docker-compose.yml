@@ -19,8 +19,6 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: keel_devices
-    volumes:
-      - ./deploy/docker-compose/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "15432:5432"
     healthcheck:

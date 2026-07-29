@@ -39,6 +39,7 @@ import (
 	clusterstore "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/store"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/commander"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/config"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/db"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/connector"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/forwarder"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/httpapi"
@@ -516,6 +517,13 @@ func runServer() {
 	}
 	defer pool.Close()
 	log.Info("connected to database")
+
+	// Schema owned by this repo (see internal/db) — no longer assumes
+	// another service's migrations already created these tables.
+	if err := db.Migrate(ctx, pool, log); err != nil {
+		log.Error("run database migrations", "error", err)
+		os.Exit(1)
+	}
 
 	validator := auth.NewValidator(pool)
 
