@@ -291,8 +291,9 @@ kubectl exec <release>-core-0 -- \
 
 ## Known limitations
 
-- `/readyz` currently only reflects TLS certificate readiness, not "has
-  actually rejoined raft/Olric" — a pod can report Ready before its
-  cluster state has fully converged.
+- `/readyz` reflects TLS certificate readiness and Redis reachability
+  (including, in cluster mode, whether a Redis primary has been designated
+  yet) — but not "has actually rejoined raft/Olric": a pod can report Ready
+  before its cluster state has fully converged on that front.
 - No bundled CronJob for scheduled backups (see section 9) — manual or
   external scheduling for now.
