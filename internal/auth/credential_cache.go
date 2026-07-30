@@ -73,7 +73,7 @@ func (c *credentialCache) invalidate() {
 func cacheKey(deviceID, token string) string {
 	// Not password storage/verification (that's always bcrypt, see doc
 	// comment above) — SHA-256 here only derives a map key so the plaintext
-	// token isn't held in memory as-is. lgtm[go/weak-sensitive-data-hashing]
-	h := sha256.Sum256([]byte(token))
+	// token isn't held in memory as-is.
+	h := sha256.Sum256([]byte(token)) // lgtm[go/weak-sensitive-data-hashing]
 	return deviceID + ":" + hex.EncodeToString(h[:])
 }
