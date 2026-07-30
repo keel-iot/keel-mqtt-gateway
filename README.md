@@ -25,6 +25,7 @@ Instead of making every node equal, Keel separates the cluster into:
 - **Kubernetes-first:** StatefulSet for Core, Deployment + HPA for Edge
 - **Plugin pipeline:** Auth → ACL → Hooks → Broker, Publish → Transform → Forward → Deliver
 - **Bridging:** Kafka / Redpanda / HTTP bridge out-of-the-box
+- **Observability:** Prometheus metrics + OpenTelemetry tracing, tenant-aware sampling
 - **Single binary:** (`--role=edge`, `core`, `combined`)
 - **Apache 2.0 License** (No BSL, no SSPL)
 
@@ -230,6 +231,13 @@ graph TD
         CS --> CP3["Core Pod 3<br>Raft + Olric + Redis R"]
     end
 ```
+
+---
+
+## Observability
+
+- **Metrics:** Prometheus exposed on `/metrics` (`cfg.MetricsAddr`) — connections, auth duration, message throughput, raft apply duration, forwarder drops, and more (`internal/telemetry/metrics.go`).
+- **Tracing:** OpenTelemetry via OTLP/gRPC, enabled by setting `OTLP_ENDPOINT`. Sampling is 10% by default, with per-tenant opt-in to 100% (`tracing_enabled` in tenant gateway config). Spans cover connection auth, publish, raft apply, and forwarder retries (`internal/telemetry/tracing.go`).
 
 ---
 

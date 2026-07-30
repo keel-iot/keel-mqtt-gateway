@@ -1,11 +1,15 @@
 package raft
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	hraft "github.com/hashicorp/raft"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/acl"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
@@ -130,6 +134,11 @@ func NewLocalRegistry(r *hraft.Raft, fsm *FSM) *LocalRegistry {
 }
 
 func (l *LocalRegistry) apply(cmd Command) (applyResult, error) {
+	_, span := telemetry.Tracer().Start(context.Background(), "keel-gateway.raft_apply",
+		oteltrace.WithAttributes(attribute.String("raft.op", string(cmd.Op))),
+	)
+	defer span.End()
+
 	start := time.Now()
 	result := "success"
 	defer func() {
@@ -139,20 +148,24 @@ func (l *LocalRegistry) apply(cmd Command) (applyResult, error) {
 	b, err := json.Marshal(cmd)
 	if err != nil {
 		result = "error"
+		span.SetStatus(codes.Error, err.Error())
 		return applyResult{}, fmt.Errorf("registry: marshal command: %w", err)
 	}
 	future := l.raft.Apply(b, applyTimeout)
 	if err := future.Error(); err != nil {
 		result = "error"
+		span.SetStatus(codes.Error, err.Error())
 		return applyResult{}, fmt.Errorf("registry: apply: %w", err)
 	}
 	res, ok := future.Response().(applyResult)
 	if !ok {
 		result = "error"
+		span.SetStatus(codes.Error, "unexpected apply response type")
 		return applyResult{}, fmt.Errorf("registry: unexpected apply response type %T", future.Response())
 	}
 	if res.err != nil {
 		result = "error"
+		span.SetStatus(codes.Error, res.err.Error())
 	}
 	return res, res.err
 }

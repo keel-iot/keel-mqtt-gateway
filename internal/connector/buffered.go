@@ -7,6 +7,10 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
@@ -110,6 +114,15 @@ func (b *BufferedConnector) drainLoop(ctx context.Context) {
 // on a single message: after the last attempt fails, the message is
 // dropped and counted rather than retried forever.
 func (b *BufferedConnector) forwardWithRetry(ctx context.Context, req *ForwardRequest) {
+	ctx, span := telemetry.Tracer().Start(ctx, "keel-gateway.forward",
+		oteltrace.WithAttributes(
+			attribute.String("connector", b.name),
+			attribute.String("device.id", req.DeviceId),
+			attribute.String("mqtt.topic", req.Topic),
+		),
+	)
+	defer span.End()
+
 	var lastErr error
 	for i, d := range forwardRetryBackoff {
 		if i > 0 {
@@ -136,4 +149,5 @@ func (b *BufferedConnector) forwardWithRetry(ctx context.Context, req *ForwardRe
 	b.log.Error("output-connector: forward failed after retries, dropping",
 		"connector", b.name, "device_id", req.DeviceId, "topic", req.Topic, "error", lastErr)
 	telemetry.ForwarderDropped.WithLabelValues(b.name, "forward_error").Inc()
+	span.SetStatus(codes.Error, lastErr.Error())
 }
