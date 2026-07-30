@@ -11,7 +11,7 @@
 # core's MQTT port" note below is now belt-and-suspenders, not a load-bearing
 # workaround. See --role=combined (docker-compose.yml) for the single-process
 # all-in-one deployment that still needs broker+raft+olric together.
-name: keel-mqtt-cluster-split
+name: keel-mqtt-gateway-split
 
 services:
   postgres:
@@ -73,7 +73,7 @@ services:
   # KNOWN GAP note above for why the process itself isn't fully listener-free.
   core-1:
     build: .
-    image: keel-mqtt-cluster:dev
+    image: keel-mqtt-gateway:dev
     ulimits:
       nofile:
         soft: 65536
@@ -117,7 +117,7 @@ services:
 
   core-2:
     build: .
-    image: keel-mqtt-cluster:dev
+    image: keel-mqtt-gateway:dev
     ulimits:
       nofile:
         soft: 65536
@@ -160,7 +160,7 @@ services:
 
   core-3:
     build: .
-    image: keel-mqtt-cluster:dev
+    image: keel-mqtt-gateway:dev
     ulimits:
       nofile:
         soft: 65536
@@ -206,7 +206,7 @@ services:
   # role-gated in cmd/server/main.go, no workaround needed here.
   edge-1:
     build: .
-    image: keel-mqtt-cluster:dev
+    image: keel-mqtt-gateway:dev
     ulimits:
       nofile:
         soft: 65536
@@ -245,7 +245,7 @@ services:
 
   edge-2:
     build: .
-    image: keel-mqtt-cluster:dev
+    image: keel-mqtt-gateway:dev
     ulimits:
       nofile:
         soft: 65536
@@ -284,7 +284,7 @@ services:
 
   edge-3:
     build: .
-    image: keel-mqtt-cluster:dev
+    image: keel-mqtt-gateway:dev
     ulimits:
       nofile:
         soft: 65536

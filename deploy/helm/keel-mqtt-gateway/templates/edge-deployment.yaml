@@ -59,7 +59,7 @@ spec:
           args:
             - |
               set -e
-              exec /usr/local/bin/keel-mqtt-cluster \
+              exec /usr/local/bin/keel-mqtt-gateway \
                 --role=edge \
                 --node-id="$POD_NAME" \
                 --gossip-bind=0.0.0.0 \
@@ -78,7 +78,7 @@ spec:
           lifecycle:
             preStop:
               exec:
-                command: ["/usr/local/bin/keel-mqtt-cluster", "drain"]
+                command: ["/usr/local/bin/keel-mqtt-gateway", "drain"]
           ports:
             - name: mqtt
               containerPort: 1883

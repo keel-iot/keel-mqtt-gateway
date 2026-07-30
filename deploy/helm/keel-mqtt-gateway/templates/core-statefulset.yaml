@@ -85,7 +85,7 @@ spec:
               ORDINAL=$(echo "$POD_NAME" | grep -o '[0-9]*$')
               BOOTSTRAP=false
               if [ "$ORDINAL" = "{{ .Values.core.bootstrapOrdinal }}" ]; then BOOTSTRAP=true; fi
-              exec /usr/local/bin/keel-mqtt-cluster \
+              exec /usr/local/bin/keel-mqtt-gateway \
                 --role=core \
                 --node-id="$POD_NAME" \
                 --bootstrap=$BOOTSTRAP \
@@ -114,7 +114,7 @@ spec:
                 # See internal/cluster/lifecycle/drain.go — leadership
                 # transfer if this node is leader, notify voluntary exit —
                 # matches keel-design-doc.md's "Uscita pianificata" design.
-                command: ["/usr/local/bin/keel-mqtt-cluster", "drain"]
+                command: ["/usr/local/bin/keel-mqtt-gateway", "drain"]
           ports:
             - name: raft
               containerPort: 7000

@@ -1,4 +1,4 @@
-# Keel MQTT
+# Keel MQTT Gateway
 
 A **cloud-native clustered MQTT broker** written in Go, built on
 [`mochi-mqtt`](https://github.com/mochi-mqtt/server).

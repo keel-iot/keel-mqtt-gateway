@@ -98,7 +98,7 @@ func parseConfig(args []string) *config {
 	fs.StringVar(&c.reportCSV, "report-csv", "", "optional path to append a one-line CSV summary (creates header if file doesn't exist)")
 	fs.DurationVar(&c.deliveryTimeout, "delivery-timeout", 5*time.Second, "max wait for a published message to be observed by a monitor before it counts as lost")
 	fs.BoolVar(&c.dockerStats, "docker-stats", true, "sample `docker stats` for the containers in -docker-containers during the run")
-	fs.StringVar(&containers, "docker-containers", "keel-mqtt-cluster-poc-core-1-1,keel-mqtt-cluster-poc-core-2-1,keel-mqtt-cluster-poc-core-3-1", "comma-separated docker container names to sample stats from")
+	fs.StringVar(&containers, "docker-containers", "keel-mqtt-gateway-poc-core-1-1,keel-mqtt-gateway-poc-core-2-1,keel-mqtt-gateway-poc-core-3-1", "comma-separated docker container names to sample stats from")
 	fs.DurationVar(&c.dockerStatsInterval, "docker-stats-interval", 5*time.Second, "how often to sample docker stats; use a shorter interval (e.g. 2s) for a finer memory curve when distinguishing a plateau from unbounded growth")
 	fs.StringVar(&c.dockerStatsCSV, "docker-stats-csv", "", "optional path to write the full per-sample docker stats time series as CSV (container,elapsed_s,cpu_pct,mem_mb), not just the aggregate summary")
 

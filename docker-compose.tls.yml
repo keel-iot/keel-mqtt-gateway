@@ -10,7 +10,7 @@
 # Certs are generated on the host by deploy/tls/gen-certs.sh into
 # deploy/tls/certs/ (gitignored) and bind-mounted read-only into the
 # container — the CertReloader only ever reads them.
-name: keel-mqtt-cluster-tls
+name: keel-mqtt-gateway-tls
 
 services:
   postgres:
@@ -29,7 +29,7 @@ services:
 
   gateway:
     build: .
-    image: keel-mqtt-cluster:dev
+    image: keel-mqtt-gateway:dev
     depends_on:
       postgres:
         condition: service_healthy

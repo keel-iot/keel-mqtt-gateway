@@ -10,7 +10,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags="-s -w" \
-    -o /keel-mqtt-cluster \
+    -o /keel-mqtt-gateway \
     ./cmd/server
 
 # ── Runtime image ─────────────────────────────────────────────────────────────
@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 FROM alpine:3.20
 RUN addgroup -S keel && adduser -S -G keel keel \
     && mkdir -p /data/raft && chown -R keel:keel /data
-COPY --from=builder /keel-mqtt-cluster /usr/local/bin/keel-mqtt-cluster
+COPY --from=builder /keel-mqtt-gateway /usr/local/bin/keel-mqtt-gateway
 USER keel
 EXPOSE 1883 8883 8085 9090 7000 7100 7946 8090
-ENTRYPOINT ["keel-mqtt-cluster"]
+ENTRYPOINT ["keel-mqtt-gateway"]

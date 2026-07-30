@@ -95,7 +95,7 @@ type clientState struct {
 // validation test (test/e2e/cross_node_test.go). Bypasses the tenant/
 // provider machinery entirely — not a general RBAC mechanism. Remove
 // once the configurable RBAC engine replaces this file's hardcoded ACL
-// logic (see docs discussion on the keel-mqtt-cluster PoC).
+// logic (see docs discussion on the keel-mqtt-gateway PoC).
 const (
 	testConsumerUsername = "test-consumer"
 	testConsumerPassword = "consumer-e2e-testpass"

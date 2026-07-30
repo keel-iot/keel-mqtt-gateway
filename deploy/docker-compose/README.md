@@ -1,4 +1,4 @@
-# keel-mqtt-cluster — docker-compose PoC
+# keel-mqtt-gateway — docker-compose PoC
 
 3 core nodes, no edge nodes (per the design doc's phase-1 scope). The
 gateway migrates its own schema on startup (see `internal/db`) against an
@@ -41,7 +41,7 @@ rather than re-bootstrapping — confirmed by the startup log line
 ## 3. Voluntary drain + rejoin
 
 ```
-docker exec keel-mqtt-cluster-poc-core-1-1 keel-mqtt-cluster drain --management-addr=http://localhost:8090
+docker exec keel-mqtt-gateway-poc-core-1-1 keel-mqtt-gateway drain --management-addr=http://localhost:8090
 docker compose logs core-1 --tail 5   # "lifecycle: leadership transferred", "lifecycle: left gossip cluster"
 docker compose restart core-1
 sleep 10
@@ -115,7 +115,7 @@ Enable it against any core node's management API (the write is forwarded
 to the raft leader automatically, see `CoreRegistry.EnableRuleset`):
 
 ```
-docker exec keel-mqtt-cluster-poc-core-1-1 keel-mqtt-cluster acl ruleset-enable \
+docker exec keel-mqtt-gateway-poc-core-1-1 keel-mqtt-gateway acl ruleset-enable \
   --management-addr=http://localhost:8090 --name=keel-device-default
 ```
 
@@ -158,6 +158,6 @@ code path.
 To disable again (e.g. to compare behavior with/without):
 
 ```
-docker exec keel-mqtt-cluster-poc-core-1-1 keel-mqtt-cluster acl ruleset-disable \
+docker exec keel-mqtt-gateway-poc-core-1-1 keel-mqtt-gateway acl ruleset-disable \
   --management-addr=http://localhost:8090 --name=keel-device-default
 ```

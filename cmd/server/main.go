@@ -1016,7 +1016,7 @@ func runServer() {
 			"sasl_username": cfg.KafkaHonoSASLUser,
 			"sasl_password": cfg.KafkaHonoSASLPass,
 			"topic_prefix":  cfg.KafkaHonoTopicPrefix,
-			"client_id":     "keel-mqtt-cluster-output",
+			"client_id":     "keel-mqtt-gateway-output",
 		}
 
 		var built connector.OutputConnector

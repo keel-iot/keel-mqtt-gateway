@@ -278,15 +278,15 @@ Not wired into a CronJob by this chart yet — run manually via
 ```sh
 # Backup
 kubectl exec <release>-core-0 -- \
-  keel-mqtt-cluster backup raft --output /tmp/snapshot
+  keel-mqtt-gateway backup raft --output /tmp/snapshot
 
 # Restore (disaster recovery — see keel-design-doc.md's "Backup/restore" section)
 kubectl exec <release>-core-0 -- \
-  keel-mqtt-cluster restore raft --snapshot /tmp/snapshot --voters <release>-core-0,<release>-core-1,<release>-core-2
+  keel-mqtt-gateway restore raft --snapshot /tmp/snapshot --voters <release>-core-0,<release>-core-1,<release>-core-2
 
 # ACL
 kubectl exec <release>-core-0 -- \
-  keel-mqtt-cluster acl role create backend-consumer
+  keel-mqtt-gateway acl role create backend-consumer
 ```
 
 ## Known limitations

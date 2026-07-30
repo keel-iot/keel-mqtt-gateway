@@ -84,5 +84,5 @@ wired into a CronJob or Job by this chart yet. Use `kubectl exec` against
 a core pod in the meantime:
 
 ```
-kubectl exec {{ "<release>-core-0" }} -- keel-mqtt-cluster backup raft --output /tmp/snap
+kubectl exec {{ "<release>-core-0" }} -- keel-mqtt-gateway backup raft --output /tmp/snap
 ```

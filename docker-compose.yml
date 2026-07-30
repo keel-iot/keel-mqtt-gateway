@@ -10,7 +10,7 @@
 # No Redpanda (commander/forwarder degrade to no-ops without
 # REDPANDA_BROKERS — fine, this compose file is about raft/gossip/dataplane,
 # not the Redpanda integration, which is unchanged from today's gateway).
-name: keel-mqtt-cluster-poc
+name: keel-mqtt-gateway-poc
 
 services:
   postgres:
@@ -34,7 +34,7 @@ services:
 
   core-1:
     build: .
-    image: keel-mqtt-cluster:dev
+    image: keel-mqtt-gateway:dev
     ulimits:
       nofile:
         soft: 65536
@@ -80,7 +80,7 @@ services:
 
   core-2:
     build: .
-    image: keel-mqtt-cluster:dev
+    image: keel-mqtt-gateway:dev
     ulimits:
       nofile:
         soft: 65536
@@ -123,7 +123,7 @@ services:
 
   core-3:
     build: .
-    image: keel-mqtt-cluster:dev
+    image: keel-mqtt-gateway:dev
     ulimits:
       nofile:
         soft: 65536

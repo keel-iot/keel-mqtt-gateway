@@ -84,7 +84,7 @@ func (c *KafkaHonoConnector) Init(ctx context.Context, config map[string]string)
 		c.config.TopicPrefix = "hono"
 	}
 	if c.config.ClientID == "" {
-		c.config.ClientID = "keel-mqtt-cluster-kafka-hono"
+		c.config.ClientID = "keel-mqtt-gateway-kafka-hono"
 	}
 
 	// A disabled connector must be able to initialize as a no-op with no

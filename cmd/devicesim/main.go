@@ -1,5 +1,5 @@
 // Command devicesim is a standalone load-generation tool for the
-// keel-mqtt-cluster docker-compose deployment. It is NOT part of the
+// keel-mqtt-gateway docker-compose deployment. It is NOT part of the
 // keel-gateway binary and does not import any of its internal packages —
 // it only talks to the cluster the same way a real device or the e2e test
 // would: real MQTT connections (github.com/eclipse/paho.mqtt.golang) against
@@ -38,7 +38,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `devicesim - MQTT device simulator / load generator for keel-mqtt-cluster
+	fmt.Fprint(os.Stderr, `devicesim - MQTT device simulator / load generator for keel-mqtt-gateway
 
 Usage:
   devicesim gen-credentials [flags]   Write a credentials.yaml with N simulated devices

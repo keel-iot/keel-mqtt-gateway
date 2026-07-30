@@ -18,7 +18,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 PROJECT="keel-e2e-backup-restore"
 COMPOSE=(docker compose -f docker-compose.yml -f test/e2e/backup-restore.override.yml -p "$PROJECT")
-IMAGE="keel-mqtt-cluster:dev"
+IMAGE="keel-mqtt-gateway:dev"
 VOTERS="core-1@core-1:7000,core-2@core-2:7000,core-3@core-3:7000"
 BACKUP_HOST_DIR="$(mktemp -d)"
 
@@ -76,7 +76,7 @@ echo "$PRE_ROLES" | grep -q "e2e-backup-role" || fail "ACL role was never create
 log "pre-backup state confirmed: session + ACL role present"
 
 log "3. backup raft against the leader (core-1)"
-docker exec "${PROJECT}-core-1-1" keel-mqtt-cluster backup raft \
+docker exec "${PROJECT}-core-1-1" keel-mqtt-gateway backup raft \
   --output /tmp/raft-backup --management-addr=http://localhost:8090
 docker cp "${PROJECT}-core-1-1:/tmp/raft-backup" "$BACKUP_HOST_DIR/raft-backup"
 [ -f "$BACKUP_HOST_DIR/raft-backup/meta.json" ] || fail "backup did not produce meta.json"
