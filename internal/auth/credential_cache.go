@@ -71,6 +71,9 @@ func (c *credentialCache) invalidate() {
 // The hash is NOT a security substitute for bcrypt — it's only used to avoid
 // storing the plaintext token in memory.
 func cacheKey(deviceID, token string) string {
+	// Not password storage/verification (that's always bcrypt, see doc
+	// comment above) — SHA-256 here only derives a map key so the plaintext
+	// token isn't held in memory as-is. lgtm[go/weak-sensitive-data-hashing]
 	h := sha256.Sum256([]byte(token))
 	return deviceID + ":" + hex.EncodeToString(h[:])
 }
