@@ -35,14 +35,18 @@ import (
 type keelHook struct {
 	mqtt.HookBase
 
-	provider        auth.AuthProvider
-	tenantCache     *auth.TenantConfigCache
-	jwksCache       *auth.JWKSCache
-	retainedStore   *RetainedStore
-	fwd             *forwarder.Forwarder
-	autoProvURL     string
-	log             *slog.Logger
-	outputConnector connector.OutputConnector
+	provider      auth.AuthProvider
+	tenantCache   *auth.TenantConfigCache
+	jwksCache     *auth.JWKSCache
+	retainedStore *RetainedStore
+	fwd           *forwarder.Forwarder
+	autoProvURL   string
+	log           *slog.Logger
+	// outputConnectors is one entry per configured OutputConnector — an
+	// in-process one (e.g. kafka-hono) and/or one per attached plugin
+	// sidecar (see internal/connector/pluginhost). Nil-safe: loop is a
+	// no-op when empty.
+	outputConnectors []connector.OutputConnector
 
 	// Cluster wiring (see internal/cluster). Both nil when the gateway
 	// runs standalone (no --role flag / single-node mode) — every cluster
@@ -929,11 +933,20 @@ func (h *keelHook) forwardToClusterSubscribers(ctx context.Context, info *auth.D
 	}
 }
 
-// forwardToOutputConnector forwards the message to the configured OutputConnector (if any).
-// This runs in parallel to the existing keel-native forwarding (redpanda, cluster) and
-// does not replace it — it's an additional output path for external system integration.
+// forwardToOutputConnector fans the message out to every configured
+// OutputConnector (if any) — one goroutine per connector, so a slow or
+// stuck connector never delays the others or this call's return. This
+// runs in parallel to the existing keel-native forwarding (redpanda,
+// cluster) and does not replace it — it's an additional output path for
+// external system integration (in-process connectors like kafka-hono,
+// and/or attached plugin sidecars — see internal/connector/pluginhost).
+//
+// Each connector is expected to be non-blocking on its own (see
+// connector.BufferedConnector) — the fan-out here is about isolating
+// connectors from each other, not about making an individually blocking
+// connector safe.
 func (h *keelHook) forwardToOutputConnector(ctx context.Context, info *auth.DeviceInfo, pk packets.Packet) {
-	if h.outputConnector == nil {
+	if len(h.outputConnectors) == 0 {
 		return
 	}
 
@@ -945,13 +958,26 @@ func (h *keelHook) forwardToOutputConnector(ctx context.Context, info *auth.Devi
 		TenantId: info.TenantID.String(),
 	}
 
-	resp, err := h.outputConnector.Forward(ctx, req)
-	if err != nil {
-		h.log.Error("output-connector: forward error", "device_id", info.ID, "error", err)
-		return
-	}
-	if !resp.Success {
-		h.log.Warn("output-connector: forward failed", "device_id", info.ID, "error", resp.Error)
+	for _, conn := range h.outputConnectors {
+		conn := conn
+		go func() {
+			// A connector (in particular a plugin-backed one, out of this
+			// binary's control) must never be able to take the broker down.
+			defer func() {
+				if r := recover(); r != nil {
+					h.log.Error("output-connector: forward panicked", "device_id", info.ID, "panic", r)
+				}
+			}()
+
+			resp, err := conn.Forward(ctx, req)
+			if err != nil {
+				h.log.Error("output-connector: forward error", "device_id", info.ID, "error", err)
+				return
+			}
+			if !resp.Success {
+				h.log.Warn("output-connector: forward failed", "device_id", info.ID, "error", resp.Error)
+			}
+		}()
 	}
 }
 

@@ -146,6 +146,14 @@ type Config struct {
 	// Default is "hono". Production uses "hono.telemetry.${tenant_id}".
 	// Only used when OutputConnector == "kafka-hono".
 	KafkaHonoTopicPrefix string
+
+	// OutputConnectorPlugins is a list of "network:addr" entries (e.g.
+	// "tcp:127.0.0.1:7300", "unix:/var/run/keel/plugin.sock"), one per
+	// attached OutputConnector plugin sidecar (see
+	// internal/connector/pluginhost). Empty = no plugins attached
+	// (default). Each entry runs alongside cfg.OutputConnector, not
+	// instead of it — see design doc "N plugin = N sidecar".
+	OutputConnectorPlugins []string
 }
 
 // Load reads configuration from environment variables with sensible defaults for
@@ -260,39 +268,49 @@ func Load() (*Config, error) {
 		}
 	}
 
+	var outputConnectorPlugins []string
+	if v := os.Getenv("OUTPUT_CONNECTOR_PLUGINS"); v != "" {
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				outputConnectorPlugins = append(outputConnectorPlugins, p)
+			}
+		}
+	}
+
 	return &Config{
-		MQTTPort:              mqttPort,
-		MQTTTLSPort:           mqttTLSPort,
-		HTTPPort:              httpPort,
-		DatabaseURL:           dbURL,
-		RedpandaBrokers:       brokers,
-		RedpandaSASLUser:      os.Getenv("REDPANDA_SASL_USER"),
-		RedpandaSASLPass:      os.Getenv("REDPANDA_SASL_PASS"),
-		TwinInboundTopic:      twinTopic,
-		OTAStatusTopic:        otaStatusTopic,
-		CAStatusTopic:         caStatusTopic,
-		DittoCompat:           os.Getenv("DITTO_COMPAT") == "true",
-		DittoInboundTopic:     dittoTopic,
-		HonoCompat:            os.Getenv("HONO_COMPAT") == "true",
-		CommandsTopic:         cmdTopic,
-		DeviceConnectionTopic: connTopic,
-		LogLevel:              logLevel,
-		OTLPEndpoint:          os.Getenv("OTLP_ENDPOINT"),
-		MetricsAddr:           metricsAddr,
-		AutoProvisioningURL:   os.Getenv("AUTO_PROV_URL"),
-		TenantCacheTTL:        tenantCacheTTL,
-		JWKSCacheTTL:          jwksCacheTTL,
-		CredentialCacheTTL:    credCacheTTL,
-		SessionExpiryInterval: sessionExpiryInterval,
-		RedisAddr:             os.Getenv("REDIS_ADDR"),
-		RedisPassword:         os.Getenv("REDIS_PASSWORD"),
-		AuthBackend:           os.Getenv("AUTH_BACKEND"),
-		CredentialFile:        os.Getenv("CREDENTIAL_FILE"),
-		KeelCoreGRPCAddr:      os.Getenv("KEEL_CORE_GRPC_ADDR"),
-		OutputConnector:       os.Getenv("OUTPUT_CONNECTOR"),
-		KafkaHonoBrokers:      os.Getenv("KAFKA_HONO_BROKERS"),
-		KafkaHonoSASLUser:     os.Getenv("KAFKA_HONO_SASL_USER"),
-		KafkaHonoSASLPass:     os.Getenv("KAFKA_HONO_SASL_PASS"),
-		KafkaHonoTopicPrefix:  os.Getenv("KAFKA_HONO_TOPIC_PREFIX"),
+		MQTTPort:               mqttPort,
+		MQTTTLSPort:            mqttTLSPort,
+		HTTPPort:               httpPort,
+		DatabaseURL:            dbURL,
+		RedpandaBrokers:        brokers,
+		RedpandaSASLUser:       os.Getenv("REDPANDA_SASL_USER"),
+		RedpandaSASLPass:       os.Getenv("REDPANDA_SASL_PASS"),
+		TwinInboundTopic:       twinTopic,
+		OTAStatusTopic:         otaStatusTopic,
+		CAStatusTopic:          caStatusTopic,
+		DittoCompat:            os.Getenv("DITTO_COMPAT") == "true",
+		DittoInboundTopic:      dittoTopic,
+		HonoCompat:             os.Getenv("HONO_COMPAT") == "true",
+		CommandsTopic:          cmdTopic,
+		DeviceConnectionTopic:  connTopic,
+		LogLevel:               logLevel,
+		OTLPEndpoint:           os.Getenv("OTLP_ENDPOINT"),
+		MetricsAddr:            metricsAddr,
+		AutoProvisioningURL:    os.Getenv("AUTO_PROV_URL"),
+		TenantCacheTTL:         tenantCacheTTL,
+		JWKSCacheTTL:           jwksCacheTTL,
+		CredentialCacheTTL:     credCacheTTL,
+		SessionExpiryInterval:  sessionExpiryInterval,
+		RedisAddr:              os.Getenv("REDIS_ADDR"),
+		RedisPassword:          os.Getenv("REDIS_PASSWORD"),
+		AuthBackend:            os.Getenv("AUTH_BACKEND"),
+		CredentialFile:         os.Getenv("CREDENTIAL_FILE"),
+		KeelCoreGRPCAddr:       os.Getenv("KEEL_CORE_GRPC_ADDR"),
+		OutputConnector:        os.Getenv("OUTPUT_CONNECTOR"),
+		KafkaHonoBrokers:       os.Getenv("KAFKA_HONO_BROKERS"),
+		KafkaHonoSASLUser:      os.Getenv("KAFKA_HONO_SASL_USER"),
+		KafkaHonoSASLPass:      os.Getenv("KAFKA_HONO_SASL_PASS"),
+		KafkaHonoTopicPrefix:   os.Getenv("KAFKA_HONO_TOPIC_PREFIX"),
+		OutputConnectorPlugins: outputConnectorPlugins,
 	}, nil
 }

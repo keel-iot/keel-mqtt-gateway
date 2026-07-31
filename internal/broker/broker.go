@@ -72,9 +72,12 @@ type Config struct {
 	ClusterFwd      dataplane.Forwarder
 	ClusterNodeID   string
 
-	// OutputConnector forwards device messages to external systems (e.g., Ditto via Hono Kafka).
-	// Nil = no external forwarding (default).
-	OutputConnector connector.OutputConnector
+	// OutputConnectors forward device messages to external systems (e.g.,
+	// Ditto via Hono Kafka, or an attached plugin sidecar — see
+	// internal/connector/pluginhost). Each entry is fanned out to
+	// independently and in parallel; empty = no external forwarding
+	// (default).
+	OutputConnectors []connector.OutputConnector
 
 	// SessionExpiryInterval bounds how long a persistent (clean_session=false)
 	// session's offline QoS1/2 queue, ACL identity (keelHook.OnClientExpired),
@@ -143,19 +146,19 @@ func New(cfg Config, provider auth.AuthProvider, fwd *forwarder.Forwarder, log *
 	}
 
 	hook := &keelHook{
-		provider:        provider,
-		tenantCache:     cfg.TenantConfigCache,
-		jwksCache:       cfg.JWKSCache,
-		retainedStore:   retainedStore,
-		fwd:             fwd,
-		autoProvURL:     cfg.AutoProvisioningURL,
-		log:             log,
-		clusterRegistry: cfg.ClusterRegistry,
-		clusterFwd:      cfg.ClusterFwd,
-		clusterNodeID:   cfg.ClusterNodeID,
-		outputConnector: cfg.OutputConnector,
-		server:          server,
-		liveStats:       cfg.LiveStats,
+		provider:         provider,
+		tenantCache:      cfg.TenantConfigCache,
+		jwksCache:        cfg.JWKSCache,
+		retainedStore:    retainedStore,
+		fwd:              fwd,
+		autoProvURL:      cfg.AutoProvisioningURL,
+		log:              log,
+		clusterRegistry:  cfg.ClusterRegistry,
+		clusterFwd:       cfg.ClusterFwd,
+		clusterNodeID:    cfg.ClusterNodeID,
+		outputConnectors: cfg.OutputConnectors,
+		server:           server,
+		liveStats:        cfg.LiveStats,
 	}
 	// Typed nil guard: an interface value holding a nil *RedisSessionHook is
 	// itself non-nil, which would defeat OnSessionEstablish's `h.sessionStore

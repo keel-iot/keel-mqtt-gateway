@@ -31,7 +31,6 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/dataplane"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/lifecycle"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/management"
-	"github.com/keel-iot/keel-mqtt-gateway/internal/livestatsapi"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/membership"
 	keelraft "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/raft"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
@@ -39,10 +38,12 @@ import (
 	clusterstore "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/store"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/commander"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/config"
-	"github.com/keel-iot/keel-mqtt-gateway/internal/db"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/connector"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/connector/pluginhost"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/db"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/forwarder"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/httpapi"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/livestatsapi"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 	"github.com/keel/pkg/redpanda"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -1001,8 +1002,14 @@ func runServer() {
 		log.Warn("REDPANDA_BROKERS not set — event forwarding disabled")
 	}
 
-	// ── Output connector (external system integration) ─────────────────────────────
-	var outputConn connector.OutputConnector
+	// ── Output connectors (external system integration) ────────────────────────────
+	// One entry for the in-process kafka-hono connector (if configured) plus
+	// one per attached plugin sidecar (if any) — see design doc "N plugin =
+	// N sidecar". Every entry is wrapped in a BufferedConnector so a
+	// slow/unavailable downstream never blocks the MQTT publish hot path,
+	// and hooks.go fans out to all of them independently in parallel.
+	var outputConns []connector.OutputConnector
+
 	if cfg.OutputConnector != "" {
 		factory, ok := connector.Registry[cfg.OutputConnector]
 		if !ok {
@@ -1019,30 +1026,53 @@ func runServer() {
 			"client_id":     "keel-mqtt-gateway-output",
 		}
 
-		var built connector.OutputConnector
-		var err error
-		built, err = factory(connConfig)
+		built, err := factory(connConfig)
 		if err != nil {
 			log.Error("output connector: create failed", "type", cfg.OutputConnector, "error", err)
 			os.Exit(1)
 		}
 
-		// Wrapped in a bounded backpressure buffer (drop-oldest when full)
-		// so a slow/unavailable Kafka/Ditto never blocks the MQTT publish
-		// hot path — see internal/connector.BufferedConnector.
 		buffered := connector.NewBuffered(built, cf.forwarderBufferSize, cfg.OutputConnector, log)
-		outputConn = buffered
-
 		if err := buffered.Init(ctx, connConfig); err != nil {
 			log.Error("output connector: init failed", "type", cfg.OutputConnector, "error", err)
 			os.Exit(1)
 		}
 		buffered.Start(ctx)
-
 		defer func() {
 			_ = buffered.Shutdown(context.Background())
 		}()
+
+		outputConns = append(outputConns, buffered)
 		log.Info("output connector: ready", "type", cfg.OutputConnector, "buffer_size", cf.forwarderBufferSize)
+	}
+
+	for _, pluginAddr := range cfg.OutputConnectorPlugins {
+		network, addr, ok := strings.Cut(pluginAddr, ":")
+		if !ok {
+			log.Error("output connector plugin: invalid address, want 'network:addr'", "value", pluginAddr)
+			os.Exit(1)
+		}
+
+		attached, closePlugin, err := pluginhost.Attach(network, addr)
+		if err != nil {
+			log.Error("output connector plugin: attach failed", "address", pluginAddr, "error", err)
+			os.Exit(1)
+		}
+
+		name := "plugin:" + addr
+		buffered := connector.NewBuffered(attached, cf.forwarderBufferSize, name, log)
+		if err := buffered.Init(ctx, nil); err != nil {
+			log.Error("output connector plugin: init failed", "address", pluginAddr, "error", err)
+			os.Exit(1)
+		}
+		buffered.Start(ctx)
+		defer func() {
+			_ = buffered.Shutdown(context.Background())
+			closePlugin()
+		}()
+
+		outputConns = append(outputConns, buffered)
+		log.Info("output connector plugin: attached", "address", pluginAddr, "buffer_size", cf.forwarderBufferSize)
 	}
 
 	// ── MQTT broker, commander, HTTP adapter ──────────────────────────────────
@@ -1070,7 +1100,7 @@ func runServer() {
 			ClusterRegistry:       clusterRegistry,
 			ClusterFwd:            clusterFwd,
 			ClusterNodeID:         cf.nodeID,
-			OutputConnector:       outputConn,
+			OutputConnectors:      outputConns,
 			SessionExpiryInterval: cfg.SessionExpiryInterval,
 			LiveStats:             liveStats,
 		}, provider, fwd, log)
