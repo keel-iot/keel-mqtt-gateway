@@ -173,24 +173,8 @@ spec:
               valueFrom:
                 {{- include "keel.envSecretRef" (dict "root" . "existingSecret" .Values.redpanda.external.existingSecret "existingSecretKey" .Values.redpanda.external.existingSecretPasswordKey "generatedKey" "redpanda-sasl-password") | nindent 16 }}
             {{- end }}
-            - name: TWIN_INBOUND_TOPIC
-              value: {{ .Values.redpanda.topics.twinInbound | quote }}
-            - name: OTA_STATUS_TOPIC
-              value: {{ .Values.redpanda.topics.otaStatus | quote }}
-            - name: CA_STATUS_TOPIC
-              value: {{ .Values.redpanda.topics.caStatus | quote }}
             - name: COMMANDS_TOPIC
               value: {{ .Values.redpanda.topics.commands | quote }}
-            - name: DEVICE_CONNECTION_TOPIC
-              value: {{ .Values.redpanda.topics.deviceConnection | quote }}
-            - name: DITTO_COMPAT
-              value: {{ .Values.redpanda.dittoCompat.enabled | quote }}
-            {{- if .Values.redpanda.dittoCompat.enabled }}
-            - name: DITTO_INBOUND_TOPIC
-              value: {{ .Values.redpanda.dittoCompat.inboundTopic | quote }}
-            {{- end }}
-            - name: HONO_COMPAT
-              value: {{ .Values.redpanda.honoCompat.enabled | quote }}
             {{- end }}
             {{- if .Values.outputConnector.kafkaHono.enabled }}
             - name: OUTPUT_CONNECTOR

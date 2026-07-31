@@ -40,11 +40,17 @@ postgresql:
     password: "" # inline password — chart creates its own Secret; local/dev use only
 
 # ── Redpanda/Kafka — always external, never bundled ──────────────────────
-# Feeds internal/forwarder (keel-native topics: twin inbound, OTA/CA
-# status mirrors, commands, device connection events) — see
-# internal/config.Config's RedpandaBrokers/RedpandaSASLUser/Pass. Disabled
-# by default (REDPANDA_BROKERS unset means the forwarder becomes a no-op —
-# see cmd/server/main.go's "REDPANDA_BROKERS not set" warning path).
+# Feeds ONLY the commander (platform→device commands consumer) — see
+# internal/config.Config's RedpandaBrokers/RedpandaSASLUser/Pass/CommandsTopic
+# and cmd/server/main.go's commander wiring. Disabled by default
+# (REDPANDA_BROKERS unset means the commander doesn't start — see
+# cmd/server/main.go's "if len(cfg.RedpandaBrokers) > 0" gate).
+#
+# keel's own Redpanda topic taxonomy (twin-service feed, OTA/CA status
+# mirrors, device connection events) and Ditto/Hono compat used to live
+# here too (internal/forwarder), but that's moved out to a standalone
+# OutputConnector plugin — see keel-design-doc.md "Perimetro del
+# componente". This chart does not deploy that plugin (not published yet).
 redpanda:
   enabled: false
   external:
@@ -55,16 +61,7 @@ redpanda:
     existingSecretPasswordKey: password
     saslPassword: "" # inline — local/dev use only
   topics:
-    twinInbound: keel.twin.inbound
-    otaStatus: platform.ota.status
-    caStatus: platform.ca.status
     commands: platform.commands
-    deviceConnection: keel.device.connection
-  dittoCompat:
-    enabled: false
-    inboundTopic: ditto.inbound
-  honoCompat:
-    enabled: false
 
 # ── Output connector (device→platform export, e.g. to Eclipse Ditto via
 # Hono-shaped Kafka topics) — separate broker/credentials from redpanda

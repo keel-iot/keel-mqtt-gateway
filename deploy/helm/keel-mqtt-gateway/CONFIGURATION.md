@@ -104,10 +104,10 @@ key sources below):
 config itself (which of the two sources is active, whether JWT is enabled
 at all, ...) is cached before re-reading from PostgreSQL.
 
-## 3. Redpanda/Kafka — keel-native event forwarding (optional)
+## 3. Redpanda/Kafka — commander only (optional)
 
-Off by default. Enable only if you want device state/OTA/CA/command
-events mirrored to your own Redpanda/Kafka cluster:
+Off by default. Enable only if you want the commander (platform→device
+push commands) — this is the ONLY thing `redpanda.*` feeds now:
 
 ```sh
 kubectl create secret generic keel-redpanda-credentials \
@@ -125,14 +125,14 @@ redpanda:
     saslMechanism: SCRAM-SHA-512   # or SCRAM-SHA-256
     existingSecret: keel-redpanda-credentials
     existingSecretPasswordKey: password
-  # topics.* default to keel's own names (keel.twin.inbound, etc.) —
-  # override only if your Redpanda cluster uses different topic names.
+  topics:
+    commands: platform.commands
 ```
 
-Optional interop flags, both off by default:
-`redpanda.dittoCompat.enabled` (also emit Eclipse Ditto Protocol
-envelopes) and `redpanda.honoCompat.enabled` (accept Eclipse Hono-style
-device topics).
+keel's own device-state/OTA/CA event mirroring and Ditto/Hono compat used
+to be configured here too, but that logic has moved out of the broker
+entirely into a standalone OutputConnector plugin — this chart doesn't
+deploy that plugin (not published yet).
 
 ## 4. Kafka/Ditto output connector (optional)
 
