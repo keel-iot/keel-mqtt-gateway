@@ -232,3 +232,60 @@ devices:
 	// In production, credential changes would typically trigger a server restart
 	// or a reload signal, at which point the cache is properly invalidated.
 }
+
+// ── FileProvider with non-UUID username override ───────────────────────────────
+
+func TestFileProvider_UsernameOverride(t *testing.T) {
+	token := "bridge-token"
+	hash := hashToken(t, token)
+
+	yaml := `
+devices:
+  - device_id: "550e8400-e29b-41d4-a716-446655440000"
+    username: "mqtt-bridge"
+    tenant_id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+    tenant_slug: "acme"
+    password_hash: "` + hash + `"
+`
+	path := tempCredFile(t, yaml)
+	provider := auth.NewFileProvider(path)
+	ctx := context.Background()
+
+	// Connects with the static username, not the device UUID.
+	info, err := provider.ValidatePassword(ctx, "mqtt-bridge", token)
+	if err != nil {
+		t.Fatalf("validation with username override failed: %v", err)
+	}
+	if info.ID.String() != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("DeviceInfo.ID = %v, want the entry's device_id", info.ID)
+	}
+
+	// The UUID itself must NOT also authenticate — only the configured username does.
+	_, err = provider.ValidatePassword(ctx, "550e8400-e29b-41d4-a716-446655440000", token)
+	if err == nil {
+		t.Fatal("device_id succeeded as username (expected failure — username override replaces it, not adds to it)")
+	}
+}
+
+func TestFileProvider_DuplicateCredentialKey(t *testing.T) {
+	yaml := `
+devices:
+  - device_id: "550e8400-e29b-41d4-a716-446655440000"
+    username: "shared-name"
+    tenant_id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+    tenant_slug: "acme"
+    password_hash: "$2a$10$placeholder"
+  - device_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    username: "shared-name"
+    tenant_id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+    tenant_slug: "acme"
+    password_hash: "$2a$10$placeholder"
+`
+	path := tempCredFile(t, yaml)
+	provider := auth.NewFileProvider(path)
+
+	_, err := provider.ValidatePassword(context.Background(), "shared-name", "whatever")
+	if err == nil {
+		t.Fatal("expected load error on duplicate credential key, got success")
+	}
+}
