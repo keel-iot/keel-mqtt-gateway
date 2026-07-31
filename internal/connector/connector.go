@@ -33,6 +33,15 @@ type OutputConnector interface {
 	Shutdown(ctx context.Context) error
 }
 
+// ConnectionEventTopic is the reserved ForwardRequest.Topic value used for
+// device connect/disconnect events (as opposed to a real MQTT publish).
+// Payload is a JSON object {"state": "online"|"offline"}. Reserved because
+// it can never collide with a real device-published MQTT topic (MQTT topic
+// levels can't start with "$" except broker-owned "$SYS" topics, which
+// devices never publish to). A connector that doesn't care about
+// connection events (e.g. kafka-hono) simply ignores this topic.
+const ConnectionEventTopic = "$connection"
+
 // ConnectorFactory creates an OutputConnector from configuration.
 type ConnectorFactory func(config map[string]string) (OutputConnector, error)
 

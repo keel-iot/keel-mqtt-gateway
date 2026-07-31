@@ -41,11 +41,9 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/connector"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/connector/pluginhost"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/db"
-	"github.com/keel-iot/keel-mqtt-gateway/internal/forwarder"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/httpapi"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/livestatsapi"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
-	"github.com/keel/pkg/redpanda"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -966,42 +964,6 @@ func runServer() {
 		}
 	}()
 
-	// ── Redpanda producer ─────────────────────────────────────────────────────
-	// Only needed by the broker/HTTP adapter (device→platform telemetry
-	// forwarding) — a pure core node runs neither, so it skips the Redpanda
-	// connection entirely rather than holding one open unused.
-	var fwd *forwarder.Forwarder
-	if brokerRuntimeEnabled && len(cfg.RedpandaBrokers) > 0 {
-		producer, err := redpanda.NewProducer(redpanda.ProducerConfig{
-			Brokers:      cfg.RedpandaBrokers,
-			ClientID:     "mqtt-gateway",
-			SASLUsername: cfg.RedpandaSASLUser,
-			SASLPassword: cfg.RedpandaSASLPass,
-		})
-		if err != nil {
-			log.Error("connect to redpanda", "error", err)
-			os.Exit(1)
-		}
-		defer producer.Close()
-		fwd = forwarder.New(forwarder.Config{
-			Producer:          producer,
-			TwinInboundTopic:  cfg.TwinInboundTopic,
-			OTAStatusTopic:    cfg.OTAStatusTopic,
-			CAStatusTopic:     cfg.CAStatusTopic,
-			ConnectionTopic:   cfg.DeviceConnectionTopic,
-			DittoCompat:       cfg.DittoCompat,
-			DittoInboundTopic: cfg.DittoInboundTopic,
-			HonoCompat:        cfg.HonoCompat,
-			RDB:               rdb,
-			TenantCache:       tenantCache,
-			Log:               log,
-		})
-		log.Info("redpanda producer ready", "brokers", cfg.RedpandaBrokers)
-	} else {
-		fwd = forwarder.NewNoopForwarder(log)
-		log.Warn("REDPANDA_BROKERS not set — event forwarding disabled")
-	}
-
 	// ── Output connectors (external system integration) ────────────────────────────
 	// One entry for the in-process kafka-hono connector (if configured) plus
 	// one per attached plugin sidecar (if any) — see design doc "N plugin =
@@ -1103,7 +1065,7 @@ func runServer() {
 			OutputConnectors:      outputConns,
 			SessionExpiryInterval: cfg.SessionExpiryInterval,
 			LiveStats:             liveStats,
-		}, provider, fwd, log)
+		}, provider, log)
 		if err != nil {
 			log.Error("create MQTT broker", "error", err)
 			os.Exit(1)
@@ -1236,7 +1198,7 @@ func runServer() {
 		}
 
 		// ── HTTP adapter ────────────────────────────────────────────────────
-		httpHandler := httpapi.NewWithCache(validator, tenantCache, jwksCache, fwd, log)
+		httpHandler := httpapi.NewWithCache(validator, tenantCache, jwksCache, outputConns, log)
 		httpServer = &http.Server{
 			Addr:         fmt.Sprintf(":%d", cfg.HTTPPort),
 			Handler:      httpHandler.Router(),

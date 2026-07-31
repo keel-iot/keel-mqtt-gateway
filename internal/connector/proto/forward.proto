@@ -33,6 +33,13 @@ message ForwardRequest {
   map<string, string> headers = 3;
   string device_id = 4;
   string tenant_id = 5;
+  // tenant_slug and fleet_id carry the rest of the device identity a
+  // keel-flavored connector needs for its own topic-naming/thing-ID
+  // conventions (e.g. the keel plugin's "keel.{tenant_slug}.{fleet_id}...."
+  // Redpanda taxonomy). Generic connectors (e.g. kafka-hono) ignore them.
+  // fleet_id is "nofleet" when the device has no fleet assigned, never empty.
+  string tenant_slug = 6;
+  string fleet_id = 7;
 }
 
 // ForwardResponse is the response from an OutputConnector. Success/error

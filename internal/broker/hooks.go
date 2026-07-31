@@ -26,6 +26,7 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/acl"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/dataplane"
 	keelraft "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/raft"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/connector"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/forwarder"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
@@ -39,9 +40,14 @@ type keelHook struct {
 	tenantCache   *auth.TenantConfigCache
 	jwksCache     *auth.JWKSCache
 	retainedStore *RetainedStore
-	fwd           *forwarder.Forwarder
-	autoProvURL   string
-	log           *slog.Logger
+	// rdb backs the per-tenant daily data-volume quota (see
+	// withinDataVolumeLimit) — the only piece of the former
+	// internal/forwarder.Forwarder that stayed broker-side, since it's a
+	// quota/ACL concern rather than keel-specific output routing. Nil
+	// disables the quota check entirely (fail-open).
+	rdb         *redisrouter.Router
+	autoProvURL string
+	log         *slog.Logger
 	// outputConnectors is one entry per configured OutputConnector — an
 	// in-process one (e.g. kafka-hono) and/or one per attached plugin
 	// sidecar (see internal/connector/pluginhost). Nil-safe: loop is a
@@ -180,9 +186,7 @@ func (h *keelHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) boo
 	}
 
 	go h.provider.UpdateLastSeen(context.Background(), info.ID)
-	if h.fwd != nil {
-		h.fwd.PublishConnection(context.Background(), tenantStr, info.ID.String(), "online")
-	}
+	h.forwardConnectionEvent(info, "online")
 
 	telemetry.ActiveConnections.WithLabelValues(tenantStr).Inc()
 	telemetry.ConnectionsTotal.WithLabelValues(tenantStr, "success").Inc()
@@ -638,13 +642,19 @@ func (h *keelHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet
 	)
 	defer span.End()
 
-	h.fwd.Forward(ctx, info, pk.TopicName, pk.Payload, pk.FixedHeader.Qos)
 	h.forwardToClusterSubscribers(ctx, info, pk)
-	h.forwardToOutputConnector(ctx, info, pk)
+
+	// Per-tenant daily data-volume quota gates only the OutputConnector fan-out
+	// (the Redpanda/plugin-facing side effects), never real MQTT subscriber
+	// delivery above — a noisy tenant over quota still gets normal MQTT
+	// service, it just stops feeding downstream systems until the next day.
+	tenantStr := info.TenantID.String()
+	if h.withinDataVolumeLimit(ctx, tenantStr, len(pk.Payload)) {
+		h.forwardToOutputConnector(ctx, info, pk)
+	}
 
 	go h.provider.UpdateLastSeen(context.Background(), info.ID)
 
-	tenantStr := info.TenantID.String()
 	telemetry.MessagesPublished.WithLabelValues(tenantStr, strconv.Itoa(int(pk.FixedHeader.Qos))).Inc()
 	telemetry.BytesPublished.WithLabelValues(tenantStr).Add(float64(len(pk.Payload)))
 	if h.liveStats != nil {
@@ -723,9 +733,7 @@ func (h *keelHook) OnDisconnect(cl *mqtt.Client, _ error, expire bool) {
 
 	if ok {
 		telemetry.ActiveConnections.WithLabelValues(state.info.TenantID.String()).Dec()
-		if h.fwd != nil {
-			h.fwd.PublishConnection(context.Background(), state.info.TenantID.String(), state.info.ID.String(), "offline")
-		}
+		h.forwardConnectionEvent(state.info, "offline")
 		if cleanup {
 			h.unsubscribeClusterFilters(cl)
 		}
@@ -933,52 +941,66 @@ func (h *keelHook) forwardToClusterSubscribers(ctx context.Context, info *auth.D
 	}
 }
 
-// forwardToOutputConnector fans the message out to every configured
-// OutputConnector (if any) — one goroutine per connector, so a slow or
-// stuck connector never delays the others or this call's return. This
-// runs in parallel to the existing keel-native forwarding (redpanda,
-// cluster) and does not replace it — it's an additional output path for
-// external system integration (in-process connectors like kafka-hono,
-// and/or attached plugin sidecars — see internal/connector/pluginhost).
-//
-// Each connector is expected to be non-blocking on its own (see
-// connector.BufferedConnector) — the fan-out here is about isolating
-// connectors from each other, not about making an individually blocking
-// connector safe.
+// forwardToOutputConnector fans a device publish out to every configured
+// OutputConnector — this is now the ONLY forwarding path off the MQTT hot
+// path (the former in-broker forwarder.Forward, with its keel-specific
+// topic taxonomy/Ditto/Hono-compat logic, has moved out to the keel
+// OutputConnector plugin; see design doc "Meccanismo di plugin"). Real MQTT
+// subscriber delivery (forwardToClusterSubscribers) is separate and comes
+// first — this call must never be able to affect it.
 func (h *keelHook) forwardToOutputConnector(ctx context.Context, info *auth.DeviceInfo, pk packets.Packet) {
-	if len(h.outputConnectors) == 0 {
-		return
-	}
+	connector.FanOut(ctx, h.log, info.ID.String(), h.outputConnectors, &connector.ForwardRequest{
+		Topic:      pk.TopicName,
+		Payload:    pk.Payload,
+		Headers:    map[string]string{"content-type": "application/json"},
+		DeviceId:   info.ID.String(),
+		TenantId:   info.TenantID.String(),
+		TenantSlug: info.TenantSlug,
+		FleetId:    info.FleetIDStr,
+	})
+}
 
-	req := &connector.ForwardRequest{
-		Topic:    pk.TopicName,
-		Payload:  pk.Payload,
-		Headers:  map[string]string{"content-type": "application/json"},
-		DeviceId: info.ID.String(),
-		TenantId: info.TenantID.String(),
+// forwardConnectionEvent fans a device connect/disconnect event out to
+// every configured OutputConnector, using the reserved
+// connector.ConnectionEventTopic — see that constant's doc. Kept as a
+// distinct call site (not tied to OnPublish) because connect/disconnect
+// happen outside the publish hot path, but it shares the exact same
+// fan-out/isolation semantics.
+func (h *keelHook) forwardConnectionEvent(info *auth.DeviceInfo, state string) {
+	payload, err := json.Marshal(map[string]string{"state": state})
+	if err != nil {
+		return // unreachable: static map, Marshal never fails
 	}
+	connector.FanOut(context.Background(), h.log, info.ID.String(), h.outputConnectors, &connector.ForwardRequest{
+		Topic:      connector.ConnectionEventTopic,
+		Payload:    payload,
+		Headers:    map[string]string{"content-type": "application/json"},
+		DeviceId:   info.ID.String(),
+		TenantId:   info.TenantID.String(),
+		TenantSlug: info.TenantSlug,
+		FleetId:    info.FleetIDStr,
+	})
+}
 
-	for _, conn := range h.outputConnectors {
-		conn := conn
-		go func() {
-			// A connector (in particular a plugin-backed one, out of this
-			// binary's control) must never be able to take the broker down.
-			defer func() {
-				if r := recover(); r != nil {
-					h.log.Error("output-connector: forward panicked", "device_id", info.ID, "panic", r)
-				}
-			}()
-
-			resp, err := conn.Forward(ctx, req)
-			if err != nil {
-				h.log.Error("output-connector: forward error", "device_id", info.ID, "error", err)
-				return
-			}
-			if !resp.Success {
-				h.log.Warn("output-connector: forward failed", "device_id", info.ID, "error", resp.Error)
-			}
-		}()
+// withinDataVolumeLimit checks and records the tenant's daily Redpanda/plugin
+// output byte quota (independent of any specific OutputConnector — this is a
+// broker-core ACL/quota concern, not part of any output plugin). Returns
+// true when rdb or tenantCache is nil (feature disabled) or the limit
+// hasn't been hit, false when the tenant is over quota.
+func (h *keelHook) withinDataVolumeLimit(ctx context.Context, tenantID string, payloadBytes int) bool {
+	if h.rdb == nil || h.tenantCache == nil {
+		return true
 	}
+	var maxBytes int64
+	if cfg, _ := h.tenantCache.Get(ctx, tenantID); cfg != nil {
+		maxBytes = cfg.MaxBytesPerDay
+	}
+	if err := forwarder.CheckAndRecordBytes(ctx, h.rdb.Client(), tenantID, payloadBytes, maxBytes); err != nil {
+		h.log.Warn("mqtt-gateway: data volume limit exceeded, dropping output", "tenant", tenantID, "payload_bytes", payloadBytes)
+		telemetry.DataVolumeLimitExceeded.WithLabelValues(tenantID).Inc()
+		return false
+	}
+	return true
 }
 
 // DeviceInfo returns the cached DeviceInfo for a connected client.

@@ -14,7 +14,6 @@ import (
 	keelraft "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/raft"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/connector"
-	"github.com/keel-iot/keel-mqtt-gateway/internal/forwarder"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/listeners"
@@ -110,7 +109,7 @@ func parseClientAuth(v string) (tls.ClientAuthType, error) {
 // and forwarding hooks applied. The returned *CertReloader is nil unless a TLS
 // listener was configured; callers that expose a readiness endpoint should gate
 // on its Ready() method — see cmd/server/main.go's /readyz handler.
-func New(cfg Config, provider auth.AuthProvider, fwd *forwarder.Forwarder, log *slog.Logger) (*mqtt.Server, *CertReloader, error) {
+func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server, *CertReloader, error) {
 	opts := &mqtt.Options{
 		Logger: slog.New(slog.NewJSONHandler(os.Stdout, nil)),
 		// InlineClient is required for any server-side Server.Publish()
@@ -150,7 +149,7 @@ func New(cfg Config, provider auth.AuthProvider, fwd *forwarder.Forwarder, log *
 		tenantCache:      cfg.TenantConfigCache,
 		jwksCache:        cfg.JWKSCache,
 		retainedStore:    retainedStore,
-		fwd:              fwd,
+		rdb:              cfg.RedisClient,
 		autoProvURL:      cfg.AutoProvisioningURL,
 		log:              log,
 		clusterRegistry:  cfg.ClusterRegistry,

@@ -106,12 +106,19 @@ func (x *InitRequest) GetConfig() map[string]string {
 // by design, so the same struct works whether the connector is in-process
 // or an out-of-process plugin.
 type ForwardRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
-	Headers       map[string]string      `protobuf:"bytes,3,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	DeviceId      string                 `protobuf:"bytes,4,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
-	TenantId      string                 `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Topic    string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
+	Payload  []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
+	Headers  map[string]string      `protobuf:"bytes,3,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	DeviceId string                 `protobuf:"bytes,4,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	TenantId string                 `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	// tenant_slug and fleet_id carry the rest of the device identity a
+	// keel-flavored connector needs for its own topic-naming/thing-ID
+	// conventions (e.g. the keel plugin's "keel.{tenant_slug}.{fleet_id}...."
+	// Redpanda taxonomy). Generic connectors (e.g. kafka-hono) ignore them.
+	// fleet_id is "nofleet" when the device has no fleet assigned, never empty.
+	TenantSlug    string `protobuf:"bytes,6,opt,name=tenant_slug,json=tenantSlug,proto3" json:"tenant_slug,omitempty"`
+	FleetId       string `protobuf:"bytes,7,opt,name=fleet_id,json=fleetId,proto3" json:"fleet_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -177,6 +184,20 @@ func (x *ForwardRequest) GetDeviceId() string {
 func (x *ForwardRequest) GetTenantId() string {
 	if x != nil {
 		return x.TenantId
+	}
+	return ""
+}
+
+func (x *ForwardRequest) GetTenantSlug() string {
+	if x != nil {
+		return x.TenantSlug
+	}
+	return ""
+}
+
+func (x *ForwardRequest) GetFleetId() string {
+	if x != nil {
+		return x.FleetId
 	}
 	return ""
 }
@@ -247,13 +268,16 @@ const file_internal_connector_proto_forward_proto_rawDesc = "" +
 	"\x06config\x18\x01 \x03(\v2'.keel.connector.InitRequest.ConfigEntryR\x06config\x1a9\n" +
 	"\vConfigEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xfd\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb9\x02\n" +
 	"\x0eForwardRequest\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x18\n" +
 	"\apayload\x18\x02 \x01(\fR\apayload\x12E\n" +
 	"\aheaders\x18\x03 \x03(\v2+.keel.connector.ForwardRequest.HeadersEntryR\aheaders\x12\x1b\n" +
 	"\tdevice_id\x18\x04 \x01(\tR\bdeviceId\x12\x1b\n" +
-	"\ttenant_id\x18\x05 \x01(\tR\btenantId\x1a:\n" +
+	"\ttenant_id\x18\x05 \x01(\tR\btenantId\x12\x1f\n" +
+	"\vtenant_slug\x18\x06 \x01(\tR\n" +
+	"tenantSlug\x12\x19\n" +
+	"\bfleet_id\x18\a \x01(\tR\afleetId\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"A\n" +

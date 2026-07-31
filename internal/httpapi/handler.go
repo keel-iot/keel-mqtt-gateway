@@ -18,6 +18,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/base64"
 	"io"
 	"log/slog"
@@ -27,34 +28,50 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/auth"
-	"github.com/keel-iot/keel-mqtt-gateway/internal/forwarder"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/connector"
 )
 
 // Handler holds the HTTP adapter dependencies.
 type Handler struct {
-	validator   *auth.Validator
-	tenantCache *auth.TenantConfigCache
-	jwksCache   *auth.JWKSCache
-	fwd         *forwarder.Forwarder
-	log         *slog.Logger
+	validator        *auth.Validator
+	tenantCache      *auth.TenantConfigCache
+	jwksCache        *auth.JWKSCache
+	outputConnectors []connector.OutputConnector
+	log              *slog.Logger
 }
 
 // New creates a new HTTP adapter Handler.
-func New(validator *auth.Validator, fwd *forwarder.Forwarder, log *slog.Logger) *Handler {
+func New(validator *auth.Validator, outputConnectors []connector.OutputConnector, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{validator: validator, fwd: fwd, log: log}
+	return &Handler{validator: validator, outputConnectors: outputConnectors, log: log}
 }
 
 // NewWithCache creates a Handler that also supports per-tenant JWT
 // authentication. jwks may be nil if no tenant uses JWKSURL — tenants that
 // do will fail JWT auth until it's provided.
-func NewWithCache(validator *auth.Validator, cache *auth.TenantConfigCache, jwks *auth.JWKSCache, fwd *forwarder.Forwarder, log *slog.Logger) *Handler {
+func NewWithCache(validator *auth.Validator, cache *auth.TenantConfigCache, jwks *auth.JWKSCache, outputConnectors []connector.OutputConnector, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{validator: validator, tenantCache: cache, jwksCache: jwks, fwd: fwd, log: log}
+	return &Handler{validator: validator, tenantCache: cache, jwksCache: jwks, outputConnectors: outputConnectors, log: log}
+}
+
+// forward fans a device HTTP-adapter publish out to every configured
+// OutputConnector — the HTTP adapter's equivalent of hooks.go's
+// forwardToOutputConnector, since it's a second, independent MQTT-less
+// ingestion path into the same output plugins.
+func (h *Handler) forward(ctx context.Context, device *auth.DeviceInfo, topic string, payload []byte) {
+	connector.FanOut(ctx, h.log, device.ID.String(), h.outputConnectors, &connector.ForwardRequest{
+		Topic:      topic,
+		Payload:    payload,
+		Headers:    map[string]string{"content-type": "application/json"},
+		DeviceId:   device.ID.String(),
+		TenantId:   device.TenantID.String(),
+		TenantSlug: device.TenantSlug,
+		FleetId:    device.FleetIDStr,
+	})
 }
 
 // Router returns the chi router for the HTTP adapter.
@@ -91,7 +108,7 @@ func (h *Handler) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// QoS 0 — at-most-once
-	h.fwd.Forward(r.Context(), device, "telemetry/metrics", payload, 0)
+	h.forward(r.Context(), device, "telemetry/metrics", payload)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -102,7 +119,7 @@ func (h *Handler) handleTelemetrySub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sub := chi.URLParam(r, "sub")
-	h.fwd.Forward(r.Context(), device, "telemetry/"+sub, payload, 0)
+	h.forward(r.Context(), device, "telemetry/"+sub, payload)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -113,8 +130,10 @@ func (h *Handler) handleEvent(subject string) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		// QoS 1 — at-least-once (Redpanda publish is synchronous, so ack = 201)
-		h.fwd.Forward(r.Context(), device, "event/"+subject, payload, 1)
+		// QoS 1 — at-least-once semantic; the OutputConnector fan-out is
+		// itself async (see connector.BufferedConnector), so this ack
+		// means "accepted for forwarding", not "forwarded".
+		h.forward(r.Context(), device, "event/"+subject, payload)
 		w.WriteHeader(http.StatusCreated)
 	}
 }
@@ -126,7 +145,7 @@ func (h *Handler) handleEventSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subject := chi.URLParam(r, "subject")
-	h.fwd.Forward(r.Context(), device, "event/"+subject, payload, 1)
+	h.forward(r.Context(), device, "event/"+subject, payload)
 	w.WriteHeader(http.StatusCreated)
 }
 

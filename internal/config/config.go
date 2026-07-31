@@ -28,47 +28,10 @@ type Config struct {
 	RedpandaSASLUser string
 	RedpandaSASLPass string
 
-	// TwinInboundTopic is the keel-native Redpanda topic the gateway publishes
-	// device state to; keel's twin-service consumes it. The envelope is keel's
-	// own format (no Ditto/Hono references). Set empty to disable emission.
-	// Defaults to "keel.twin.inbound".
-	TwinInboundTopic string
-
-	// OTAStatusTopic is the flat Redpanda topic that device OTA status messages
-	// (status/ota) are mirrored to for ota-service. Empty disables the mirror.
-	// Defaults to "platform.ota.status".
-	OTAStatusTopic string
-
-	// CAStatusTopic is the flat Redpanda topic that device SSH CA anchor acks
-	// (status/ca) are mirrored to for provisioning-service. Empty disables the
-	// mirror. Defaults to "platform.ca.status".
-	CAStatusTopic string
-
-	// DittoCompat enables optional Eclipse Ditto Protocol interop: when true the
-	// gateway ALSO emits Ditto Protocol envelopes to DittoInboundTopic, so an
-	// external Eclipse Ditto can consume them — letting mqtt-gateway act as a
-	// drop-in Eclipse Hono replacement in front of a customer's Ditto.
-	// Defaults to false.
-	DittoCompat bool
-
-	// DittoInboundTopic is the Redpanda topic used for Ditto Protocol interop.
-	// Only used when DittoCompat is true. Defaults to "ditto.inbound".
-	DittoInboundTopic string
-
-	// HonoCompat enables optional Eclipse Hono inbound topic compatibility:
-	// when true the gateway accepts Hono-style device topics (routing infix
-	// "<tenant>/<device>", "via/<sub>/…" gateway pattern, property bags).
-	// When false only keel-native short topics are accepted. Defaults to false.
-	HonoCompat bool
-
 	// CommandsTopic is the Redpanda topic that carries platform→device commands.
 	// The commander consumes from this topic and pushes commands to connected devices.
 	// Defaults to "platform.commands".
 	CommandsTopic string
-
-	// DeviceConnectionTopic is the Redpanda topic for device connect/disconnect
-	// events consumed by twin-service. Defaults to "keel.device.connection".
-	DeviceConnectionTopic string
 
 	// LogLevel controls the slog output level.
 	LogLevel string
@@ -200,34 +163,9 @@ func Load() (*Config, error) {
 		}
 	}
 
-	twinTopic := os.Getenv("TWIN_INBOUND_TOPIC")
-	if twinTopic == "" {
-		twinTopic = "keel.twin.inbound"
-	}
-
-	otaStatusTopic := os.Getenv("OTA_STATUS_TOPIC")
-	if otaStatusTopic == "" {
-		otaStatusTopic = "platform.ota.status"
-	}
-
-	caStatusTopic := os.Getenv("CA_STATUS_TOPIC")
-	if caStatusTopic == "" {
-		caStatusTopic = "platform.ca.status"
-	}
-
-	dittoTopic := os.Getenv("DITTO_INBOUND_TOPIC")
-	if dittoTopic == "" {
-		dittoTopic = "ditto.inbound"
-	}
-
 	cmdTopic := os.Getenv("COMMANDS_TOPIC")
 	if cmdTopic == "" {
 		cmdTopic = "platform.commands"
-	}
-
-	connTopic := os.Getenv("DEVICE_CONNECTION_TOPIC")
-	if connTopic == "" {
-		connTopic = "keel.device.connection"
 	}
 
 	logLevel := os.Getenv("LOG_LEVEL")
@@ -285,14 +223,7 @@ func Load() (*Config, error) {
 		RedpandaBrokers:        brokers,
 		RedpandaSASLUser:       os.Getenv("REDPANDA_SASL_USER"),
 		RedpandaSASLPass:       os.Getenv("REDPANDA_SASL_PASS"),
-		TwinInboundTopic:       twinTopic,
-		OTAStatusTopic:         otaStatusTopic,
-		CAStatusTopic:          caStatusTopic,
-		DittoCompat:            os.Getenv("DITTO_COMPAT") == "true",
-		DittoInboundTopic:      dittoTopic,
-		HonoCompat:             os.Getenv("HONO_COMPAT") == "true",
 		CommandsTopic:          cmdTopic,
-		DeviceConnectionTopic:  connTopic,
 		LogLevel:               logLevel,
 		OTLPEndpoint:           os.Getenv("OTLP_ENDPOINT"),
 		MetricsAddr:            metricsAddr,
