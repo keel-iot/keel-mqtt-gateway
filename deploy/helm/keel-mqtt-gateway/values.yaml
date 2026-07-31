@@ -111,6 +111,19 @@ core:
   affinity: {} # default (see template): required podAntiAffinity across core pods by hostname
   terminationGracePeriodSeconds: 60 # covers raft.LeadershipTransfer() + drain, see preStop hook
 
+  # fsGroup is required: the image runs as a non-root user (Dockerfile's
+  # `USER keel`, a dynamically-assigned Alpine system UID, not pinned) and
+  # the raft-data/redis-data PVCs are fresh volumes with no relation to the
+  # image's own baked-in /data ownership. Without fsGroup, most CSI
+  # provisioners mount them root-owned and the container gets
+  # "permission denied" creating the raft snapshot dir on first boot.
+  # fsGroup adds this GID as a supplemental group on the pod's containers
+  # AND chowns the volume's group to it — works regardless of the image's
+  # actual (unpinned) UID. 10000 is an arbitrary non-privileged GID, not
+  # tied to anything else.
+  podSecurityContext:
+    fsGroup: 10000
+
   persistence:
     raft:
       size: 2Gi

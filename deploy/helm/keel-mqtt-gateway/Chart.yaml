@@ -8,7 +8,7 @@ description: >-
   outputConnector.kafkaHono.external) — this chart never bundles or deploys
   them itself.
 type: application
-version: 0.2.1
+version: 0.2.2
 appVersion: "0.2.1"
 home: https://github.com/keel-iot/keel-mqtt-gateway
 sources:
