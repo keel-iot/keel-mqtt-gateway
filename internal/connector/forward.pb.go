@@ -21,27 +21,104 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type Empty struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Empty) Reset() {
+	*x = Empty{}
+	mi := &file_internal_connector_proto_forward_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Empty) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Empty) ProtoMessage() {}
+
+func (x *Empty) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_connector_proto_forward_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Empty.ProtoReflect.Descriptor instead.
+func (*Empty) Descriptor() ([]byte, []int) {
+	return file_internal_connector_proto_forward_proto_rawDescGZIP(), []int{0}
+}
+
+type InitRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Config        map[string]string      `protobuf:"bytes,1,rep,name=config,proto3" json:"config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InitRequest) Reset() {
+	*x = InitRequest{}
+	mi := &file_internal_connector_proto_forward_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InitRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InitRequest) ProtoMessage() {}
+
+func (x *InitRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_connector_proto_forward_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InitRequest.ProtoReflect.Descriptor instead.
+func (*InitRequest) Descriptor() ([]byte, []int) {
+	return file_internal_connector_proto_forward_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *InitRequest) GetConfig() map[string]string {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
 // ForwardRequest is the message sent to an OutputConnector.
-// All fields are serializable — designed for future out-of-process plugin transport.
+// All fields are serializable — no live connections or in-process pointers,
+// by design, so the same struct works whether the connector is in-process
+// or an out-of-process plugin.
 type ForwardRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// topic is the Kafka topic to publish to.
-	Topic string `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
-	// payload is the raw message bytes (typically JSON).
-	Payload []byte `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
-	// headers are Kafka record headers (key-value pairs).
-	Headers map[string]string `protobuf:"bytes,3,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// device_id is the device identifier (required by Ditto's hono-to-ditto mapping).
-	DeviceId string `protobuf:"bytes,4,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
-	// tenant_id is the tenant identifier (required by Ditto's hono-to-ditto mapping).
-	TenantId      string `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
+	Headers       map[string]string      `protobuf:"bytes,3,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	DeviceId      string                 `protobuf:"bytes,4,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	TenantId      string                 `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ForwardRequest) Reset() {
 	*x = ForwardRequest{}
-	mi := &file_internal_connector_proto_forward_proto_msgTypes[0]
+	mi := &file_internal_connector_proto_forward_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -53,7 +130,7 @@ func (x *ForwardRequest) String() string {
 func (*ForwardRequest) ProtoMessage() {}
 
 func (x *ForwardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_connector_proto_forward_proto_msgTypes[0]
+	mi := &file_internal_connector_proto_forward_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -66,7 +143,7 @@ func (x *ForwardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardRequest.ProtoReflect.Descriptor instead.
 func (*ForwardRequest) Descriptor() ([]byte, []int) {
-	return file_internal_connector_proto_forward_proto_rawDescGZIP(), []int{0}
+	return file_internal_connector_proto_forward_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ForwardRequest) GetTopic() string {
@@ -104,20 +181,21 @@ func (x *ForwardRequest) GetTenantId() string {
 	return ""
 }
 
-// ForwardResponse is the response from an OutputConnector.
+// ForwardResponse is the response from an OutputConnector. Success/error
+// are carried as plain fields rather than a gRPC status — a forward
+// failure is an expected, retryable outcome (see connector.BufferedConnector),
+// not an exceptional one.
 type ForwardResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// success indicates the message was forwarded successfully.
-	Success bool `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
-	// error contains an error message if success is false.
-	Error         string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ForwardResponse) Reset() {
 	*x = ForwardResponse{}
-	mi := &file_internal_connector_proto_forward_proto_msgTypes[1]
+	mi := &file_internal_connector_proto_forward_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -129,7 +207,7 @@ func (x *ForwardResponse) String() string {
 func (*ForwardResponse) ProtoMessage() {}
 
 func (x *ForwardResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_connector_proto_forward_proto_msgTypes[1]
+	mi := &file_internal_connector_proto_forward_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -142,7 +220,7 @@ func (x *ForwardResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardResponse.ProtoReflect.Descriptor instead.
 func (*ForwardResponse) Descriptor() ([]byte, []int) {
-	return file_internal_connector_proto_forward_proto_rawDescGZIP(), []int{1}
+	return file_internal_connector_proto_forward_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ForwardResponse) GetSuccess() bool {
@@ -163,11 +241,17 @@ var File_internal_connector_proto_forward_proto protoreflect.FileDescriptor
 
 const file_internal_connector_proto_forward_proto_rawDesc = "" +
 	"\n" +
-	"&internal/connector/proto/forward.proto\x12\tconnector\"\xf8\x01\n" +
+	"&internal/connector/proto/forward.proto\x12\x0ekeel.connector\"\a\n" +
+	"\x05Empty\"\x89\x01\n" +
+	"\vInitRequest\x12?\n" +
+	"\x06config\x18\x01 \x03(\v2'.keel.connector.InitRequest.ConfigEntryR\x06config\x1a9\n" +
+	"\vConfigEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xfd\x01\n" +
 	"\x0eForwardRequest\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\x12@\n" +
-	"\aheaders\x18\x03 \x03(\v2&.connector.ForwardRequest.HeadersEntryR\aheaders\x12\x1b\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\x12E\n" +
+	"\aheaders\x18\x03 \x03(\v2+.keel.connector.ForwardRequest.HeadersEntryR\aheaders\x12\x1b\n" +
 	"\tdevice_id\x18\x04 \x01(\tR\bdeviceId\x12\x1b\n" +
 	"\ttenant_id\x18\x05 \x01(\tR\btenantId\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
@@ -175,7 +259,12 @@ const file_internal_connector_proto_forward_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"A\n" +
 	"\x0fForwardResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05errorB:Z8github.com/keel-iot/keel-mqtt-gateway/internal/connectorb\x06proto3"
+	"\x05error\x18\x02 \x01(\tR\x05error2\x90\x02\n" +
+	"\x0fOutputConnector\x12:\n" +
+	"\x04Init\x12\x1b.keel.connector.InitRequest\x1a\x15.keel.connector.Empty\x12J\n" +
+	"\aForward\x12\x1e.keel.connector.ForwardRequest\x1a\x1f.keel.connector.ForwardResponse\x12;\n" +
+	"\vHealthCheck\x12\x15.keel.connector.Empty\x1a\x15.keel.connector.Empty\x128\n" +
+	"\bShutdown\x12\x15.keel.connector.Empty\x1a\x15.keel.connector.EmptyB:Z8github.com/keel-iot/keel-mqtt-gateway/internal/connectorb\x06proto3"
 
 var (
 	file_internal_connector_proto_forward_proto_rawDescOnce sync.Once
@@ -189,19 +278,31 @@ func file_internal_connector_proto_forward_proto_rawDescGZIP() []byte {
 	return file_internal_connector_proto_forward_proto_rawDescData
 }
 
-var file_internal_connector_proto_forward_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_internal_connector_proto_forward_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_internal_connector_proto_forward_proto_goTypes = []any{
-	(*ForwardRequest)(nil),  // 0: connector.ForwardRequest
-	(*ForwardResponse)(nil), // 1: connector.ForwardResponse
-	nil,                     // 2: connector.ForwardRequest.HeadersEntry
+	(*Empty)(nil),           // 0: keel.connector.Empty
+	(*InitRequest)(nil),     // 1: keel.connector.InitRequest
+	(*ForwardRequest)(nil),  // 2: keel.connector.ForwardRequest
+	(*ForwardResponse)(nil), // 3: keel.connector.ForwardResponse
+	nil,                     // 4: keel.connector.InitRequest.ConfigEntry
+	nil,                     // 5: keel.connector.ForwardRequest.HeadersEntry
 }
 var file_internal_connector_proto_forward_proto_depIdxs = []int32{
-	2, // 0: connector.ForwardRequest.headers:type_name -> connector.ForwardRequest.HeadersEntry
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	4, // 0: keel.connector.InitRequest.config:type_name -> keel.connector.InitRequest.ConfigEntry
+	5, // 1: keel.connector.ForwardRequest.headers:type_name -> keel.connector.ForwardRequest.HeadersEntry
+	1, // 2: keel.connector.OutputConnector.Init:input_type -> keel.connector.InitRequest
+	2, // 3: keel.connector.OutputConnector.Forward:input_type -> keel.connector.ForwardRequest
+	0, // 4: keel.connector.OutputConnector.HealthCheck:input_type -> keel.connector.Empty
+	0, // 5: keel.connector.OutputConnector.Shutdown:input_type -> keel.connector.Empty
+	0, // 6: keel.connector.OutputConnector.Init:output_type -> keel.connector.Empty
+	3, // 7: keel.connector.OutputConnector.Forward:output_type -> keel.connector.ForwardResponse
+	0, // 8: keel.connector.OutputConnector.HealthCheck:output_type -> keel.connector.Empty
+	0, // 9: keel.connector.OutputConnector.Shutdown:output_type -> keel.connector.Empty
+	6, // [6:10] is the sub-list for method output_type
+	2, // [2:6] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_internal_connector_proto_forward_proto_init() }
@@ -215,9 +316,9 @@ func file_internal_connector_proto_forward_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_connector_proto_forward_proto_rawDesc), len(file_internal_connector_proto_forward_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   6,
 			NumExtensions: 0,
-			NumServices:   0,
+			NumServices:   1,
 		},
 		GoTypes:           file_internal_connector_proto_forward_proto_goTypes,
 		DependencyIndexes: file_internal_connector_proto_forward_proto_depIdxs,

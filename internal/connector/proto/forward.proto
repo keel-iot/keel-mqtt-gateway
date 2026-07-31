@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package keel.connector;
+
+option go_package = "github.com/keel-iot/keel-mqtt-gateway/internal/connector";
+
+// OutputConnector is the gRPC contract between the broker (host) and an
+// output connector — whether the connector runs in-process (built into
+// this binary, e.g. kafka-hono) or out-of-process as a sidecar plugin
+// (hashicorp/go-plugin, see internal/connector/pluginhost). It mirrors the
+// connector.OutputConnector Go interface exactly, one RPC per method, so a
+// call site never needs to know which transport backs a given connector.
+service OutputConnector {
+  rpc Init(InitRequest) returns (Empty);
+  rpc Forward(ForwardRequest) returns (ForwardResponse);
+  rpc HealthCheck(Empty) returns (Empty);
+  rpc Shutdown(Empty) returns (Empty);
+}
+
+message Empty {}
+
+message InitRequest {
+  map<string, string> config = 1;
+}
+
+// ForwardRequest is the message sent to an OutputConnector.
+// All fields are serializable — no live connections or in-process pointers,
+// by design, so the same struct works whether the connector is in-process
+// or an out-of-process plugin.
+message ForwardRequest {
+  string topic = 1;
+  bytes payload = 2;
+  map<string, string> headers = 3;
+  string device_id = 4;
+  string tenant_id = 5;
+}
+
+// ForwardResponse is the response from an OutputConnector. Success/error
+// are carried as plain fields rather than a gRPC status — a forward
+// failure is an expected, retryable outcome (see connector.BufferedConnector),
+// not an exceptional one.
+message ForwardResponse {
+  bool success = 1;
+  string error = 2;
+}
