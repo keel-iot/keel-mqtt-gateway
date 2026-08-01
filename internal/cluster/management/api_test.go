@@ -29,9 +29,9 @@ func newFakeACLRegistry() *fakeACLRegistry {
 }
 
 // Registry interface (unused by ACL tests, no-op).
-func (f *fakeACLRegistry) Subscribe(topic, nodeID string) error   { return nil }
-func (f *fakeACLRegistry) Unsubscribe(topic, nodeID string) error { return nil }
-func (f *fakeACLRegistry) NodesFor(topic string) []string         { return nil }
+func (f *fakeACLRegistry) Subscribe(topic, nodeID string) error        { return nil }
+func (f *fakeACLRegistry) Unsubscribe(topic, nodeID string) error      { return nil }
+func (f *fakeACLRegistry) NodesFor(topic, localNodeID string) []string { return nil }
 func (f *fakeACLRegistry) ClaimSession(clientID, nodeID string) (string, error) {
 	return "", nil
 }

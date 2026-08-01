@@ -91,7 +91,7 @@ func TestRouterPurgeNodeSingleStoreCall(t *testing.T) {
 	// core-1 fully purged, core-2's own entry on t/a survives.
 	waitForNodes(t, r, "t/a", []string{"core-2"})
 	for _, f := range []string{"t/a", "t/b", "t/c", "t/d", "t/e"} {
-		if nodes := r.NodesFor(f); len(nodes) != 0 && !(f == "t/a" && len(nodes) == 1 && nodes[0] == "core-2") {
+		if nodes := r.NodesFor(f, ""); len(nodes) != 0 && !(f == "t/a" && len(nodes) == 1 && nodes[0] == "core-2") {
 			t.Fatalf("filter %q after purge: %v", f, nodes)
 		}
 	}
@@ -130,7 +130,7 @@ func TestRouterPurgeNodeConvergesAcrossNodes(t *testing.T) {
 	for time.Now().Before(deadline) {
 		ok := true
 		for _, f := range filters {
-			if !containsNode(rA.NodesFor(matchTopic(f)), "core-1") {
+			if !containsNode(rA.NodesFor(matchTopic(f), ""), "core-1") {
 				ok = false
 			}
 		}
@@ -156,12 +156,12 @@ func TestRouterPurgeNodeConvergesAcrossNodes(t *testing.T) {
 				allClean = false
 			}
 			for _, f := range filters {
-				nodes := r.NodesFor(matchTopic(f))
+				nodes := r.NodesFor(matchTopic(f), "")
 				if containsNode(nodes, "core-1") {
 					allClean = false
 				}
 			}
-			alphaNodes := r.NodesFor("t/alpha")
+			alphaNodes := r.NodesFor("t/alpha", "")
 			if !containsNode(alphaNodes, "core-2") || containsNode(alphaNodes, "core-1") {
 				allClean = false
 			}

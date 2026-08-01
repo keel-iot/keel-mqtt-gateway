@@ -111,10 +111,10 @@ func (r *RemoteRegistry) Unsubscribe(topic, nodeID string) error {
 // for routing decisions (reads never require the leader), so it queries
 // the first reachable peer and returns nil on total failure rather than
 // blocking the MQTT publish path.
-func (r *RemoteRegistry) NodesFor(topic string) []string {
+func (r *RemoteRegistry) NodesFor(topic, localNodeID string) []string {
 	var out []string
 	_ = r.forEachPeer(func(c pb.RegistryClient, ctx context.Context) error {
-		resp, err := c.NodesFor(ctx, &pb.NodesForRequest{Topic: topic})
+		resp, err := c.NodesFor(ctx, &pb.NodesForRequest{Topic: topic, LocalNodeId: localNodeID})
 		if err != nil {
 			return err
 		}

@@ -52,7 +52,7 @@ func (f *fakeRegistry) Unsubscribe(topic, nodeID string) error {
 	f.unsubscribeCalls = append(f.unsubscribeCalls, unsubscribeCall{topic, nodeID})
 	return nil
 }
-func (f *fakeRegistry) NodesFor(topic string) []string { return nil }
+func (f *fakeRegistry) NodesFor(topic, localNodeID string) []string { return nil }
 func (f *fakeRegistry) ClaimSession(clientID, nodeID string) (string, error) {
 	if f.claimFn != nil {
 		return f.claimFn(clientID, nodeID)

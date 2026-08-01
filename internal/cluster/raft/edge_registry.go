@@ -47,8 +47,8 @@ func (e *EdgeRegistry) Unsubscribe(topic, nodeID string) error {
 	return e.router.Unsubscribe(topic, nodeID)
 }
 
-func (e *EdgeRegistry) NodesFor(topic string) []string {
-	return e.router.NodesFor(topic)
+func (e *EdgeRegistry) NodesFor(topic, localNodeID string) []string {
+	return e.router.NodesFor(topic, localNodeID)
 }
 
 // UnsubscribeBatch satisfies the optional BatchUnsubscriber capability

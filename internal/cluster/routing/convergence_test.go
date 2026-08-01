@@ -117,7 +117,7 @@ func TestConvergence(t *testing.T) {
 			// Every node agrees, and specifically the overlapping filter
 			// resolves to the full union on every node's own NodesFor.
 			for i, r := range routers {
-				got := r.NodesFor("telemetry/shared/anything")
+				got := r.NodesFor("telemetry/shared/anything", "")
 				if !sharedMatches(r, wantShared) {
 					t.Fatalf("node %d: NodesFor(telemetry/shared/anything) = %v, want union %v", i, got, wantShared)
 				}
@@ -158,7 +158,7 @@ func normalize(snap map[string][]string) map[string]map[string]bool {
 }
 
 func sharedMatches(r *Router, want map[string]bool) bool {
-	got := r.NodesFor("telemetry/shared/anything")
+	got := r.NodesFor("telemetry/shared/anything", "")
 	if len(got) != len(want) {
 		return false
 	}

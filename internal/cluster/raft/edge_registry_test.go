@@ -136,12 +136,12 @@ func TestEdgeRegistry_RoutingServedLocallyNotOverRPC(t *testing.T) {
 	// poll briefly for the local cache to reflect the write.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if nodes := e.NodesFor("telemetry/x"); len(nodes) == 1 && nodes[0] == "edge-1" {
+		if nodes := e.NodesFor("telemetry/x", ""); len(nodes) == 1 && nodes[0] == "edge-1" {
 			break
 		}
 		time.Sleep(time.Millisecond)
 	}
-	nodes := e.NodesFor("telemetry/x")
+	nodes := e.NodesFor("telemetry/x", "")
 	if len(nodes) != 1 || nodes[0] != "edge-1" {
 		t.Fatalf("expected [edge-1], got %v", nodes)
 	}
