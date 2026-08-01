@@ -233,14 +233,31 @@ func (r *Router) publish(ctx context.Context, ev routeEvent) error {
 
 // ── read path — served entirely from the local cache, no network round-trip ──
 
-// NodesFor returns the union of node IDs whose subscribed filters match
-// topic, per standard MQTT wildcard semantics.
-func (r *Router) NodesFor(topic string) []string {
+// NodesFor returns the node IDs that must receive a message published on
+// topic: the union of every node with a non-shared subscription matching
+// topic, per standard MQTT wildcard semantics, plus — for each
+// shared-subscription group ($share/group/filter) matching topic — either
+// nothing (if localNodeID is itself a group member, since that node's own
+// mochi-mqtt instance already delivers to one of its local clients in the
+// group) or exactly one arbitrarily-selected other member, so a shared
+// group receives the message exactly once across the whole cluster rather
+// than once per member node. localNodeID may be "" to disable this local
+// preference (e.g. no node ID is meaningful).
+func (r *Router) NodesFor(topic, localNodeID string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	subs := r.index.Subscribers(topic).Subscriptions
-	out := make([]string, 0, len(subs))
-	for nodeID := range subs {
+	subs := r.index.Subscribers(topic)
+
+	for filter, members := range subs.Shared {
+		if _, ok := members[localNodeID]; ok {
+			delete(subs.Shared, filter)
+		}
+	}
+	subs.SelectShared()
+	subs.MergeSharedSelected()
+
+	out := make([]string, 0, len(subs.Subscriptions))
+	for nodeID := range subs.Subscriptions {
 		out = append(out, nodeID)
 	}
 	return out

@@ -61,8 +61,8 @@ func (c *CoreRegistry) Unsubscribe(topic, nodeID string) error {
 	return c.router.Unsubscribe(topic, nodeID)
 }
 
-func (c *CoreRegistry) NodesFor(topic string) []string {
-	return c.router.NodesFor(topic)
+func (c *CoreRegistry) NodesFor(topic, localNodeID string) []string {
+	return c.router.NodesFor(topic, localNodeID)
 }
 
 // UnsubscribeBatch removes multiple filters for nodeID in one routing

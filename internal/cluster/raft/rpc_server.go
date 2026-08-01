@@ -59,7 +59,7 @@ func (s *RPCServer) Unsubscribe(_ context.Context, req *pb.UnsubscribeRequest) (
 }
 
 func (s *RPCServer) NodesFor(_ context.Context, req *pb.NodesForRequest) (*pb.NodesForResponse, error) {
-	return &pb.NodesForResponse{NodeIds: s.registry.NodesFor(req.GetTopic())}, nil
+	return &pb.NodesForResponse{NodeIds: s.registry.NodesFor(req.GetTopic(), req.GetLocalNodeId())}, nil
 }
 
 func (s *RPCServer) ClaimSession(_ context.Context, req *pb.ClaimSessionRequest) (*pb.ClaimSessionResponse, error) {

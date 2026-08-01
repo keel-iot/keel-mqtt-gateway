@@ -198,8 +198,15 @@ func (*UnsubscribeResponse) Descriptor() ([]byte, []int) {
 }
 
 type NodesForRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Topic string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
+	// local_node_id is the caller's own node ID. For a shared-subscription
+	// group ($share/group/filter) whose only match is a local client on
+	// this node, the caller already gets the message via its own local
+	// mochi-mqtt delivery — so the registry excludes it from the returned
+	// set and, if the group has other members, picks exactly one of those
+	// instead, to preserve exactly-once delivery per group.
+	LocalNodeId   string `protobuf:"bytes,2,opt,name=local_node_id,json=localNodeId,proto3" json:"local_node_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -237,6 +244,13 @@ func (*NodesForRequest) Descriptor() ([]byte, []int) {
 func (x *NodesForRequest) GetTopic() string {
 	if x != nil {
 		return x.Topic
+	}
+	return ""
+}
+
+func (x *NodesForRequest) GetLocalNodeId() string {
+	if x != nil {
+		return x.LocalNodeId
 	}
 	return ""
 }
@@ -1660,9 +1674,10 @@ const file_internal_cluster_proto_cluster_proto_rawDesc = "" +
 	"\x12UnsubscribeRequest\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x17\n" +
 	"\anode_id\x18\x02 \x01(\tR\x06nodeId\"\x15\n" +
-	"\x13UnsubscribeResponse\"'\n" +
+	"\x13UnsubscribeResponse\"K\n" +
 	"\x0fNodesForRequest\x12\x14\n" +
-	"\x05topic\x18\x01 \x01(\tR\x05topic\"-\n" +
+	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\"\n" +
+	"\rlocal_node_id\x18\x02 \x01(\tR\vlocalNodeId\"-\n" +
 	"\x10NodesForResponse\x12\x19\n" +
 	"\bnode_ids\x18\x01 \x03(\tR\anodeIds\"K\n" +
 	"\x13ClaimSessionRequest\x12\x1b\n" +

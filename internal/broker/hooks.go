@@ -920,7 +920,7 @@ func (h *keelHook) forwardToClusterSubscribers(ctx context.Context, info *auth.D
 	if h.clusterRegistry == nil || h.clusterFwd == nil {
 		return
 	}
-	nodes := h.clusterRegistry.NodesFor(pk.TopicName)
+	nodes := h.clusterRegistry.NodesFor(pk.TopicName, h.clusterNodeID)
 	if len(nodes) == 0 {
 		return
 	}

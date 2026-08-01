@@ -40,7 +40,16 @@ const applyTimeout = 2 * time.Second
 type Registry interface {
 	Subscribe(topic, nodeID string) error
 	Unsubscribe(topic, nodeID string) error
-	NodesFor(topic string) []string
+	// NodesFor returns the node IDs that must receive a message published
+	// on topic. localNodeID is the caller's own node ID: for a
+	// shared-subscription group whose only member matching topic is on
+	// localNodeID, that node is excluded from the result (its own
+	// mochi-mqtt instance already delivers to that local client) and,
+	// when the group has other members, exactly one of those is included
+	// instead — preserving MQTT5's exactly-once-per-group delivery
+	// across the cluster. Non-shared subscriptions are unaffected: the
+	// full matching set is always returned.
+	NodesFor(topic, localNodeID string) []string
 	// ClaimSession records nodeID as clientID's owner (new connection
 	// always wins — see fsm.go's OpClaimSession). evictedFrom is the
 	// previous owner's node ID when it differs from nodeID, empty

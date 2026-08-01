@@ -64,6 +64,13 @@ message UnsubscribeResponse {}
 
 message NodesForRequest {
   string topic = 1;
+  // local_node_id is the caller's own node ID. For a shared-subscription
+  // group ($share/group/filter) whose only match is a local client on
+  // this node, the caller already gets the message via its own local
+  // mochi-mqtt delivery — so the registry excludes it from the returned
+  // set and, if the group has other members, picks exactly one of those
+  // instead, to preserve exactly-once delivery per group.
+  string local_node_id = 2;
 }
 message NodesForResponse {
   repeated string node_ids = 1;

@@ -282,9 +282,9 @@ Keel is currently production-ready for its core feature set.
 - Redis failover (Split-brain prevention, 0 lost messages on primary crash)
 - JWKS auto-fetch and key rotation
 - Rolling updates and K8s lifecycle management
+- MQTT 5.0 Shared Subscriptions (`$share/group/topic`), exactly-once delivery per group across the whole cluster
 
 **Roadmap / Known Gaps:**
-- MQTT 5.0 Shared Subscriptions (`$share/group/topic`) are not yet supported (requires group-aware state and delivery selection logic).
 - Advanced K8s Operator for automated cluster scaling.
 
 ---

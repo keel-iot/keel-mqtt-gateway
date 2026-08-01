@@ -29,7 +29,7 @@ func waitForNodes(t *testing.T, r *Router, topic string, want []string) []string
 	deadline := time.Now().Add(2 * time.Second)
 	var got []string
 	for time.Now().Before(deadline) {
-		got = r.NodesFor(topic)
+		got = r.NodesFor(topic, "")
 		if len(got) == len(wantSet) {
 			gotSet := make(map[string]bool, len(got))
 			for _, n := range got {
@@ -59,7 +59,7 @@ func TestRouterExactMatch(t *testing.T) {
 	}
 
 	waitForNodes(t, r, "telemetry/poc/device-1", []string{"core-1"})
-	if nodes := r.NodesFor("telemetry/poc/device-2"); len(nodes) != 0 {
+	if nodes := r.NodesFor("telemetry/poc/device-2", ""); len(nodes) != 0 {
 		t.Fatalf("expected no match for a different literal topic, got %v", nodes)
 	}
 }
@@ -82,7 +82,7 @@ func TestRouterHashWildcard(t *testing.T) {
 		{"sport", false},
 	}
 	for _, tc := range cases {
-		nodes := r.NodesFor(tc.topic)
+		nodes := r.NodesFor(tc.topic, "")
 		got := len(nodes) == 1 && nodes[0] == "core-1"
 		if got != tc.want {
 			t.Errorf("topic %q: got match=%v (%v), want match=%v", tc.topic, got, nodes, tc.want)
@@ -96,7 +96,7 @@ func TestRouterPlusWildcard(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 	waitForNodes(t, r, "sport/tennis/player1", []string{"core-1"})
-	if nodes := r.NodesFor("sport/tennis/indoor/player1"); len(nodes) != 0 {
+	if nodes := r.NodesFor("sport/tennis/indoor/player1", ""); len(nodes) != 0 {
 		t.Fatalf("single-level '+' must not span multiple segments, got %v", nodes)
 	}
 
@@ -105,7 +105,7 @@ func TestRouterPlusWildcard(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 	waitForNodes(t, r2, "sport/tennis/indoor/scores", []string{"core-2"})
-	if nodes := r2.NodesFor("sport/tennis/scores"); len(nodes) != 0 {
+	if nodes := r2.NodesFor("sport/tennis/scores", ""); len(nodes) != 0 {
 		t.Fatalf("two '+' wildcards must not collapse to fewer segments, got %v", nodes)
 	}
 }
@@ -120,7 +120,7 @@ func TestRouterSysTopicExcludedFromWildcard(t *testing.T) {
 	}
 	waitForNodes(t, r, "anything/else", []string{"core-1"}) // sync point for the '#' subscribe
 
-	if nodes := r.NodesFor("$SYS/uptime"); len(nodes) != 0 {
+	if nodes := r.NodesFor("$SYS/uptime", ""); len(nodes) != 0 {
 		t.Fatalf("top-level '#'/'+' must not match a $SYS topic, got %v", nodes)
 	}
 
@@ -155,7 +155,7 @@ func TestRouterUnionOfOverlappingFilters(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		nodes := r.NodesFor("telemetry/poc/device-1")
+		nodes := r.NodesFor("telemetry/poc/device-1", "")
 		count := 0
 		for _, n := range nodes {
 			if n == "core-1" {
@@ -167,7 +167,7 @@ func TestRouterUnionOfOverlappingFilters(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("expected core-1 to appear exactly once despite matching two filters, got %v", r.NodesFor("telemetry/poc/device-1"))
+	t.Fatalf("expected core-1 to appear exactly once despite matching two filters, got %v", r.NodesFor("telemetry/poc/device-1", ""))
 }
 
 func TestRouterUnsubscribe(t *testing.T) {
@@ -211,4 +211,101 @@ func TestRouterUnsubscribeBatchAndPurgeNode(t *testing.T) {
 	must(r.PurgeNode("core-1"))
 	waitForNodes(t, r, "t/3", nil)
 	waitForNodes(t, r, "t/1", []string{"core-2"}) // core-2's own route survives
+}
+
+// waitForOneOf polls NodesFor(topic, localNodeID) until it returns exactly
+// one node from among want, or the timeout elapses — used for shared
+// subscription cases where the selected member is arbitrary.
+func waitForOneOf(t *testing.T, r *Router, topic, localNodeID string, want []string) string {
+	t.Helper()
+	wantSet := make(map[string]bool, len(want))
+	for _, n := range want {
+		wantSet[n] = true
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got []string
+	for time.Now().Before(deadline) {
+		got = r.NodesFor(topic, localNodeID)
+		if len(got) == 1 && wantSet[got[0]] {
+			return got[0]
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("NodesFor(%q, %q): timed out waiting for exactly one of %v, last got %v", topic, localNodeID, want, got)
+	return ""
+}
+
+// TestRouterSharedSubscriptionLocalMemberSkipsForward covers the case
+// where localNodeID is itself a member of the matching shared group: no
+// node should be returned, since that node's own mochi-mqtt instance
+// already delivers to its local group member, and a cluster forward would
+// double-deliver.
+func TestRouterSharedSubscriptionLocalMemberSkipsForward(t *testing.T) {
+	r := newTestRouter(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	must(r.Subscribe("$share/g1/telemetry/device-1", "core-1"))
+	must(r.Subscribe("$share/g1/telemetry/device-1", "core-2"))
+	waitForOneOf(t, r, "telemetry/device-1", "zzz-unrelated", []string{"core-1", "core-2"}) // wait for propagation
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if nodes := r.NodesFor("telemetry/device-1", "core-1"); len(nodes) == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("expected no forward target when localNodeID is itself a shared-group member, got %v", r.NodesFor("telemetry/device-1", "core-1"))
+}
+
+// TestRouterSharedSubscriptionRemoteMemberSelectsExactlyOne covers the
+// case where localNodeID is not a member of the matching shared group:
+// exactly one other member must be selected, never the full set — that
+// preserves exactly-once delivery per group across the cluster.
+func TestRouterSharedSubscriptionRemoteMemberSelectsExactlyOne(t *testing.T) {
+	r := newTestRouter(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	must(r.Subscribe("$share/g1/telemetry/device-1", "core-1"))
+	must(r.Subscribe("$share/g1/telemetry/device-1", "core-2"))
+
+	waitForOneOf(t, r, "telemetry/device-1", "core-3", []string{"core-1", "core-2"})
+}
+
+// TestRouterSharedSubscriptionMixedWithRegular covers a topic matching
+// both a regular subscription and a shared group: the regular subscriber
+// must always be included, and the shared group contributes at most one
+// extra node.
+func TestRouterSharedSubscriptionMixedWithRegular(t *testing.T) {
+	r := newTestRouter(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	must(r.Subscribe("telemetry/device-1", "core-1"))
+	must(r.Subscribe("$share/g1/telemetry/device-1", "core-2"))
+	must(r.Subscribe("$share/g1/telemetry/device-1", "core-3"))
+
+	deadline := time.Now().Add(2 * time.Second)
+	var nodes []string
+	for time.Now().Before(deadline) {
+		nodes = r.NodesFor("telemetry/device-1", "core-4")
+		if len(nodes) == 2 && containsNode(nodes, "core-1") &&
+			(containsNode(nodes, "core-2") || containsNode(nodes, "core-3")) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("expected core-1 plus exactly one of core-2/core-3, got %v", nodes)
 }
