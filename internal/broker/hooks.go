@@ -391,14 +391,22 @@ func (h *keelHook) authenticate(ctx context.Context, cl *mqtt.Client, pk packets
 	var deviceID, tenantID string
 	if parts := strings.SplitN(username, "@", 2); len(parts) == 2 {
 		deviceID, tenantID = parts[0], parts[1]
+	} else if username != "" {
+		// A username was sent but with no "@<tenantID>" separator — e.g.
+		// an account ported as-is from another broker (FileProvider's
+		// username-override, see file_provider.go) that never used this
+		// convention. The raw username IS the provider's lookup key
+		// (FileProvider.credentialKey()) — using cl.ID here instead (as
+		// this branch did before) can never match such an entry, since
+		// MQTT client IDs are normally distinct per device while the
+		// override username is shared across all of them.
+		deviceID = username
+		tenantID = h.defaultTenantID
 	} else {
+		// No username at all — client-id-only auth, where cl.ID doubles
+		// as the device's own identity (e.g. a real per-device Postgres
+		// credential keyed by client ID as device UUID).
 		deviceID = cl.ID
-		// No "@<tenantID>" in username — e.g. an account ported as-is
-		// from another broker that never used this convention. Fall back
-		// to the configured single-tenant default instead of leaving
-		// tenantID empty (which fails the tenant-config lookup below with
-		// an invalid-UUID error on every such connect). Empty
-		// defaultTenantID preserves the original fail-closed behaviour.
 		tenantID = h.defaultTenantID
 	}
 
