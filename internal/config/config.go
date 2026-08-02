@@ -83,6 +83,15 @@ type Config struct {
 	// RedisPassword is the optional authentication password for Redis.
 	RedisPassword string
 
+	// RedisConnectRetryInterval and RedisConnectMaxAttempts bound how long
+	// the initial Redis connection at startup retries before giving up
+	// fatally — a co-located Redis's own StatefulSet pod DNS name may not
+	// be resolvable for a few seconds right after scheduling in a real K8s
+	// rollout (same class of timing issue as core.olric's join-retry
+	// budget). A single failed dial used to be immediately fatal.
+	RedisConnectRetryInterval time.Duration
+	RedisConnectMaxAttempts   int
+
 	// AuthBackend selects the credential-validation backend.
 	// "postgres" (default) — PostgreSQL devices.device_credentials
 	// "file"               — static YAML credential file (dev/air-gapped)
@@ -192,6 +201,19 @@ func Load() (*Config, error) {
 		}
 	}
 
+	redisConnectRetryInterval := 2 * time.Second
+	if v := os.Getenv("REDIS_CONNECT_RETRY_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			redisConnectRetryInterval = d
+		}
+	}
+	redisConnectMaxAttempts := 30 // ~60s budget at the default interval
+	if v := os.Getenv("REDIS_CONNECT_MAX_ATTEMPTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			redisConnectMaxAttempts = n
+		}
+	}
+
 	jwksCacheTTL := 5 * time.Minute
 	if v := os.Getenv("JWKS_CACHE_TTL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -223,33 +245,35 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		MQTTPort:               mqttPort,
-		MQTTTLSPort:            mqttTLSPort,
-		HTTPPort:               httpPort,
-		DatabaseURL:            dbURL,
-		RedpandaBrokers:        brokers,
-		RedpandaSASLUser:       os.Getenv("REDPANDA_SASL_USER"),
-		RedpandaSASLPass:       os.Getenv("REDPANDA_SASL_PASS"),
-		CommandsTopic:          cmdTopic,
-		LogLevel:               logLevel,
-		OTLPEndpoint:           os.Getenv("OTLP_ENDPOINT"),
-		MetricsAddr:            metricsAddr,
-		AutoProvisioningURL:    os.Getenv("AUTO_PROV_URL"),
-		DefaultTenantID:        os.Getenv("DEFAULT_TENANT_ID"),
-		TenantCacheTTL:         tenantCacheTTL,
-		JWKSCacheTTL:           jwksCacheTTL,
-		CredentialCacheTTL:     credCacheTTL,
-		SessionExpiryInterval:  sessionExpiryInterval,
-		RedisAddr:              os.Getenv("REDIS_ADDR"),
-		RedisPassword:          os.Getenv("REDIS_PASSWORD"),
-		AuthBackend:            os.Getenv("AUTH_BACKEND"),
-		CredentialFile:         os.Getenv("CREDENTIAL_FILE"),
-		KeelCoreGRPCAddr:       os.Getenv("KEEL_CORE_GRPC_ADDR"),
-		OutputConnector:        os.Getenv("OUTPUT_CONNECTOR"),
-		KafkaHonoBrokers:       os.Getenv("KAFKA_HONO_BROKERS"),
-		KafkaHonoSASLUser:      os.Getenv("KAFKA_HONO_SASL_USER"),
-		KafkaHonoSASLPass:      os.Getenv("KAFKA_HONO_SASL_PASS"),
-		KafkaHonoTopicPrefix:   os.Getenv("KAFKA_HONO_TOPIC_PREFIX"),
-		OutputConnectorPlugins: outputConnectorPlugins,
+		MQTTPort:                  mqttPort,
+		MQTTTLSPort:               mqttTLSPort,
+		HTTPPort:                  httpPort,
+		DatabaseURL:               dbURL,
+		RedpandaBrokers:           brokers,
+		RedpandaSASLUser:          os.Getenv("REDPANDA_SASL_USER"),
+		RedpandaSASLPass:          os.Getenv("REDPANDA_SASL_PASS"),
+		CommandsTopic:             cmdTopic,
+		LogLevel:                  logLevel,
+		OTLPEndpoint:              os.Getenv("OTLP_ENDPOINT"),
+		MetricsAddr:               metricsAddr,
+		AutoProvisioningURL:       os.Getenv("AUTO_PROV_URL"),
+		DefaultTenantID:           os.Getenv("DEFAULT_TENANT_ID"),
+		TenantCacheTTL:            tenantCacheTTL,
+		JWKSCacheTTL:              jwksCacheTTL,
+		CredentialCacheTTL:        credCacheTTL,
+		SessionExpiryInterval:     sessionExpiryInterval,
+		RedisAddr:                 os.Getenv("REDIS_ADDR"),
+		RedisPassword:             os.Getenv("REDIS_PASSWORD"),
+		RedisConnectRetryInterval: redisConnectRetryInterval,
+		RedisConnectMaxAttempts:   redisConnectMaxAttempts,
+		AuthBackend:               os.Getenv("AUTH_BACKEND"),
+		CredentialFile:            os.Getenv("CREDENTIAL_FILE"),
+		KeelCoreGRPCAddr:          os.Getenv("KEEL_CORE_GRPC_ADDR"),
+		OutputConnector:           os.Getenv("OUTPUT_CONNECTOR"),
+		KafkaHonoBrokers:          os.Getenv("KAFKA_HONO_BROKERS"),
+		KafkaHonoSASLUser:         os.Getenv("KAFKA_HONO_SASL_USER"),
+		KafkaHonoSASLPass:         os.Getenv("KAFKA_HONO_SASL_PASS"),
+		KafkaHonoTopicPrefix:      os.Getenv("KAFKA_HONO_TOPIC_PREFIX"),
+		OutputConnectorPlugins:    outputConnectorPlugins,
 	}, nil
 }

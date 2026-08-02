@@ -578,8 +578,24 @@ func runServer() {
 	// of needing a separate swap site per consumer.
 	var rdb *redisrouter.Router
 	if cfg.RedisAddr != "" {
+		// A co-located Redis's own StatefulSet pod DNS name may not be
+		// resolvable for a few seconds right after scheduling in a real
+		// K8s rollout — retry with backoff instead of exiting fatally on
+		// the first attempt (same class of fix as core.olric's
+		// join-retry budget; see REDIS_CONNECT_RETRY_INTERVAL/
+		// REDIS_CONNECT_MAX_ATTEMPTS).
 		var err error
-		rdb, err = redisrouter.New(ctx, cfg.RedisAddr, cfg.RedisPassword)
+		for attempt := 1; attempt <= cfg.RedisConnectMaxAttempts; attempt++ {
+			rdb, err = redisrouter.New(ctx, cfg.RedisAddr, cfg.RedisPassword)
+			if err == nil {
+				break
+			}
+			if attempt == cfg.RedisConnectMaxAttempts {
+				break
+			}
+			log.Warn("connect to Redis, retrying", "addr", cfg.RedisAddr, "attempt", attempt, "error", err)
+			time.Sleep(cfg.RedisConnectRetryInterval)
+		}
 		if err != nil {
 			log.Error("connect to Redis", "addr", cfg.RedisAddr, "error", err)
 			os.Exit(1)
