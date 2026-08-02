@@ -214,6 +214,50 @@ The rendered `installConfigMap` ConfigMap alone does nothing — it must be
 mounted by an actual prometheus-adapter deployment
 (`--config=/etc/adapter/config.yaml`), not installed by this chart.
 
+### Using VictoriaMetrics instead of Prometheus
+
+The metric shows up in VictoriaMetrics the same way it would in Prometheus
+(same `/metrics` scrape, same `ServiceMonitor`/`VMServiceScrape`) — that
+part is not the gap. What's missing is entirely the
+`custom.metrics.k8s.io` API layer, which this chart never installs:
+
+1. **Deploy prometheus-adapter itself** (e.g. the
+   `prometheus-community/prometheus-adapter` chart) in the cluster —
+   `installConfigMap: true` only renders a ConfigMap of PromQL rules, it
+   does not deploy the adapter Pod/Service/APIService.
+2. **Point that adapter at VictoriaMetrics's query endpoint**, not a real
+   Prometheus — VictoriaMetrics is Prometheus-HTTP-API-compatible, so no
+   adapter code/config changes are needed beyond the URL:
+   - VMSingle: `--prometheus-url=http://vmsingle-<name>.<ns>.svc:8429/`
+   - VMCluster: `--prometheus-url=http://vmselect-<name>.<ns>.svc:8481/select/0/prometheus/`
+     (note the per-tenant path segment `/select/0/prometheus/` — required
+     even for a single tenant)
+3. **Mount/merge this chart's ConfigMap into that adapter deployment** —
+   `metrics.prometheusAdapter.namespace` must match the namespace the
+   adapter actually runs in (default `monitoring`); on the
+   `prometheus-community/prometheus-adapter` chart this is usually wired
+   via its own `rules.existing: <keel-configmap-name>` value rather than
+   its default rules.
+4. **Confirm the series carries `namespace`/`pod` labels in
+   VictoriaMetrics** — the adapter's `seriesQuery` filters on
+   `namespace!="",pod!=""` (see `prometheus-adapter-configmap.yaml`).
+   These normally come from `ServiceMonitor`/`VMServiceScrape` relabeling,
+   not from the app itself — check with a direct query
+   (`keel_gateway_edge_load_score`) in vmui before assuming they're there.
+5. **Confirm the APIService is actually registered and healthy**:
+   `kubectl get apiservices v1beta1.custom.metrics.k8s.io` must show
+   `Available=True` — the cluster's kube-apiserver has to be able to reach
+   the adapter's Service (check NetworkPolicy/firewall rules on private
+   GKE clusters).
+6. **Smoke-test the API before trusting the HPA on it**:
+   ```sh
+   kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1/namespaces/<ns>/pods/*/keel_edge_load_score"
+   ```
+   This must return real values, not a 404 or an empty list.
+
+Once 1-6 hold, the HPA already shipped in this chart (`edge-hpa.yaml`)
+picks the metric up with no further chart changes.
+
 Tune `edge.edgeConnectionsLimit` to your real per-pod MQTT connection
 target — it's the denominator of the load-score's connections term.
 

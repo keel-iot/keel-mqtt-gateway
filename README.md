@@ -20,10 +20,10 @@ Instead of making every node equal, Keel separates the cluster into:
 
 - **MQTT 3.1.1 / MQTT 5** support
 - **Core/Edge Architecture:** Strongly consistent control plane (Raft) + eventually consistent data plane (Olric)
-- **Zero-Trust Auth Pipeline:** Pluggable Auth with JWT/JWKS support (OIDC/Clavex-ready) and file/postgres backends
+- **Auth:** JWT/JWKS support (OIDC/Clavex-ready) and file/postgres backends (fixed set today, no staged plugin interface yet)
 - **Zero-Loss QoS 1/2:** Co-located Redis (primary+replica) with automatic Raft-driven failover
 - **Kubernetes-first:** StatefulSet for Core, Deployment + HPA for Edge
-- **Plugin pipeline:** Auth → ACL → Hooks → Broker, Publish → Transform → Forward → Deliver
+- **Output plugin architecture:** Publish → Transform → Forward runs out-of-process (`hashicorp/go-plugin`/gRPC sidecar), fully isolated from MQTT delivery
 - **Bridging:** Kafka / Redpanda / HTTP bridge out-of-the-box
 - **Observability:** Prometheus metrics + OpenTelemetry tracing, tenant-aware sampling
 - **Single binary:** (`--role=edge`, `core`, `combined`)
@@ -275,16 +275,21 @@ For production-like deployments (Core / Edge split, TLS, Redis failover), see:
 
 ## Status & Roadmap
 
-Keel is currently production-ready for its core feature set. 
+Keel is currently production-ready for its core feature set.
 
 **Validated:**
 - Reconnect storms (tested up to 10,000 devices, 0 message loss on QoS 1/2)
 - Redis failover (Split-brain prevention, 0 lost messages on primary crash)
 - JWKS auto-fetch and key rotation
-- Rolling updates and K8s lifecycle management
+- Core/edge pod kills (leader failover, edge pod restart) on a real K8s cluster
 - MQTT 5.0 Shared Subscriptions (`$share/group/topic`), exactly-once delivery per group across the whole cluster
+- Output plugin isolation: a slow/failing Kafka-Redpanda producer can no longer block MQTT delivery (fixed 2026-07-31, see design doc)
 
 **Roadmap / Known Gaps:**
+- Auth/ACL staged plugin interface (JWT/OAuth/other providers today require code changes, not a plugin) — deliberately deferred
+- HPA edge load metric wired into the Helm chart but not yet validated against a real Prometheus + `custom.metrics.k8s.io` adapter
+- StatefulSet rolling update behavior (Olric cold-start sequencing) not yet validated on a real cluster
+- `/readyz` now covers TLS, Redis, raft leader, and local Olric reachability — logic unit-tested, but not yet confirmed against a real StatefulSet rolling restart (no K8s cluster available in this environment)
 - Advanced K8s Operator for automated cluster scaling.
 
 ---
