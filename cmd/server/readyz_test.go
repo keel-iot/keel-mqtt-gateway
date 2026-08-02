@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"net/http/httptest"
@@ -127,7 +128,7 @@ func writeSelfSignedCert(t *testing.T, dir string) {
 
 func TestReadyzHandler_TLSDisabled_AlwaysReady(t *testing.T) {
 	var reloader *broker.CertReloader
-	h := newReadyzHandler(false, &reloader, nil, nil)
+	h := newReadyzHandler(false, &reloader, nil, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h(rec, httptest.NewRequest("GET", "/readyz", nil))
@@ -136,7 +137,7 @@ func TestReadyzHandler_TLSDisabled_AlwaysReady(t *testing.T) {
 
 func TestReadyzHandler_TLSEnabled_NotReadyWithoutCert(t *testing.T) {
 	var reloader *broker.CertReloader
-	h := newReadyzHandler(true, &reloader, nil, nil)
+	h := newReadyzHandler(true, &reloader, nil, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h(rec, httptest.NewRequest("GET", "/readyz", nil))
@@ -146,7 +147,7 @@ func TestReadyzHandler_TLSEnabled_NotReadyWithoutCert(t *testing.T) {
 func TestReadyzHandler_TLSEnabled_ReadyOnceCertAppears(t *testing.T) {
 	dir := t.TempDir()
 	var reloader *broker.CertReloader
-	h := newReadyzHandler(true, &reloader, nil, nil)
+	h := newReadyzHandler(true, &reloader, nil, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h(rec, httptest.NewRequest("GET", "/readyz", nil))
@@ -169,7 +170,7 @@ func TestReadyzHandler_TLSEnabled_ReadyOnceCertAppears(t *testing.T) {
 }
 
 func TestReadyzHandler_NoRedisConfigured_RedisCheckSkipped(t *testing.T) {
-	h := newReadyzHandler(false, new(*broker.CertReloader), nil, nil)
+	h := newReadyzHandler(false, new(*broker.CertReloader), nil, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h(rec, httptest.NewRequest("GET", "/readyz", nil))
@@ -184,7 +185,7 @@ func TestReadyzHandler_RedisReachable_PrimaryKnown_Ready(t *testing.T) {
 	require.NoError(t, err)
 	defer rdb.Close()
 
-	h := newReadyzHandler(false, new(*broker.CertReloader), rdb, func() (string, bool) { return "core-0", true })
+	h := newReadyzHandler(false, new(*broker.CertReloader), rdb, func() (string, bool) { return "core-0", true }, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h(rec, httptest.NewRequest("GET", "/readyz", nil))
@@ -199,7 +200,7 @@ func TestReadyzHandler_RedisConfigured_NoCurrentRedisPrimary_NotReady(t *testing
 	require.NoError(t, err)
 	defer rdb.Close()
 
-	h := newReadyzHandler(false, new(*broker.CertReloader), rdb, func() (string, bool) { return "", false })
+	h := newReadyzHandler(false, new(*broker.CertReloader), rdb, func() (string, bool) { return "", false }, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h(rec, httptest.NewRequest("GET", "/readyz", nil))
@@ -215,9 +216,45 @@ func TestReadyzHandler_RedisUnreachable_NotReady(t *testing.T) {
 	defer rdb.Close()
 	srv.closeAll() // simulate the primary going unreachable after Router was constructed
 
-	h := newReadyzHandler(false, new(*broker.CertReloader), rdb, nil)
+	h := newReadyzHandler(false, new(*broker.CertReloader), rdb, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h(rec, httptest.NewRequest("GET", "/readyz", nil))
 	require.Equal(t, 503, rec.Code)
+}
+
+func TestReadyzHandler_RaftNoLeaderKnown_NotReady(t *testing.T) {
+	h := newReadyzHandler(false, new(*broker.CertReloader), nil, nil, func() bool { return false }, nil)
+
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest("GET", "/readyz", nil))
+	require.Equal(t, 503, rec.Code, "no raft leader known yet (still electing/rejoining): not ready")
+}
+
+func TestReadyzHandler_RaftLeaderKnown_Ready(t *testing.T) {
+	h := newReadyzHandler(false, new(*broker.CertReloader), nil, nil, func() bool { return true }, nil)
+
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest("GET", "/readyz", nil))
+	require.Equal(t, 200, rec.Code)
+}
+
+func TestReadyzHandler_OlricUnreachable_NotReady(t *testing.T) {
+	h := newReadyzHandler(false, new(*broker.CertReloader), nil, nil, nil, func(ctx context.Context) error {
+		return errors.New("connection refused")
+	})
+
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest("GET", "/readyz", nil))
+	require.Equal(t, 503, rec.Code, "olric member not reachable (still joining ring after restart): not ready")
+}
+
+func TestReadyzHandler_OlricReachable_Ready(t *testing.T) {
+	h := newReadyzHandler(false, new(*broker.CertReloader), nil, nil, nil, func(ctx context.Context) error {
+		return nil
+	})
+
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest("GET", "/readyz", nil))
+	require.Equal(t, 200, rec.Code)
 }

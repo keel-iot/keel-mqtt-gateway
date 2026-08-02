@@ -936,7 +936,21 @@ func runServer() {
 	if clusterRegistry != nil {
 		currentRedisPrimary = clusterRegistry.CurrentRedisPrimary
 	}
-	metricsMux.HandleFunc("/readyz", newReadyzHandler(cf.tlsEnabled, &certReloader, rdb, currentRedisPrimary))
+	// raftLeaderKnown/olricPing stay nil on pure edge nodes (neither raft nor
+	// an embedded Olric member runs there) — see newReadyzHandler's doc for
+	// why a core node gates readiness on both after a restart.
+	var raftLeaderKnown func() bool
+	if raftNode != nil {
+		raftLeaderKnown = func() bool { return raftNode.Registry.LeaderID() != "" }
+	}
+	var olricPing func(context.Context) error
+	if olricStore != nil {
+		olricPing = func(ctx context.Context) error {
+			_, _, err := olricStore.Get(ctx, "__keel_readyz_probe__")
+			return err
+		}
+	}
+	metricsMux.HandleFunc("/readyz", newReadyzHandler(cf.tlsEnabled, &certReloader, rdb, currentRedisPrimary, raftLeaderKnown, olricPing))
 	// TEMPORARY diagnostic instrumentation for the devicesim churn-scenario
 	// memory investigation (2026-07-24): mounts net/http/pprof on the same
 	// metrics listener, gated behind an env var so it's a no-op unless

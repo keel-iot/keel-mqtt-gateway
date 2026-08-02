@@ -14,6 +14,10 @@ import (
 // /readyz (kubelet, compose healthcheck, ...).
 const redisReadyzTimeout = 2 * time.Second
 
+// olricReadyzTimeout bounds the Olric probe below — same reasoning as
+// redisReadyzTimeout.
+const olricReadyzTimeout = 2 * time.Second
+
 // newReadyzHandler builds the /readyz handler. reloader is a pointer to the
 // (possibly not-yet-assigned) *broker.CertReloader variable so the handler
 // always reads its current value, even though it's registered on the mux
@@ -34,7 +38,25 @@ const redisReadyzTimeout = 2 * time.Second
 //     even if the client can still Ping whatever stale address it holds
 //   - the Router's current client must answer a Ping — covers "primary
 //     known but unreachable from this node"
-func newReadyzHandler(tlsEnabled bool, reloader **broker.CertReloader, rdb *redisrouter.Router, currentRedisPrimary func() (string, bool)) http.HandlerFunc {
+//
+// raftLeaderKnown and olricPing are both nil outside core role (pure edge
+// nodes run neither raft nor an embedded Olric member, so there is nothing
+// to gate on). On a core node, both must pass before Ready: a node that
+// answers MQTT/mgmt traffic before it has rejoined raft (knows a leader) or
+// before its embedded Olric member can actually route a request would
+// silently serve session-ownership/routing-table reads against a node that
+// isn't really back in the cluster yet — exactly the "readiness gate
+// doesn't cover raft/Olric convergence after restart" gap left open in
+// keel-design-doc.md.
+//   - raftLeaderKnown fail-closed: no known leader (still electing, or
+//     partitioned) reports NotReady rather than silently serving reads
+//     against a registry that can't commit anything right now.
+//   - olricPing fail-closed: a cheap Get against the local embedded member
+//     (see cmd/server/main.go's wiring) — any error other than "key not
+//     found" means this node's Olric member can't actually serve a
+//     request yet (still joining the ring, or partitioned), even though
+//     its own Start() already returned.
+func newReadyzHandler(tlsEnabled bool, reloader **broker.CertReloader, rdb *redisrouter.Router, currentRedisPrimary func() (string, bool), raftLeaderKnown func() bool, olricPing func(ctx context.Context) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if tlsEnabled {
 			r := *reloader
@@ -54,6 +76,18 @@ func newReadyzHandler(tlsEnabled bool, reloader **broker.CertReloader, rdb *redi
 			defer cancel()
 			if err := rdb.Client().Ping(ctx).Err(); err != nil {
 				http.Error(w, "redis: primary unreachable", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		if raftLeaderKnown != nil && !raftLeaderKnown() {
+			http.Error(w, "raft: no leader known", http.StatusServiceUnavailable)
+			return
+		}
+		if olricPing != nil {
+			ctx, cancel := context.WithTimeout(req.Context(), olricReadyzTimeout)
+			defer cancel()
+			if err := olricPing(ctx); err != nil {
+				http.Error(w, "olric: not reachable", http.StatusServiceUnavailable)
 				return
 			}
 		}
