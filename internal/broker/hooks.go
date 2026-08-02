@@ -83,6 +83,13 @@ type keelHook struct {
 	// internal/telemetry.LiveStats). Nil when not configured (standalone
 	// mode, or tests that don't exercise it) — every call site guards it.
 	liveStats *telemetry.LiveStats
+
+	// defaultTenantID, when non-empty, is used as the tenant identity for
+	// password-auth CONNECTs whose username has no "@" separator — see
+	// Config.DefaultTenantID's doc in broker.go. Empty preserves the
+	// original fail-closed behaviour (empty tenantID, rejected at the
+	// tenant-config lookup).
+	defaultTenantID string
 }
 
 // sessionStore is satisfied by *RedisSessionHook; narrowed for testability —
@@ -386,6 +393,13 @@ func (h *keelHook) authenticate(ctx context.Context, cl *mqtt.Client, pk packets
 		deviceID, tenantID = parts[0], parts[1]
 	} else {
 		deviceID = cl.ID
+		// No "@<tenantID>" in username — e.g. an account ported as-is
+		// from another broker that never used this convention. Fall back
+		// to the configured single-tenant default instead of leaving
+		// tenantID empty (which fails the tenant-config lookup below with
+		// an invalid-UUID error on every such connect). Empty
+		// defaultTenantID preserves the original fail-closed behaviour.
+		tenantID = h.defaultTenantID
 	}
 
 	method := auth.DetectAuthMethod(password)

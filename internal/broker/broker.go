@@ -89,6 +89,16 @@ type Config struct {
 	// tracking (a no-op — RecordPublish on a nil *LiveStats is guarded in
 	// hooks.go), same posture as every other optional Config field here.
 	LiveStats *telemetry.LiveStats
+
+	// DefaultTenantID is used as the tenant identity for password-auth
+	// CONNECTs whose username has no "<deviceID>@<tenantID>" separator —
+	// e.g. accounts ported as-is from another broker (VerneMQ) that never
+	// used that convention. Empty (default) preserves today's behaviour:
+	// no "@" means an empty tenantID, which fails tenant-config lookup
+	// and rejects the connect. Only meaningful for single-tenant
+	// deployments — multi-tenant setups must keep every username
+	// tenant-qualified instead of relying on this fallback.
+	DefaultTenantID string
 }
 
 // parseClientAuth maps a TLSClientAuth config string to a tls.ClientAuthType.
@@ -158,6 +168,7 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 		outputConnectors: cfg.OutputConnectors,
 		server:           server,
 		liveStats:        cfg.LiveStats,
+		defaultTenantID:  cfg.DefaultTenantID,
 	}
 	// Typed nil guard: an interface value holding a nil *RedisSessionHook is
 	// itself non-nil, which would defeat OnSessionEstablish's `h.sessionStore

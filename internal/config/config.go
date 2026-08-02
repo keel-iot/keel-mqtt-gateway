@@ -49,6 +49,13 @@ type Config struct {
 	// Empty string disables auto-provisioning.
 	AutoProvisioningURL string
 
+	// DefaultTenantID is the fallback tenant used for password-auth
+	// CONNECTs whose username has no "<deviceID>@<tenantID>" separator —
+	// see broker.Config.DefaultTenantID's doc. Empty (default) preserves
+	// fail-closed behaviour: such connects are rejected. Only set this on
+	// genuinely single-tenant deployments.
+	DefaultTenantID string
+
 	// TenantCacheTTL controls how long per-tenant gateway config is cached.
 	// Defaults to 5 minutes.
 	TenantCacheTTL time.Duration
@@ -228,6 +235,7 @@ func Load() (*Config, error) {
 		OTLPEndpoint:           os.Getenv("OTLP_ENDPOINT"),
 		MetricsAddr:            metricsAddr,
 		AutoProvisioningURL:    os.Getenv("AUTO_PROV_URL"),
+		DefaultTenantID:        os.Getenv("DEFAULT_TENANT_ID"),
 		TenantCacheTTL:         tenantCacheTTL,
 		JWKSCacheTTL:           jwksCacheTTL,
 		CredentialCacheTTL:     credCacheTTL,

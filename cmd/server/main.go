@@ -1072,6 +1072,7 @@ func runServer() {
 			TenantConfigCache:     tenantCache,
 			JWKSCache:             jwksCache,
 			AutoProvisioningURL:   cfg.AutoProvisioningURL,
+			DefaultTenantID:       cfg.DefaultTenantID,
 			RedisClient:           rdb,
 			ClusterRegistry:       clusterRegistry,
 			ClusterFwd:            clusterFwd,
