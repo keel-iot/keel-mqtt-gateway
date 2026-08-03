@@ -253,6 +253,22 @@ metrics:
     installConfigMap: false
     namespace: monitoring
 
+# Shared by core and edge (core-statefulset.yaml/edge-deployment.yaml).
+# Only the liveness probe is tunable here — readiness failing is meant to
+# take a pod out of service (fail-closed, working as intended), but
+# liveness failing kills the container outright. Default failureThreshold
+# widened from k8s's implicit 3 (~35s grace with the settings below) to 6
+# (~65s): observed in practice (Kimera rollouts, 2026-08-03) that a
+# freshly (re)created pod occasionally doesn't respond to /healthz within
+# the tighter window — likely pod-network/iptables propagation lag right
+# after creation, not application slowness — causing an avoidable extra
+# restart. Costs nothing when the pod is actually healthy (/healthz
+# responds in well under a second normally).
+livenessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 6
+
 logLevel: info
 otlpEndpoint: "" # empty disables tracing
 sessionExpiryInterval: 24h
