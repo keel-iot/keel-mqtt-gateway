@@ -20,7 +20,7 @@ Instead of making every node equal, Keel separates the cluster into:
 
 - **MQTT 3.1.1 / MQTT 5** support
 - **Core/Edge Architecture:** Strongly consistent control plane (Raft) + eventually consistent data plane (Olric)
-- **Auth:** JWT/JWKS support (OIDC/Clavex-ready) and file/postgres backends (fixed set today, no staged plugin interface yet)
+- **Auth:** per-tenant password, mTLS (X.509 CN + trusted CA pool), and JWT/JWKS (any OIDC-compliant IdP) — credential storage backends (postgres/file) are a fixed set today, no staged plugin interface yet. Two companion device-side agents cover the two real-world tiers: [`keel-cert-manager`](../keel-cert-manager) (Clavex Device PKI, full certificate rotation + revocation) and [`keel-jwt-agent`](../keel-jwt-agent) (generic OAuth2 client-credentials, no real revocation beyond token TTL)
 - **Zero-Loss QoS 1/2:** Co-located Redis (primary+replica) with automatic Raft-driven failover
 - **Kubernetes-first:** StatefulSet for Core, Deployment + HPA for Edge
 - **Output plugin architecture:** Publish → Transform → Forward runs out-of-process (`hashicorp/go-plugin`/gRPC sidecar), fully isolated from MQTT delivery
@@ -284,12 +284,11 @@ Keel is currently production-ready for its core feature set.
 - Core/edge pod kills (leader failover, edge pod restart) on a real K8s cluster
 - MQTT 5.0 Shared Subscriptions (`$share/group/topic`), exactly-once delivery per group across the whole cluster
 - Output plugin isolation: a slow/failing Kafka-Redpanda producer can no longer block MQTT delivery (fixed 2026-07-31, see design doc)
+- StatefulSet rolling update (Olric cold-start sequencing) — `/readyz` (TLS, Redis, raft leader, local Olric reachability, present since v0.2.3) has been through several real rolling updates on GKE (v0.2.0 → v0.2.5) with no issues observed
 
 **Roadmap / Known Gaps:**
 - Auth/ACL staged plugin interface (JWT/OAuth/other providers today require code changes, not a plugin) — deliberately deferred
 - HPA edge load metric wired into the Helm chart but not yet validated against a real Prometheus + `custom.metrics.k8s.io` adapter
-- StatefulSet rolling update behavior (Olric cold-start sequencing) not yet validated on a real cluster
-- `/readyz` now covers TLS, Redis, raft leader, and local Olric reachability — logic unit-tested, but not yet confirmed against a real StatefulSet rolling restart (no K8s cluster available in this environment)
 - Advanced K8s Operator for automated cluster scaling.
 
 ---

@@ -426,6 +426,19 @@ type clusterFlags struct {
 	edgeConnectionsLimit  int
 	edgeCPULimit          float64
 	edgeLoadScoreInterval time.Duration
+
+	// rebalance* feed the management API's POST /api/cluster/rebalance —
+	// see internal/cluster/lifecycle.RebalanceConfig's doc.
+	rebalanceImbalanceThreshold  float64
+	rebalanceMaxEvictionsPerNode int
+	rebalanceEvictStagger        time.Duration
+
+	// rebalanceSchedule* opt into running a rebalance pass automatically
+	// on a timer (internal/cluster/lifecycle.RunScheduledRebalance)
+	// instead of only via the manual POST endpoint. Off by default.
+	rebalanceScheduleEnabled  bool
+	rebalanceScheduleInterval time.Duration
+	rebalanceScheduleDryRun   bool
 }
 
 func parseClusterFlags() clusterFlags {
@@ -461,6 +474,12 @@ func parseClusterFlags() clusterFlags {
 	flag.IntVar(&f.edgeConnectionsLimit, "edge-connections-limit", 2000, "edge/combined/standalone only: expected max MQTT connections per pod, the denominator of edge_load_score's connections term — tune to the HPA scaling threshold actually chosen for the deployment")
 	flag.Float64Var(&f.edgeCPULimit, "edge-cpu-limit", float64(runtime.NumCPU()), "edge/combined/standalone only: CPU cores available to this pod (match the Deployment's CPU request/limit), the denominator of edge_load_score's CPU term; defaults to the host's core count, only correct for non-K8s/no-cgroup-limit deployments")
 	flag.DurationVar(&f.edgeLoadScoreInterval, "edge-load-score-interval", 15*time.Second, "edge/combined/standalone only: how often edge_load_score (and its connections/CPU components) is recomputed")
+	flag.Float64Var(&f.rebalanceImbalanceThreshold, "rebalance-imbalance-threshold", 0.20, "core only: POST /api/cluster/rebalance only acts on an edge node whose connection count exceeds the cluster-wide average by more than this fraction")
+	flag.IntVar(&f.rebalanceMaxEvictionsPerNode, "rebalance-max-evictions-per-node", 50, "core only: hard cap on evictions per edge node per POST /api/cluster/rebalance pass")
+	flag.DurationVar(&f.rebalanceEvictStagger, "rebalance-evict-stagger", 200*time.Millisecond, "core only: delay between successive Evict calls within a single POST /api/cluster/rebalance pass, to spread out the resulting reconnects")
+	flag.BoolVar(&f.rebalanceScheduleEnabled, "rebalance-schedule-enabled", false, "core only: run a rebalance pass automatically every --rebalance-schedule-interval, instead of only via POST /api/cluster/rebalance")
+	flag.DurationVar(&f.rebalanceScheduleInterval, "rebalance-schedule-interval", 10*time.Minute, "core only: interval between automatic rebalance passes when --rebalance-schedule-enabled")
+	flag.BoolVar(&f.rebalanceScheduleDryRun, "rebalance-schedule-dry-run", false, "core only: log what the scheduled rebalance would do without actually evicting anyone — recommended when first enabling --rebalance-schedule-enabled on a cluster")
 	flag.Parse()
 
 	if f.nodeID == "" {
@@ -899,7 +918,13 @@ func runServer() {
 				RaftNode:        raftNode,
 				Membership:      clusterMembership,
 				ClusterRegistry: clusterRegistry,
-				Log:             log,
+				Evictor:         clusterFwd,
+				RebalanceConfig: lifecycle.RebalanceConfig{
+					ImbalanceThreshold:  cf.rebalanceImbalanceThreshold,
+					MaxEvictionsPerNode: cf.rebalanceMaxEvictionsPerNode,
+					EvictStagger:        cf.rebalanceEvictStagger,
+				},
+				Log: log,
 			}
 			mgmtServer = &http.Server{
 				Addr:         cf.managementAddr,
@@ -926,6 +951,18 @@ func runServer() {
 			if routesProvider, ok := clusterRegistry.(keelraft.NodesWithRoutesProvider); ok {
 				sweep := lifecycle.NewRoutingSweep(routesProvider.NodesWithRoutes, clusterMembership.Members, cf.routingSweepTTL, log)
 				go sweep.Run(ctx)
+			}
+
+			if cf.rebalanceScheduleEnabled {
+				rebalanceCfg := lifecycle.RebalanceConfig{
+					ImbalanceThreshold:  cf.rebalanceImbalanceThreshold,
+					MaxEvictionsPerNode: cf.rebalanceMaxEvictionsPerNode,
+					EvictStagger:        cf.rebalanceEvictStagger,
+				}
+				go lifecycle.RunScheduledRebalance(ctx,
+					raftNode.Registry.SessionsSnapshot,
+					func() map[string]bool { return lifecycle.LiveEdgeNodes(clusterMembership.Members()) },
+					rebalanceCfg, clusterFwd, cf.rebalanceScheduleDryRun, cf.rebalanceScheduleInterval, log)
 			}
 		}
 	}

@@ -33,6 +33,12 @@ type API struct {
 	// pattern cmd/server/main.go already uses for NodePurger /
 	// NodesWithRoutesProvider.
 	ClusterRegistry keelraft.Registry
+	// Evictor backs POST /api/cluster/rebalance — satisfied directly by
+	// dataplane.Forwarder (already constructed on every node, including
+	// core, in cmd/server/main.go), kept as lifecycle.Evictor here to
+	// avoid an import of internal/cluster/dataplane from this package.
+	Evictor         lifecycle.Evictor
+	RebalanceConfig lifecycle.RebalanceConfig
 	Log             *slog.Logger
 }
 
@@ -46,6 +52,7 @@ func (a *API) Router() http.Handler {
 	mux.HandleFunc("GET /api/live/clients", a.handleLiveClients)
 	mux.HandleFunc("GET /ui", a.handleUI)
 	mux.HandleFunc("POST /api/cluster/drain", a.handleDrain)
+	mux.HandleFunc("POST /api/cluster/rebalance", a.handleRebalance)
 	mux.HandleFunc("POST /api/cluster/snapshot", a.handleSnapshot)
 
 	// ACL/RBAC management — see internal/cluster/acl and internal/cluster/
@@ -137,6 +144,37 @@ func (a *API) handleDrain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleRebalance evicts a bounded, random subset of sessions from
+// over-loaded edge nodes — see lifecycle.Rebalance's doc for the
+// algorithm. `?dryRun=true` computes and reports what would be evicted
+// without disconnecting anyone.
+func (a *API) handleRebalance(w http.ResponseWriter, r *http.Request) {
+	if a.RaftNode == nil {
+		http.Error(w, "not a core node", http.StatusServiceUnavailable)
+		return
+	}
+
+	dryRun := r.URL.Query().Get("dryRun") == "true"
+
+	var liveEdge map[string]bool
+	if a.Membership != nil {
+		liveEdge = lifecycle.LiveEdgeNodes(a.Membership.Members())
+	} else {
+		liveEdge = map[string]bool{}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	result, err := lifecycle.Rebalance(ctx, a.RaftNode.Registry.SessionsSnapshot(), liveEdge, a.RebalanceConfig, a.Evictor, dryRun, a.Log)
+	if err != nil {
+		a.Log.Error("management: rebalance failed", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 type snapshotResponse struct {
