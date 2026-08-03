@@ -65,6 +65,11 @@ type Config struct {
 	// refresh regardless of TTL). Defaults to 5 minutes.
 	JWKSCacheTTL time.Duration
 
+	// DeviceCACacheTTL controls how long a tenant's fetched device CA
+	// (TenantGatewayConfig.ClavexCAURL) is cached before a refresh is
+	// attempted. Defaults to 5 minutes.
+	DeviceCACacheTTL time.Duration
+
 	// CredentialCacheTTL controls how long successful password validations are cached
 	// to reduce bcrypt load during reconnect storms. Defaults to 30 seconds.
 	// Only affects the file auth provider (AuthBackend == "file").
@@ -221,6 +226,13 @@ func Load() (*Config, error) {
 		}
 	}
 
+	deviceCACacheTTL := 5 * time.Minute
+	if v := os.Getenv("DEVICE_CA_CACHE_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			deviceCACacheTTL = d
+		}
+	}
+
 	credCacheTTL := 30 * time.Second
 	if v := os.Getenv("CREDENTIAL_CACHE_TTL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -260,6 +272,7 @@ func Load() (*Config, error) {
 		DefaultTenantID:           os.Getenv("DEFAULT_TENANT_ID"),
 		TenantCacheTTL:            tenantCacheTTL,
 		JWKSCacheTTL:              jwksCacheTTL,
+		DeviceCACacheTTL:          deviceCACacheTTL,
 		CredentialCacheTTL:        credCacheTTL,
 		SessionExpiryInterval:     sessionExpiryInterval,
 		RedisAddr:                 os.Getenv("REDIS_ADDR"),

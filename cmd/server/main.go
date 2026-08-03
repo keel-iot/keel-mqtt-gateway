@@ -582,6 +582,9 @@ func runServer() {
 	// ── JWKS cache (per-tenant JWT key rotation, e.g. Clavex) ─────────────────
 	jwksCache := auth.NewJWKSCache(cfg.JWKSCacheTTL)
 
+	// ── Device CA cache (per-tenant live CA resolution, e.g. Clavex) ──────────
+	deviceCACache := auth.NewDeviceCACache(cfg.DeviceCACacheTTL)
+
 	// Re-init tracer with tenant-aware sampler now that tenantCache is ready.
 	if cfg.OTLPEndpoint != "" {
 		_ = tracerShutdown(context.Background()) // close the no-op provider
@@ -1134,6 +1137,7 @@ func runServer() {
 			TLSClientAuth:         cf.tlsClientAuth,
 			TenantConfigCache:     tenantCache,
 			JWKSCache:             jwksCache,
+			DeviceCACache:         deviceCACache,
 			AutoProvisioningURL:   cfg.AutoProvisioningURL,
 			DefaultTenantID:       cfg.DefaultTenantID,
 			RedisClient:           rdb,

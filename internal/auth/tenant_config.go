@@ -20,10 +20,21 @@ type TenantGatewayConfig struct {
 	// endpoint (see JWKSCache) instead of a single static key. Enables key
 	// rotation (e.g. Clavex-issued device tokens) without a config update.
 	JWKSURL       string
-	TrustedCAPEMs []string // PEM CA certificates for X.509 device auth
-	AutoProvisioning    bool
-	MaxConnections      int   // 0 = unlimited
-	MaxBytesPerDay      int64 // 0 = unlimited
+	TrustedCAPEMs []string // PEM CA certificates for X.509 device auth — static fallback, ignored when ClavexCAURL is set
+	// ClavexCAURL, when set, takes precedence over TrustedCAPEMs: the
+	// device CA is instead resolved live via DeviceCACache (GET this URL,
+	// bearer-authenticated with ClavexAgentToken) so the CA is never
+	// persisted in this database — only cached in memory, refreshed
+	// periodically. Typically Clavex's
+	// ".../organizations/<org_id>/devices/ca".
+	ClavexCAURL string
+	// ClavexAgentToken authenticates the ClavexCAURL fetch — a scoped,
+	// revocable read-only Agent Token (see DeviceCACache), not the Vault
+	// token that actually custodies the CA private key.
+	ClavexAgentToken string
+	AutoProvisioning bool
+	MaxConnections   int   // 0 = unlimited
+	MaxBytesPerDay   int64 // 0 = unlimited
 	// TracingEnabled forces 100% trace sampling for this tenant when true.
 	// When false the global sampling ratio (default 10%) applies.
 	TracingEnabled bool
@@ -94,6 +105,8 @@ SELECT
     COALESCE(jwt_public_key_pem, ''),
     COALESCE(jwks_url, ''),
     COALESCE(trusted_ca_pems, '{}'),
+    COALESCE(clavex_ca_url, ''),
+    COALESCE(clavex_agent_token, ''),
     auto_provisioning,
     COALESCE(max_connections, 0),
     COALESCE(max_bytes_per_day, 0),
@@ -114,6 +127,8 @@ func (c *TenantConfigCache) load(ctx context.Context, tenantID string) (*TenantG
 		&cfg.JWTPublicKeyPEM,
 		&cfg.JWKSURL,
 		&cfg.TrustedCAPEMs,
+		&cfg.ClavexCAURL,
+		&cfg.ClavexAgentToken,
 		&cfg.AutoProvisioning,
 		&cfg.MaxConnections,
 		&cfg.MaxBytesPerDay,

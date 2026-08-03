@@ -36,9 +36,14 @@ import (
 type keelHook struct {
 	mqtt.HookBase
 
-	provider      auth.AuthProvider
-	tenantCache   *auth.TenantConfigCache
-	jwksCache     *auth.JWKSCache
+	provider    auth.AuthProvider
+	tenantCache *auth.TenantConfigCache
+	jwksCache   *auth.JWKSCache
+	// deviceCACache resolves a tenant's device CA live from an external
+	// custodian (e.g. Clavex) when TenantGatewayConfig.ClavexCAURL is set —
+	// see authenticateCert. Nil disables this path entirely, falling back
+	// to the static TrustedCAPEMs column (unchanged behavior).
+	deviceCACache *auth.DeviceCACache
 	retainedStore *RetainedStore
 	// rdb backs the per-tenant daily data-volume quota (see
 	// withinDataVolumeLimit) — the only piece of the former
@@ -477,8 +482,21 @@ func (h *keelHook) authenticateCert(ctx context.Context, state tls.ConnectionSta
 		return nil, method, false
 	}
 
-	// Full verification with tenant's trusted CAs
-	deviceID, tenantID, err = auth.VerifyCertificate(cert, tenantCfg.TrustedCAPEMs)
+	// Full verification with tenant's trusted CAs. ClavexCAURL, when set,
+	// takes precedence over the static TrustedCAPEMs — resolved live via
+	// deviceCACache (see its doc), never persisted in this database.
+	trustedCAPEMs := tenantCfg.TrustedCAPEMs
+	if tenantCfg.ClavexCAURL != "" && h.deviceCACache != nil {
+		pems, caErr := h.deviceCACache.TrustedCAPEMs(ctx, tenantID, tenantCfg.ClavexCAURL, tenantCfg.ClavexAgentToken)
+		if caErr != nil {
+			h.log.Warn("mqtt-gateway: device CA fetch failed", "tenant", tenantID, "error", caErr)
+			telemetry.ConnectionsTotal.WithLabelValues(tenantID, "auth_failed").Inc()
+			return nil, method, false
+		}
+		trustedCAPEMs = pems
+	}
+
+	deviceID, tenantID, err = auth.VerifyCertificate(cert, trustedCAPEMs)
 	if err != nil {
 		h.log.Warn("mqtt-gateway: cert verification failed", "tenant", tenantID, "error", err)
 		telemetry.ConnectionsTotal.WithLabelValues(tenantID, "auth_failed").Inc()

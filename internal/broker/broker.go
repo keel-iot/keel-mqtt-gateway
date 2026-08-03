@@ -49,6 +49,13 @@ type Config struct {
 	// JWT connect until this is configured.
 	JWKSCache *auth.JWKSCache
 
+	// DeviceCACache resolves a tenant's device CA live from an external
+	// custodian (e.g. Clavex) for tenants configured with
+	// TenantGatewayConfig.ClavexCAURL, instead of the static
+	// TrustedCAPEMs column. Nil falls back to that static column
+	// unconditionally (unchanged behavior).
+	DeviceCACache *auth.DeviceCACache
+
 	// AutoProvisioningURL is the device-service base URL used to register devices
 	// that authenticate via X.509 for the first time. Empty = disabled.
 	AutoProvisioningURL string
@@ -158,6 +165,7 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 		provider:         provider,
 		tenantCache:      cfg.TenantConfigCache,
 		jwksCache:        cfg.JWKSCache,
+		deviceCACache:    cfg.DeviceCACache,
 		retainedStore:    retainedStore,
 		rdb:              cfg.RedisClient,
 		autoProvURL:      cfg.AutoProvisioningURL,
