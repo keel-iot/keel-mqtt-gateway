@@ -439,6 +439,11 @@ type clusterFlags struct {
 	rebalanceScheduleEnabled  bool
 	rebalanceScheduleInterval time.Duration
 	rebalanceScheduleDryRun   bool
+
+	// rebalanceExcludeClientIDs are never selected for eviction by either
+	// the manual endpoint or the scheduler — see
+	// internal/cluster/lifecycle.RebalanceConfig.ExcludeClientIDs's doc.
+	rebalanceExcludeClientIDs string
 }
 
 func parseClusterFlags() clusterFlags {
@@ -480,6 +485,7 @@ func parseClusterFlags() clusterFlags {
 	flag.BoolVar(&f.rebalanceScheduleEnabled, "rebalance-schedule-enabled", false, "core only: run a rebalance pass automatically every --rebalance-schedule-interval, instead of only via POST /api/cluster/rebalance")
 	flag.DurationVar(&f.rebalanceScheduleInterval, "rebalance-schedule-interval", 10*time.Minute, "core only: interval between automatic rebalance passes when --rebalance-schedule-enabled")
 	flag.BoolVar(&f.rebalanceScheduleDryRun, "rebalance-schedule-dry-run", false, "core only: log what the scheduled rebalance would do without actually evicting anyone — recommended when first enabling --rebalance-schedule-enabled on a cluster")
+	flag.StringVar(&f.rebalanceExcludeClientIDs, "rebalance-exclude-client-ids", "", "core only: comma-separated client_ids never selected for eviction by POST /api/cluster/rebalance or the scheduler (e.g. a shared bridge-consumer account) — still counted toward each node's connection total")
 	flag.Parse()
 
 	if f.nodeID == "" {
@@ -913,18 +919,27 @@ func runServer() {
 		}()
 
 		if isCoreRole {
+			excludeClientIDs := make(map[string]bool)
+			for _, id := range strings.Split(cf.rebalanceExcludeClientIDs, ",") {
+				if id = strings.TrimSpace(id); id != "" {
+					excludeClientIDs[id] = true
+				}
+			}
+			rebalanceCfg := lifecycle.RebalanceConfig{
+				ImbalanceThreshold:  cf.rebalanceImbalanceThreshold,
+				MaxEvictionsPerNode: cf.rebalanceMaxEvictionsPerNode,
+				EvictStagger:        cf.rebalanceEvictStagger,
+				ExcludeClientIDs:    excludeClientIDs,
+			}
+
 			mgmtAPI := &management.API{
 				SelfNodeID:      cf.nodeID,
 				RaftNode:        raftNode,
 				Membership:      clusterMembership,
 				ClusterRegistry: clusterRegistry,
 				Evictor:         clusterFwd,
-				RebalanceConfig: lifecycle.RebalanceConfig{
-					ImbalanceThreshold:  cf.rebalanceImbalanceThreshold,
-					MaxEvictionsPerNode: cf.rebalanceMaxEvictionsPerNode,
-					EvictStagger:        cf.rebalanceEvictStagger,
-				},
-				Log: log,
+				RebalanceConfig: rebalanceCfg,
+				Log:             log,
 			}
 			mgmtServer = &http.Server{
 				Addr:         cf.managementAddr,
@@ -954,11 +969,6 @@ func runServer() {
 			}
 
 			if cf.rebalanceScheduleEnabled {
-				rebalanceCfg := lifecycle.RebalanceConfig{
-					ImbalanceThreshold:  cf.rebalanceImbalanceThreshold,
-					MaxEvictionsPerNode: cf.rebalanceMaxEvictionsPerNode,
-					EvictStagger:        cf.rebalanceEvictStagger,
-				}
 				go lifecycle.RunScheduledRebalance(ctx,
 					raftNode.Registry.SessionsSnapshot,
 					func() map[string]bool { return lifecycle.LiveEdgeNodes(clusterMembership.Members()) },

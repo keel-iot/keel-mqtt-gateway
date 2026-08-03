@@ -49,6 +49,12 @@ type RebalanceConfig struct {
 	// simultaneous-reconnect wave is the actual expensive case, not
 	// steady-state connection count.
 	EvictStagger time.Duration
+	// ExcludeClientIDs are never selected for eviction (e.g. a shared
+	// infra account like a bridge consumer, where a brief drop matters
+	// more than for an ordinary device) — they still count toward the
+	// node's connection total/average, they just aren't eviction
+	// candidates. Nil/empty excludes nothing.
+	ExcludeClientIDs map[string]bool
 }
 
 // DefaultRebalanceConfig mirrors the values discussed and agreed for the
@@ -143,8 +149,24 @@ func Rebalance(ctx context.Context, sessions map[string]string, nodeIsLiveEdge m
 			continue
 		}
 
-		rand.Shuffle(len(clients), func(i, j int) { clients[i], clients[j] = clients[j], clients[i] })
-		toEvict := clients[:excess]
+		evictable := clients
+		if len(cfg.ExcludeClientIDs) > 0 {
+			evictable = make([]string, 0, len(clients))
+			for _, c := range clients {
+				if !cfg.ExcludeClientIDs[c] {
+					evictable = append(evictable, c)
+				}
+			}
+		}
+		if excess > len(evictable) {
+			excess = len(evictable)
+		}
+		if excess <= 0 {
+			continue
+		}
+
+		rand.Shuffle(len(evictable), func(i, j int) { evictable[i], evictable[j] = evictable[j], evictable[i] })
+		toEvict := evictable[:excess]
 
 		nodeResult := RebalanceNodeResult{
 			NodeID: nodeID,

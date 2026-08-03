@@ -288,3 +288,56 @@ func TestLiveEdgeNodes_FiltersByRole(t *testing.T) {
 		t.Fatalf("unexpected live set: %+v", live)
 	}
 }
+
+func TestRebalance_ExcludedClientsNeverEvicted(t *testing.T) {
+	sessions := sessionsWithCounts(map[string]int{"edge-1": 5, "edge-2": 5, "edge-3": 30})
+	live := map[string]bool{"edge-1": true, "edge-2": true, "edge-3": true}
+	evictor := &fakeEvictor{}
+	// Exclude most of edge-3's clients, leaving only 5 evictable — fewer
+	// than the computed excess (17), so eviction should cap at what's
+	// actually evictable instead of erroring or picking excluded ones.
+	exclude := make(map[string]bool)
+	for i := 5; i < 30; i++ {
+		exclude[fmt.Sprintf("edge-3-client-%d", i)] = true
+	}
+	cfg := RebalanceConfig{ImbalanceThreshold: 0.20, MaxEvictionsPerNode: 100, ExcludeClientIDs: exclude}
+
+	result, err := Rebalance(context.Background(), sessions, live, cfg, evictor, false, silentLogger())
+	if err != nil {
+		t.Fatalf("Rebalance: %v", err)
+	}
+	if len(result.Nodes) != 1 {
+		t.Fatalf("expected 1 node result, got %d", len(result.Nodes))
+	}
+	nr := result.Nodes[0]
+	if len(nr.Evicted) != 5 {
+		t.Fatalf("evicted %d, want 5 (only non-excluded clients available)", len(nr.Evicted))
+	}
+	for _, id := range nr.Evicted {
+		if exclude[id] {
+			t.Fatalf("excluded client %q was evicted", id)
+		}
+	}
+}
+
+func TestRebalance_AllCandidatesExcluded_NoEviction(t *testing.T) {
+	sessions := sessionsWithCounts(map[string]int{"edge-1": 5, "edge-2": 5, "edge-3": 30})
+	live := map[string]bool{"edge-1": true, "edge-2": true, "edge-3": true}
+	evictor := &fakeEvictor{}
+	exclude := make(map[string]bool)
+	for i := 0; i < 30; i++ {
+		exclude[fmt.Sprintf("edge-3-client-%d", i)] = true
+	}
+	cfg := RebalanceConfig{ImbalanceThreshold: 0.20, MaxEvictionsPerNode: 100, ExcludeClientIDs: exclude}
+
+	result, err := Rebalance(context.Background(), sessions, live, cfg, evictor, false, silentLogger())
+	if err != nil {
+		t.Fatalf("Rebalance: %v", err)
+	}
+	if len(result.Nodes) != 0 {
+		t.Fatalf("expected no node results (nothing evictable), got %+v", result.Nodes)
+	}
+	if len(evictor.calls) != 0 {
+		t.Fatalf("expected no Evict calls, got %d", len(evictor.calls))
+	}
+}
