@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/hooks/storage"
@@ -26,6 +27,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
 // Redis key prefixes — separate from any other consumers sharing the same
@@ -224,8 +226,10 @@ func (h *RedisSessionHook) OnQosComplete(cl *mqtt.Client, pk packets.Packet) {
 	}
 }
 
-// OnQosDropped removes an expired in-flight message.
+// OnQosDropped removes an expired in-flight message — real message loss,
+// not just a delay (see telemetry.QosDropped's doc).
 func (h *RedisSessionHook) OnQosDropped(cl *mqtt.Client, pk packets.Packet) {
+	telemetry.QosDropped.WithLabelValues(strconv.Itoa(int(pk.FixedHeader.Qos))).Inc()
 	h.OnQosComplete(cl, pk)
 }
 

@@ -96,6 +96,17 @@ var (
 		Help:      "Messages dropped from the output-connector forwarder buffer, by reason.",
 	}, []string{"connector", "reason"})
 
+	// QosDropped counts real QoS1/2 message loss: mochi-mqtt calls
+	// OnQosDropped (see internal/broker/redis_session.go) when an inflight
+	// message's QoS flow expires or is abandoned before completion — the
+	// message is gone, not just delayed. Previously unobserved: that hook
+	// only cleaned up Redis state, with no metric or log anywhere.
+	QosDropped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "keel_gateway",
+		Name:      "qos_dropped_total",
+		Help:      "QoS1/2 messages whose inflight delivery expired or was abandoned — real message loss, by QoS level.",
+	}, []string{"qos"})
+
 	// RaftApplyDuration measures the time a single raft.Apply takes on the
 	// leader (internal/cluster/raft.LocalRegistry.apply) — the control-plane
 	// cost keel-design-doc.md's PoC checklist asks to isolate, distinct from
