@@ -1010,7 +1010,19 @@ func runServer() {
 				offlineSessionHook := broker.NewRedisSessionHook(rdb, log)
 				offlineOwnership := &keelraft.OfflineOwnership{Registry: clusterRegistry}
 				offlineReconciler := &session.Reconciler{
-					Inventory:       offlineSessionHook.OfflineInventory,
+					// Redis persists a client's record for its whole life,
+					// connected or not (see session.AllFromStorage's doc),
+					// so a currently-live client must be filtered out here
+					// — see session.FilterOffline's doc for why, and phase
+					// 6e's keelHook.OnSessionEstablish, which this filter
+					// keeps from fighting.
+					Inventory: func() ([]session.OfflineSession, error) {
+						all, err := offlineSessionHook.OfflineInventory()
+						if err != nil {
+							return nil, err
+						}
+						return session.FilterOffline(all, raftNode.Registry.SessionsSnapshot()), nil
+					},
 					LiveEdgeNodeIDs: func() []string { return lifecycle.LiveEdgeNodeIDs(clusterMembership.Members()) },
 					CurrentOwner:    offlineOwnership.CurrentOwner,
 					Place:           offlineOwnership.Place,
@@ -1172,6 +1184,15 @@ func runServer() {
 		liveStats := telemetry.NewLiveStats()
 		liveStats.Start(ctx, time.Second)
 
+		// Nil in standalone mode (no --role flag): no membership means no
+		// rendezvous candidates, so keelHook's eager offline-ownership
+		// placement/clear stays disabled and the (also-inactive) periodic
+		// Reconciler is never the only path either — both no-ops together.
+		var liveEdgeNodeIDsFn func() []string
+		if clusterMembership != nil {
+			liveEdgeNodeIDsFn = func() []string { return lifecycle.LiveEdgeNodeIDs(clusterMembership.Members()) }
+		}
+
 		mqttServer, certReloader, err = broker.New(broker.Config{
 			MQTTPort:              cfg.MQTTPort,
 			MQTTTLSPort:           cfg.MQTTTLSPort,
@@ -1189,6 +1210,7 @@ func runServer() {
 			OutputConnectors:      outputConns,
 			SessionExpiryInterval: cfg.SessionExpiryInterval,
 			LiveStats:             liveStats,
+			LiveEdgeNodeIDs:       liveEdgeNodeIDsFn,
 		}, provider, log)
 		if err != nil {
 			log.Error("create MQTT broker", "error", err)

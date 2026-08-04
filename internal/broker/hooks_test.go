@@ -15,6 +15,7 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/auth"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/acl"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/dataplane"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/session"
 )
 
 // fakeRegistry is a minimal keelraft.Registry stand-in used to exercise
@@ -589,6 +590,112 @@ func TestOnDisconnect_EvictedPersistentSessionClearsRouting(t *testing.T) {
 	}
 }
 
+// TestOnDisconnect_PersistentSession_PlacesOfflineOwnership verifies the
+// phase 6e eager path: a genuinely-offline persistent session gets its
+// rendezvous-computed owner (internal/session.Owner) placed immediately,
+// for every filter it was subscribed to, rather than waiting for the
+// periodic session.Reconciler's next tick.
+func TestOnDisconnect_PersistentSession_PlacesOfflineOwnership(t *testing.T) {
+	reg := &fakeRegistry{}
+	h := newClusterTestHook(reg, &fakeForwarder{}, "edge-1")
+	h.tenantConns = map[string]int{}
+	h.generation = map[string]uint64{}
+	h.clients["device-1"] = deviceState("dev-1")
+
+	ownership := &fakeOfflineOwnership{}
+	h.offlineOwnership = ownership
+	live := []string{"edge-1", "edge-2", "edge-3"}
+	h.liveEdgeNodeIDs = func() []string { return live }
+
+	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+
+	h.OnDisconnect(cl, nil, false) // expire=false: persistent session, genuinely offline
+
+	wantOwner, ok := session.Owner("device-1", live)
+	if !ok {
+		t.Fatalf("test setup: expected session.Owner to resolve for a non-empty live list")
+	}
+
+	ownership.mu.Lock()
+	defer ownership.mu.Unlock()
+	if len(ownership.placeCalls) != 1 {
+		t.Fatalf("expected exactly 1 Place call, got %+v", ownership.placeCalls)
+	}
+	got := ownership.placeCalls[0]
+	if got.clientID != "device-1" || got.filter != "telemetry/tenant/device-1" || got.newOwner != wantOwner {
+		t.Fatalf("expected Place(device-1, telemetry/tenant/device-1, %s), got %+v", wantOwner, got)
+	}
+}
+
+// TestOnDisconnect_ExpiringSession_DoesNotPlaceOfflineOwnership verifies a
+// clean/expiring session's disconnect never places offline ownership —
+// there is no offline session left to own.
+func TestOnDisconnect_ExpiringSession_DoesNotPlaceOfflineOwnership(t *testing.T) {
+	reg := &fakeRegistry{}
+	h := newClusterTestHook(reg, &fakeForwarder{}, "edge-1")
+	h.tenantConns = map[string]int{}
+	h.generation = map[string]uint64{}
+	h.clients["device-1"] = deviceState("dev-1")
+
+	ownership := &fakeOfflineOwnership{}
+	h.offlineOwnership = ownership
+	h.liveEdgeNodeIDs = func() []string { return []string{"edge-1", "edge-2"} }
+
+	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+
+	h.OnDisconnect(cl, nil, true) // expire=true: clean session, truly ending
+
+	ownership.mu.Lock()
+	defer ownership.mu.Unlock()
+	if len(ownership.placeCalls) != 0 {
+		t.Fatalf("expected no Place calls for an expiring session, got %+v", ownership.placeCalls)
+	}
+}
+
+// TestOnDisconnect_NoLiveEdgeNodeIDs_SkipsPlacement verifies the standalone
+// (or not-yet-ready) case — h.liveEdgeNodeIDs nil — never panics and simply
+// skips placement, leaving it to the periodic Reconciler.
+func TestOnDisconnect_NoLiveEdgeNodeIDs_SkipsPlacement(t *testing.T) {
+	reg := &fakeRegistry{}
+	h := newClusterTestHook(reg, &fakeForwarder{}, "edge-1")
+	h.tenantConns = map[string]int{}
+	h.generation = map[string]uint64{}
+	h.clients["device-1"] = deviceState("dev-1")
+
+	ownership := &fakeOfflineOwnership{}
+	h.offlineOwnership = ownership
+	// h.liveEdgeNodeIDs left nil.
+
+	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+
+	h.OnDisconnect(cl, nil, false)
+
+	ownership.mu.Lock()
+	defer ownership.mu.Unlock()
+	if len(ownership.placeCalls) != 0 {
+		t.Fatalf("expected no Place calls when liveEdgeNodeIDs is nil, got %+v", ownership.placeCalls)
+	}
+}
+
+// TestOnDisconnect_NoOfflineOwnership_SkipsPlacement verifies standalone
+// mode (h.offlineOwnership nil, the zero value used by every other
+// OnDisconnect test in this file) never panics.
+func TestOnDisconnect_NoOfflineOwnership_SkipsPlacement(t *testing.T) {
+	reg := &fakeRegistry{}
+	h := newClusterTestHook(reg, &fakeForwarder{}, "edge-1")
+	h.tenantConns = map[string]int{}
+	h.generation = map[string]uint64{}
+	h.clients["device-1"] = deviceState("dev-1")
+
+	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+
+	h.OnDisconnect(cl, nil, false) // must not panic with offlineOwnership/liveEdgeNodeIDs both nil
+}
+
 // fakeSessionStore is a minimal sessionStore stand-in for OnSessionEstablish
 // tests — see RedisSessionHook.SubscriptionsForClient/InflightForClient.
 type fakeSessionStore struct {
@@ -602,6 +709,40 @@ func (f *fakeSessionStore) SubscriptionsForClient(clientID string) ([]storage.Su
 
 func (f *fakeSessionStore) InflightForClient(clientID string) ([]storage.Message, error) {
 	return f.inflight, nil
+}
+
+// fakeOfflineOwnership is a minimal offlineOwnershipStore stand-in for
+// placeOfflineOwnership/clearOfflineOwnership tests.
+type fakeOfflineOwnership struct {
+	mu         sync.Mutex
+	placeCalls []offlineOwnershipCall
+	clearCalls []offlineOwnershipCall
+	placeErr   error
+	clearErr   error
+}
+
+type offlineOwnershipCall struct {
+	clientID, filter, newOwner string
+}
+
+func (f *fakeOfflineOwnership) Place(clientID, filter, newOwner string) error {
+	if f.placeErr != nil {
+		return f.placeErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.placeCalls = append(f.placeCalls, offlineOwnershipCall{clientID, filter, newOwner})
+	return nil
+}
+
+func (f *fakeOfflineOwnership) Clear(clientID, filter string) error {
+	if f.clearErr != nil {
+		return f.clearErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clearCalls = append(f.clearCalls, offlineOwnershipCall{clientID: clientID, filter: filter})
+	return nil
 }
 
 // TestOnSessionEstablish_CleanSessionNoop verifies a clean-session connect
@@ -709,4 +850,81 @@ func TestOnSessionEstablish_RehydratesFromRedis(t *testing.T) {
 	if ghost.State.Inflight.Len() != 1 {
 		t.Fatalf("expected ghost to carry 1 persisted inflight message, got %d", ghost.State.Inflight.Len())
 	}
+}
+
+// TestOnSessionEstablish_ClearsOfflineOwnership_CrossNodeResume verifies the
+// phase 6e mirror of placeOfflineOwnership: reconnecting to a node with no
+// local state (the ghost-rehydration branch) still clears offline
+// ownership for every persisted filter.
+func TestOnSessionEstablish_ClearsOfflineOwnership_CrossNodeResume(t *testing.T) {
+	server := mqtt.New(nil)
+	store := &fakeSessionStore{
+		subs: []storage.Subscription{{Filter: "telemetry/tenant/device-1", Qos: 1}},
+	}
+	ownership := &fakeOfflineOwnership{}
+	h := &keelHook{log: slog.Default(), server: server, sessionStore: store, offlineOwnership: ownership}
+
+	cl := server.NewClient(nil, "tcp", "device-1", false)
+	h.OnSessionEstablish(cl, packets.Packet{Connect: packets.ConnectParams{Clean: false}, ProtocolVersion: 4})
+
+	ownership.mu.Lock()
+	defer ownership.mu.Unlock()
+	if len(ownership.clearCalls) != 1 || ownership.clearCalls[0].clientID != "device-1" || ownership.clearCalls[0].filter != "telemetry/tenant/device-1" {
+		t.Fatalf("expected exactly 1 Clear(device-1, telemetry/tenant/device-1) call, got %+v", ownership.clearCalls)
+	}
+}
+
+// TestOnSessionEstablish_ClearsOfflineOwnership_SameNodeResume verifies
+// clearing still happens on the same-node fast-resume branch — a disconnect
+// eagerly places ownership without knowing in advance whether the
+// reconnect will land on the same node or not, so both branches must clear.
+func TestOnSessionEstablish_ClearsOfflineOwnership_SameNodeResume(t *testing.T) {
+	server := mqtt.New(nil)
+	store := &fakeSessionStore{
+		subs: []storage.Subscription{{Filter: "telemetry/tenant/device-1", Qos: 1}},
+	}
+	ownership := &fakeOfflineOwnership{}
+	h := &keelHook{log: slog.Default(), server: server, sessionStore: store, offlineOwnership: ownership}
+
+	existing := server.NewClient(nil, "tcp", "device-1", false)
+	server.Clients.Add(existing)
+
+	cl := server.NewClient(nil, "tcp", "device-1", false)
+	h.OnSessionEstablish(cl, packets.Packet{Connect: packets.ConnectParams{Clean: false}})
+
+	ownership.mu.Lock()
+	defer ownership.mu.Unlock()
+	if len(ownership.clearCalls) != 1 || ownership.clearCalls[0].clientID != "device-1" || ownership.clearCalls[0].filter != "telemetry/tenant/device-1" {
+		t.Fatalf("expected exactly 1 Clear(device-1, telemetry/tenant/device-1) call, got %+v", ownership.clearCalls)
+	}
+}
+
+// TestOnSessionEstablish_CleanSession_DoesNotClearOfflineOwnership verifies
+// the existing pk.Connect.Clean early return also skips the new clear step
+// — nothing to clear for a clean session by definition.
+func TestOnSessionEstablish_CleanSession_DoesNotClearOfflineOwnership(t *testing.T) {
+	server := mqtt.New(nil)
+	store := &fakeSessionStore{subs: []storage.Subscription{{Filter: "telemetry/x"}}}
+	ownership := &fakeOfflineOwnership{}
+	h := &keelHook{log: slog.Default(), server: server, sessionStore: store, offlineOwnership: ownership}
+
+	cl := server.NewClient(nil, "tcp", "device-1", false)
+	h.OnSessionEstablish(cl, packets.Packet{Connect: packets.ConnectParams{Clean: true}})
+
+	ownership.mu.Lock()
+	defer ownership.mu.Unlock()
+	if len(ownership.clearCalls) != 0 {
+		t.Fatalf("expected no Clear calls for a clean-session connect, got %+v", ownership.clearCalls)
+	}
+}
+
+// TestOnSessionEstablish_NoOfflineOwnership_Noop verifies standalone mode
+// (h.offlineOwnership nil) never panics.
+func TestOnSessionEstablish_NoOfflineOwnership_Noop(t *testing.T) {
+	server := mqtt.New(nil)
+	store := &fakeSessionStore{subs: []storage.Subscription{{Filter: "telemetry/x"}}}
+	h := &keelHook{log: slog.Default(), server: server, sessionStore: store}
+
+	cl := server.NewClient(nil, "tcp", "device-1", false)
+	h.OnSessionEstablish(cl, packets.Packet{Connect: packets.ConnectParams{Clean: false}}) // must not panic
 }

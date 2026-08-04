@@ -152,6 +152,29 @@ func TestOfflineOwnership_SubscribeFailure_PropagatesError(t *testing.T) {
 	}
 }
 
+func TestOfflineOwnership_Clear_RemovesRegistration(t *testing.T) {
+	o := &OfflineOwnership{Registry: newFakeOfflineOwnerRegistry()}
+
+	if err := o.Place("device-1", "telemetry/#", "edge-1"); err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+	if err := o.Clear("device-1", "telemetry/#"); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+
+	if _, ok := o.CurrentOwner("device-1", "telemetry/#"); ok {
+		t.Fatalf("expected no owner after Clear")
+	}
+}
+
+func TestOfflineOwnership_Clear_NothingRegistered_NoOp(t *testing.T) {
+	o := &OfflineOwnership{Registry: newFakeOfflineOwnerRegistry()}
+
+	if err := o.Clear("device-1", "telemetry/#"); err != nil {
+		t.Fatalf("expected no error clearing an unregistered (clientID, filter), got %v", err)
+	}
+}
+
 func TestOfflineOwnerKey_DeterministicAndUnique(t *testing.T) {
 	k1 := offlineOwnerKey("device-1", "telemetry/#")
 	k2 := offlineOwnerKey("device-1", "telemetry/#")

@@ -103,3 +103,44 @@ func TestAllFromStorage_SubscriptionsForUnknownClientAreIgnored(t *testing.T) {
 		t.Fatalf("expected device-1 to have exactly its own subscription, got %+v", got[0].Subscriptions)
 	}
 }
+
+func TestFilterOffline_DropsLiveClaimedClients(t *testing.T) {
+	sessions := []session.OfflineSession{
+		{ClientID: "device-1"},
+		{ClientID: "device-2"},
+		{ClientID: "device-3"},
+	}
+	liveClaimed := map[string]string{"device-2": "edge-1"}
+
+	got := session.FilterOffline(sessions, liveClaimed)
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 offline sessions (device-2 excluded), got %d: %+v", len(got), got)
+	}
+	for _, s := range got {
+		if s.ClientID == "device-2" {
+			t.Fatalf("device-2 is live-claimed, must not appear in the filtered result")
+		}
+	}
+}
+
+func TestFilterOffline_NoLiveClaims_ReturnsAllUnchanged(t *testing.T) {
+	sessions := []session.OfflineSession{{ClientID: "device-1"}, {ClientID: "device-2"}}
+
+	got := session.FilterOffline(sessions, nil)
+
+	if len(got) != 2 {
+		t.Fatalf("expected both sessions unchanged, got %+v", got)
+	}
+}
+
+func TestFilterOffline_EveryClientLive_ReturnsEmptyNotNil(t *testing.T) {
+	sessions := []session.OfflineSession{{ClientID: "device-1"}}
+	liveClaimed := map[string]string{"device-1": "edge-1"}
+
+	got := session.FilterOffline(sessions, liveClaimed)
+
+	if len(got) != 0 {
+		t.Fatalf("expected no offline sessions, got %+v", got)
+	}
+}

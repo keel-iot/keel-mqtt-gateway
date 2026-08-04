@@ -74,3 +74,23 @@ func AllFromStorage(clients []storage.Client, subs []storage.Subscription) []Off
 	}
 	return out
 }
+
+// FilterOffline drops any session whose client_id is currently claimed by
+// a live connection somewhere in the cluster (liveClaimed, as returned by
+// raft.Registry's SessionsSnapshot — clientID keys, node ID values, only
+// presence matters here). Redis persists a client's record for its whole
+// life, connected or not (see AllFromStorage's doc), so without this a
+// currently-connected client would still show up as "offline" — the
+// Reconciler would keep placing/re-placing rendezvous ownership for a
+// session that isn't offline at all, fighting keelHook's OnSessionEstablish,
+// which clears that same registration the moment the client reconnects.
+func FilterOffline(sessions []OfflineSession, liveClaimed map[string]string) []OfflineSession {
+	out := make([]OfflineSession, 0, len(sessions))
+	for _, s := range sessions {
+		if _, live := liveClaimed[s.ClientID]; live {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}

@@ -78,6 +78,14 @@ type Config struct {
 	ClusterFwd      dataplane.Forwarder
 	ClusterNodeID   string
 
+	// LiveEdgeNodeIDs returns the currently gossip-visible edge nodes —
+	// used by keelHook's OnDisconnect/OnSessionEstablish to eagerly place/
+	// clear offline-session ownership (see keel-design-doc.md's Offline
+	// Session Placement ADR, phase 6e). Nil disables the eager path
+	// entirely: the periodic session.Reconciler (core-only, see
+	// cmd/server/main.go) still catches up on its own next tick regardless.
+	LiveEdgeNodeIDs func() []string
+
 	// OutputConnectors forward device messages to external systems (e.g.,
 	// Ditto via Hono Kafka, or an attached plugin sidecar — see
 	// internal/connector/pluginhost). Each entry is fanned out to
@@ -177,12 +185,19 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 		server:           server,
 		liveStats:        cfg.LiveStats,
 		defaultTenantID:  cfg.DefaultTenantID,
+		liveEdgeNodeIDs:  cfg.LiveEdgeNodeIDs,
 	}
 	// Typed nil guard: an interface value holding a nil *RedisSessionHook is
 	// itself non-nil, which would defeat OnSessionEstablish's `h.sessionStore
 	// == nil` check — only assign when Redis is actually configured.
 	if redisHook != nil {
 		hook.sessionStore = redisHook
+	}
+	// Same typed-nil concern as above: only assign when there's an actual
+	// cluster registry to back it (offline-session ownership is meaningless
+	// standalone — no membership, no rendezvous).
+	if cfg.ClusterRegistry != nil {
+		hook.offlineOwnership = &keelraft.OfflineOwnership{Registry: cfg.ClusterRegistry}
 	}
 	if err := server.AddHook(hook, nil); err != nil {
 		return nil, nil, fmt.Errorf("add keel hook: %w", err)

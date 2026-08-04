@@ -70,3 +70,16 @@ func (o *OfflineOwnership) Place(clientID, filter, newOwner string) error {
 	}
 	return o.Registry.Subscribe(key, newOwner)
 }
+
+// Clear removes clientID's offline-ownership registration for filter, if
+// any — called when a session comes back online (see
+// internal/broker.keelHook.OnSessionEstablish), so a reconnected client is
+// never left with a stale offline-delivery target between now and the
+// Reconciler's next tick.
+func (o *OfflineOwnership) Clear(clientID, filter string) error {
+	old, ok := o.CurrentOwner(clientID, filter)
+	if !ok {
+		return nil
+	}
+	return o.Registry.Unsubscribe(offlineOwnerKey(clientID, filter), old)
+}

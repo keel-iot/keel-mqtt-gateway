@@ -29,6 +29,7 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/connector"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/forwarder"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/session"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
@@ -65,6 +66,16 @@ type keelHook struct {
 	clusterRegistry keelraft.Registry
 	clusterFwd      dataplane.Forwarder
 	clusterNodeID   string
+
+	// offlineOwnership/liveEdgeNodeIDs back OnDisconnect/OnSessionEstablish's
+	// eager offline-session-ownership placement/clear — see
+	// keel-design-doc.md's Offline Session Placement ADR, phase 6e. This is
+	// a latency optimization over the periodic session.Reconciler
+	// (core-only, see cmd/server/main.go): both nil in standalone mode, or
+	// whenever the reconciler itself isn't running, and every call site
+	// below guards for nil the same way clusterRegistry's call sites do.
+	offlineOwnership offlineOwnershipStore
+	liveEdgeNodeIDs  func() []string
 
 	// server is this node's own mochi-mqtt server, wired in broker.New right
 	// after construction — used by OnSessionEstablish to check whether THIS
@@ -103,6 +114,13 @@ type keelHook struct {
 type sessionStore interface {
 	SubscriptionsForClient(clientID string) ([]storage.Subscription, error)
 	InflightForClient(clientID string) ([]storage.Message, error)
+}
+
+// offlineOwnershipStore is satisfied by *keelraft.OfflineOwnership —
+// narrowed for testability, same pattern as sessionStore above.
+type offlineOwnershipStore interface {
+	Place(clientID, filter, newOwner string) error
+	Clear(clientID, filter string) error
 }
 
 type clientState struct {
@@ -255,6 +273,8 @@ func (h *keelHook) OnSessionEstablish(cl *mqtt.Client, pk packets.Packet) {
 	if h.server == nil || h.sessionStore == nil || pk.Connect.Clean {
 		return
 	}
+	h.clearOfflineOwnership(cl.ID)
+
 	if _, ok := h.server.Clients.Get(cl.ID); ok {
 		return
 	}
@@ -293,6 +313,54 @@ func (h *keelHook) OnSessionEstablish(cl *mqtt.Client, pk packets.Packet) {
 
 	h.log.Info("session rehydrate: seeded from Redis for reconnect on a different node",
 		"client_id", cl.ID, "subscriptions", len(subs), "inflight", len(inflight))
+}
+
+// clearOfflineOwnership removes any offline-ownership registration for
+// clientID's persisted subscription filters — the mirror of
+// placeOfflineOwnership below, called when a session comes back online so a
+// reconnected client is never left with a stale offline-delivery target
+// sitting on some other node until the periodic session.Reconciler's next
+// tick notices. Runs for both the same-node and cross-node resume branches
+// of OnSessionEstablish (placeOfflineOwnership doesn't know in advance
+// which one a given disconnect will end up being), so it's called before
+// either path returns. No-op when offlineOwnership isn't configured
+// (standalone mode, or a role that doesn't run the offline reconciler).
+func (h *keelHook) clearOfflineOwnership(clientID string) {
+	if h.offlineOwnership == nil {
+		return
+	}
+	subs, err := h.sessionStore.SubscriptionsForClient(clientID)
+	if err != nil {
+		h.log.Warn("cluster: offline ownership clear: fetch subscriptions failed", "client_id", clientID, "error", err)
+		return
+	}
+	for _, s := range subs {
+		if err := h.offlineOwnership.Clear(clientID, s.Filter); err != nil {
+			h.log.Warn("cluster: offline ownership clear failed", "client_id", clientID, "filter", s.Filter, "error", err)
+		}
+	}
+}
+
+// placeOfflineOwnership eagerly registers this session's rendezvous-computed
+// owner (internal/session.Owner) for cl's still-active subscription
+// filters, right when it goes offline — the same latency optimization as
+// clearOfflineOwnership above, over the periodic session.Reconciler, which
+// would otherwise take up to its own poll interval to notice and place the
+// same thing. No-op when offlineOwnership/liveEdgeNodeIDs aren't configured,
+// or there are no live edge nodes to assign an owner from.
+func (h *keelHook) placeOfflineOwnership(cl *mqtt.Client) {
+	if h.offlineOwnership == nil || h.liveEdgeNodeIDs == nil {
+		return
+	}
+	owner, ok := session.Owner(cl.ID, h.liveEdgeNodeIDs())
+	if !ok {
+		return
+	}
+	for filter := range cl.State.Subscriptions.GetAll() {
+		if err := h.offlineOwnership.Place(cl.ID, filter, owner); err != nil {
+			h.log.Warn("cluster: offline ownership placement failed", "client_id", cl.ID, "filter", filter, "error", err)
+		}
+	}
 }
 
 // claimClusterSession claims clientID for this node in the cluster's
@@ -781,6 +849,12 @@ func (h *keelHook) OnDisconnect(cl *mqtt.Client, _ error, expire bool) {
 		h.forwardConnectionEvent(state.info, "offline")
 		if cleanup {
 			h.unsubscribeClusterFilters(cl)
+		} else {
+			// Persistent session, genuinely offline (not evicted/expired) —
+			// eagerly place its offline-session ownership rather than
+			// waiting for the periodic session.Reconciler's next tick. See
+			// placeOfflineOwnership's doc.
+			h.placeOfflineOwnership(cl)
 		}
 		if h.clusterRegistry != nil {
 			// Guarded by nodeID: a no-op if this node was already
