@@ -38,7 +38,7 @@ const DeviceTopicPrefix = "keel."
 
 // Topic builds a platform topic name from its components.
 //
-//	tenant_slug: human-readable slug (e.g. "kimeradev")
+//	tenant_slug: human-readable slug (e.g. "acme")
 //	fleetID:     platform UUID of the fleet
 //	deviceID:    platform UUID of the device
 //	category:    CategoryTelemetry | CategoryStatus | CategoryCommands

@@ -68,12 +68,9 @@ type keelHook struct {
 	clusterNodeID   string
 
 	// offlineOwnership/liveEdgeNodeIDs back OnDisconnect/OnSessionEstablish's
-	// eager offline-session-ownership placement/clear — see
-	// keel-design-doc.md's Offline Session Placement ADR, phase 6e. This is
-	// a latency optimization over the periodic session.Reconciler
-	// (core-only, see cmd/server/main.go): both nil in standalone mode, or
-	// whenever the reconciler itself isn't running, and every call site
-	// below guards for nil the same way clusterRegistry's call sites do.
+	// eager offline-session ownership placement/clear, a latency shortcut
+	// ahead of the periodic session.Reconciler. Nil in standalone mode,
+	// same guard-for-nil convention as clusterRegistry above.
 	offlineOwnership offlineOwnershipStore
 	liveEdgeNodeIDs  func() []string
 
@@ -238,37 +235,14 @@ func (h *keelHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) boo
 	return true
 }
 
-// OnSessionEstablish runs just before mochi-mqtt's own inheritClientSession
-// (see server.go's attachClient: OnSessionEstablish, then
-// inheritClientSession, then Clients.Add) — the last point at which it's
-// still meaningful to seed s.Clients with a prior session for this
-// client_id before mochi-mqtt decides whether this is a resumed session.
-//
-// Session resume normally only works when the reconnect lands on the same
-// node that already holds the client in its local s.Clients (in-process
-// resume, or after that node's own readStore() reloaded it from Redis at
-// boot). A persistent session reconnecting to a DIFFERENT node — one that
-// never had this client_id locally — found nothing to resume from even
-// though the exact same Redis data (subscriptions, inflight QoS1/2) was one
-// HScan away, because mochi-mqtt only ever reads storage once, at its own
-// boot, never per-connect. That silently dropped every queued message for
-// any persistent session that happened to reconnect elsewhere.
-//
-// The fix reuses mochi-mqtt's own restore mechanism instead of duplicating
-// it: build a ghost *Client exactly the way its loadClients/loadSubscriptions/
-// loadInflight do at boot (see server.go), register it under cl.ID in
-// s.Clients, and let the real inheritClientSession — called right after this
-// hook returns — merge/take over/resend through its own already-correct,
-// already-tested code path. This only ever populates in-memory state; it
-// never itself writes to the wire, so there's no risk of racing the
-// CONNACK mochi-mqtt sends after inheritClientSession returns.
-//
-// A no-op whenever: standalone/no cluster wiring isn't relevant here (this
-// runs regardless — Redis persistence is independent of cluster mode), no
-// Redis configured (h.sessionStore nil), a clean session (nothing to
-// resume by definition), or this node already has local state for cl.ID
-// (the common case — in-place resume already works via mochi-mqtt itself,
-// don't second-guess it or duplicate its ghost with our own).
+// OnSessionEstablish seeds a ghost *Client into s.Clients before
+// mochi-mqtt's own inheritClientSession runs, so its already-tested resume
+// path also works when a persistent session reconnects to a node that
+// never had it locally. mochi-mqtt only reads storage once, at boot, so
+// without this a reconnect on a different node silently dropped every
+// queued QoS1/2 message. No-op for a clean session, no sessionStore
+// (standalone), or when this node already has local state (same-node
+// resume, already handled by mochi-mqtt itself).
 func (h *keelHook) OnSessionEstablish(cl *mqtt.Client, pk packets.Packet) {
 	if h.server == nil || h.sessionStore == nil || pk.Connect.Clean {
 		return
@@ -778,35 +752,14 @@ func (h *keelHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet
 	return pk, nil
 }
 
-// OnDisconnect decrements the active-connections gauge and releases cluster
-// session ownership unconditionally — "which node holds the live
-// connection" ends the moment the socket closes, regardless of session
-// persistence. The ACL identity (h.clients/h.generation) and cluster-wide
-// routing entries are a different matter: for a persistent session
-// (expire == false) they must survive this disconnect, so only torn down
-// here when the session itself is truly ending (expire == true, same
-// clean-session/v5-session-expiry-interval-0 semantics mochi-mqtt itself
-// uses to decide whether to delete its own Client object — see
-// server.go's attachClient). For a persistent session that cleanup instead
-// happens later, in OnClientExpired, when mochi-mqtt's own expiry sweep
-// decides the session has genuinely timed out with no reconnect.
-//
-// Keeping h.clients alive past a persistent session's disconnect matters
-// because mochi-mqtt keeps delivering (and re-invoking OnACLCheck for)
-// queued QoS1/2 messages against that same, still-registered Client object
-// while it's offline — deleting h.clients unconditionally on disconnect
-// made OnACLCheck fail-closed for every one of those deliveries, silently
-// dropping them before they ever reached Inflight/Redis. Similarly,
-// clearing the cluster routing entry unconditionally broke cross-node
-// forwarding to that offline session immediately, independent of any node
-// crash.
-//
-// Uses the generation counter to avoid removing an entry that was already
-// replaced by a newer connection with the same client_id — the same guard
-// covers the cluster routing cleanup, since a superseded connection's
-// filters may have already been legitimately re-subscribed by the newer
-// connection on this same node (routing entries are per (topic, nodeID),
-// not per client_id).
+// OnDisconnect always decrements the connections gauge and releases
+// cluster session ownership, but only tears down ACL identity (h.clients)
+// and cluster routing when the session is truly ending (expire == true).
+// mochi-mqtt keeps delivering queued QoS1/2 messages against a persistent
+// session's Client object while offline; deleting h.clients or the
+// routing entry unconditionally on every disconnect broke both. The
+// generation counter guards against removing an entry a newer connection
+// already replaced.
 func (h *keelHook) OnDisconnect(cl *mqtt.Client, _ error, expire bool) {
 	// A disconnect caused by our own cluster-level Evict (see
 	// claimClusterSession/cmd/server/main.go's SubscribeEvict handler) means

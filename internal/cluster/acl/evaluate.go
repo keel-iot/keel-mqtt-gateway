@@ -12,35 +12,17 @@ type Decision struct {
 // allow/deny outcome (e.g. the mochi-mqtt OnACLCheck hook).
 func (d Decision) Allowed() bool { return d.Effect == EffectAllow }
 
-// Evaluate decides whether principal (identified by clientID/username) may
-// perform action on topic, given the set of currently-enabled standard
-// ruleset roles (enabledRulesets) and the principal's own custom rules
-// (customRules, typically resolved by the caller from Binding → Role
-// lookups in FSM state).
+// Evaluate decides whether principal (clientID/username) may perform
+// action on topic, given enabledRulesets and the principal's own
+// customRules (resolved from Binding → Role lookups by the caller).
 //
-// Precedence, per design:
-//  1. An explicit deny match beats every allow match, no matter which
-//     ruleset or binding it came from. This is evaluated as an absolute
-//     priority: if *any* candidate rule matching (action, topic) has
-//     Effect==deny, the result is deny, full stop — specificity is not
-//     even consulted in that case, because "deny always wins" is stronger
-//     than "most specific wins". (Specificity only distinguishes between
-//     rules of the *same* effect — see Rule below — which is why writing a
-//     narrower custom deny is the correct way to carve an exception out of
-//     a broad standard-ruleset allow: the deny wins unconditionally once
-//     it matches, and specificity there is about making sure the deny's
-//     filter targets only the topics you mean to restrict, not about
-//     out-ranking the competing allow.)
-//  2. Among matches of the *same* effect, the most specific topic filter
-//     is recorded as the explaining Rule (useful for audit/debugging);
-//     it does not change the outcome, since same-effect matches already
-//     agree on the result.
-//  3. No applicable rule at all (empty candidate set) → deny. This is the
-//     natural fallthrough of the loop below, not a special-cased check for
-//     "unknown principal" — an unknown principal simply contributes no
-//     custom rules, and if no enabled ruleset matches either, the
-//     candidate set is empty and we fall through to deny exactly the same
-//     way as for a known-but-unauthorized principal.
+// Precedence:
+//  1. Any matching deny wins outright, regardless of specificity — a
+//     narrow custom deny is the right way to carve an exception out of a
+//     broad standard-ruleset allow.
+//  2. Among same-effect matches, the most specific filter is recorded as
+//     the explaining Rule (audit only, doesn't change the outcome).
+//  3. No matching rule at all falls through to deny.
 func Evaluate(clientID, username, topic string, action Action, enabledRulesets []Role, customRules []ACLRule) Decision {
 	var bestDeny, bestAllow *ACLRule
 	bestDenySpec, bestAllowSpec := -1, -1

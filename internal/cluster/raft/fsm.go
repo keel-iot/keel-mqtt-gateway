@@ -25,30 +25,17 @@ type applyResult struct {
 	evictedNode string
 }
 
-// state is the FSM's in-memory data: session ownership (clientID ->
-// owning node) and ACL state (roles/bindings/enabled rulesets). Topic
-// -filter routing used to live here too (a derived trie + inverse index
-// kept in sync with a raft-replicated routes map) but has moved to
-// internal/cluster/routing, backed by store.ClusterStore (Olric) —
-// routing writes are high-frequency and naturally conflict-free per
-// (topic, nodeID) pair, so they don't need raft's strong-consensus log;
-// session ownership and ACL rules are both comparatively low-frequency
-// and genuinely need a single agreed-upon, strongly-consistent value (who
-// owns a session; who is or isn't authorized) — an unknown/not-yet-
-// -replicated principal must read as "deny", never as "allow" by
-// omission, which rules out an AP store the same way stale session
-// ownership would cause double-delivery. Both therefore stay on raft, as
-// two distinct sections of the same struct/log rather than two separate
-// raft groups: splitting would mean a second leader election, a second
-// log/snapshot, and a second quorum to reason about, for state that has
-// the same write-frequency profile as sessions and no need to scale
-// independently from it.
+// state is the FSM's in-memory data: session ownership and ACL state.
+// Topic-filter routing used to live here too but moved to
+// internal/cluster/routing (Olric) since it's high-frequency and
+// naturally conflict-free per (topic, nodeID) — session ownership and ACL
+// both need a single strongly-consistent answer (an unreplicated
+// principal must read as deny, never allow-by-omission), so they stay on
+// raft, sharing one log rather than a second raft group to run.
 //
-// Reads happen directly against this struct (see Registry read methods)
-// — on followers this may lag the leader by one replication round-trip,
-// which is an acceptable trade-off for a PoC. ACL evaluation callers must
-// treat that lag the same way: fail-closed (see internal/cluster/acl),
-// never optimistic-allow.
+// Reads hit this struct directly and may lag the leader by one
+// replication round-trip on a follower — ACL callers must treat that as
+// fail-closed, never optimistic-allow.
 type state struct {
 	mu       sync.RWMutex
 	sessions map[string]string

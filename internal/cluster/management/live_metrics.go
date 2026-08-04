@@ -15,19 +15,16 @@ import (
 // edge must not stall the whole cluster-wide aggregation.
 const liveMetricsCallTimeout = 3 * time.Second
 
-// clusterStatsView is the body of GET /api/metrics — the endpoint
-// keel-design-doc.md's "Osservabilità e controllo" section originally
-// specified ("GET /api/metrics // msg/sec, connessioni attive, per
-// nodo") but was never implemented until now. Aggregates every known
-// edge's internal/livestatsapi.StatsView (see NodeMeta.HTTPAddr).
+// clusterStatsView is the body of GET /api/metrics, aggregating every
+// known edge's internal/livestatsapi.StatsView (see NodeMeta.HTTPAddr).
 type clusterStatsView struct {
-	ActiveConnections int                       `json:"active_connections"`
-	TotalMessages     uint64                    `json:"total_messages"`
-	MessagesPerSecond float64                   `json:"messages_per_second"`
-	TotalBytes        uint64                    `json:"total_bytes"`
-	BytesPerSecond    float64                   `json:"bytes_per_second"`
-	Nodes             []livestatsapi.StatsView  `json:"nodes"`
-	Unreachable       []string                  `json:"unreachable,omitempty"`
+	ActiveConnections int                      `json:"active_connections"`
+	TotalMessages     uint64                   `json:"total_messages"`
+	MessagesPerSecond float64                  `json:"messages_per_second"`
+	TotalBytes        uint64                   `json:"total_bytes"`
+	BytesPerSecond    float64                  `json:"bytes_per_second"`
+	Nodes             []livestatsapi.StatsView `json:"nodes"`
+	Unreachable       []string                 `json:"unreachable,omitempty"`
 }
 
 type clusterClientView struct {

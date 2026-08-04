@@ -78,12 +78,10 @@ type Config struct {
 	ClusterFwd      dataplane.Forwarder
 	ClusterNodeID   string
 
-	// LiveEdgeNodeIDs returns the currently gossip-visible edge nodes —
-	// used by keelHook's OnDisconnect/OnSessionEstablish to eagerly place/
-	// clear offline-session ownership (see keel-design-doc.md's Offline
-	// Session Placement ADR, phase 6e). Nil disables the eager path
-	// entirely: the periodic session.Reconciler (core-only, see
-	// cmd/server/main.go) still catches up on its own next tick regardless.
+	// LiveEdgeNodeIDs returns the currently gossip-visible edge nodes, used
+	// to eagerly place/clear offline-session ownership on disconnect and
+	// reconnect. Nil just disables that shortcut; the periodic
+	// session.Reconciler still catches up on its own next tick.
 	LiveEdgeNodeIDs func() []string
 
 	// OutputConnectors forward device messages to external systems (e.g.,

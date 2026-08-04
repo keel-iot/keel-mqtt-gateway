@@ -1,33 +1,17 @@
 // Package routing implements the MQTT topic-filter routing table as
 // distributed state in a store.ClusterStore (Olric in production), with a
-// local per-process trie cache for lookup without a network round-trip on
-// every publish.
+// local per-process trie cache to avoid a network round-trip per publish.
 //
-// Design: the store holds one entry per (topic filter, nodeID) pair —
-// never a shared multi-writer value per topic — so concurrent
-// Subscribe/Unsubscribe calls from different nodes to the same or
-// overlapping filters never need a merge: each pair is an independent
-// key, genuinely conflict-free under an AP store. Every mutation also
-// publishes a small event over the store's pub/sub channel so every
-// node's local cache updates in well under a second without polling; the
-// store itself remains authoritative, and a periodic full reconciliation
-// (Router.reconcile, via Scan) rebuilds the local cache from scratch on
-// an interval, so convergence holds even if a pub/sub message is dropped
-// — the store has no delivery guarantee for a subscriber that's briefly
-// unreachable.
+// The store holds one entry per (topic filter, nodeID) pair, so
+// concurrent Subscribe/Unsubscribe from different nodes never need a
+// merge. Mutations also publish over the store's pub/sub so caches update
+// without polling; Router.reconcile periodically rebuilds the local cache
+// from the store via Scan in case a pub/sub message got dropped.
 //
-// Matching semantics (exact match, "#", "+", "$SYS" exclusion, union
-// across overlapping filters) are unchanged from the prior Raft-FSM
-// implementation: both reuse mochi-mqtt's own TopicsIndex trie.
-//
-// Router.reconcile (above) only ever pulls the local cache back into sync
-// with the store — if the store itself loses all of its data (e.g. Olric
-// restarted without persistence, or an admin wipes its dmaps) while a
-// node's MQTT clients stay connected, reconcile alone would just converge
-// every node's local cache to "empty", not restore the real subscriptions.
-// See Reconciler (reconciler.go) for the other direction: it re-asserts a
-// node's own live subscriptions (read straight from mochi-mqtt, not from
-// this cache) back into the store whenever they've gone missing from it.
+// reconcile only pulls the store's state into the local cache — it can't
+// help if the store itself loses all its data. Reconciler (reconciler.go)
+// covers that direction, re-asserting a node's own live subscriptions
+// back into the store.
 package routing
 
 import (

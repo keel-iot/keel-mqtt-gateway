@@ -1,27 +1,17 @@
-// Owner placement for offline sessions — see this package's doc and
-// keel-design-doc.md's "Offline Session Placement" ADR. Phase 3 of 6:
-// this pure function only, not wired into anything yet.
 package session
 
 import "hash/fnv"
 
 // Owner returns which of liveEdgeNodeIDs is responsible for clientID's
-// offline session, using rendezvous (highest random weight) hashing: for
-// every candidate, score = hash(clientID, nodeID); the candidate with the
-// highest score wins.
+// offline session, via rendezvous (highest random weight) hashing: score
+// every candidate as hash(clientID, nodeID), highest wins.
 //
-// Deterministic and order-independent — every node computes the same
-// answer from the same (clientID, liveEdgeNodeIDs), with no stored owner
-// table and no consensus (see the design doc's Ownership Model table:
-// this is a pure function, not a raft-arbitrated decision like
-// ClaimSession). Recomputing over a changed node list reassigns only the
-// sessions whose previous owner is no longer in the list, or for which a
-// newly-added node now scores higher — never the whole set, unlike a
-// naive hash % len(nodes) that reshuffles almost everything whenever N
-// changes.
+// Pure and consensus-free — every node computes the same answer from the
+// same inputs, no stored owner table. Changing the node list reassigns
+// only sessions whose owner left or whose new best-scorer just joined,
+// unlike hash % len(nodes) which reshuffles almost everything.
 //
-// Returns ("", false) when liveEdgeNodeIDs is empty — callers must treat
-// that as "no owner available right now", not "any node is fine".
+// Returns ("", false) when liveEdgeNodeIDs is empty.
 func Owner(clientID string, liveEdgeNodeIDs []string) (string, bool) {
 	if len(liveEdgeNodeIDs) == 0 {
 		return "", false

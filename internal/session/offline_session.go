@@ -1,16 +1,8 @@
-// Package session models MQTT state that outlives a live connection —
-// distinct from mqtt.Client (github.com/mochi-mqtt/server/v2), which
-// represents a live transport (socket, goroutines, keepalive). MQTT
-// conflates "connection" and "session" into that one object because
-// mochi-mqtt is designed as a standalone broker; Keel is a distributed
-// system built on top of it, and needs to represent a persistent session
-// that has no live connection anywhere in the cluster right now.
-//
-// See keel-design-doc.md's "Offline Session Placement — Proposed
-// Architecture" for the full design this package implements incrementally
-// (phase 1 of 6: this type only, no behavior change yet — nothing in the
-// gateway constructs or consumes it outside its own tests until a later
-// phase wires it in).
+// Package session models MQTT state that outlives a live connection,
+// distinct from mqtt.Client which represents the live transport (socket,
+// goroutines, keepalive). mochi-mqtt conflates connection and session
+// into one object; Keel needs to represent a persistent session with no
+// live connection anywhere in the cluster.
 package session
 
 import (
@@ -59,9 +51,8 @@ func FromStorage(clientID string, subs []storage.Subscription) OfflineSession {
 
 // AllFromStorage builds one OfflineSession per distinct client_id present
 // in clients, using subs to populate each one's Subscriptions. Mirrors
-// what RedisSessionHook.StoredClients/StoredSubscriptions return today
-// (the fleet-wide, unfiltered rows) — a later phase changes *what* calls
-// this and *when*, not this transform itself.
+// the fleet-wide, unfiltered rows RedisSessionHook.StoredClients/
+// StoredSubscriptions return.
 func AllFromStorage(clients []storage.Client, subs []storage.Subscription) []OfflineSession {
 	byClient := make(map[string][]storage.Subscription)
 	for _, sub := range subs {
@@ -75,15 +66,11 @@ func AllFromStorage(clients []storage.Client, subs []storage.Subscription) []Off
 	return out
 }
 
-// FilterOffline drops any session whose client_id is currently claimed by
-// a live connection somewhere in the cluster (liveClaimed, as returned by
-// raft.Registry's SessionsSnapshot — clientID keys, node ID values, only
-// presence matters here). Redis persists a client's record for its whole
-// life, connected or not (see AllFromStorage's doc), so without this a
-// currently-connected client would still show up as "offline" — the
-// Reconciler would keep placing/re-placing rendezvous ownership for a
-// session that isn't offline at all, fighting keelHook's OnSessionEstablish,
-// which clears that same registration the moment the client reconnects.
+// FilterOffline drops sessions whose client_id is claimed by a live
+// connection (liveClaimed, from raft.Registry's SessionsSnapshot — only
+// key presence matters). Redis keeps a client's record whether it's
+// connected or not, so without this a live client would keep showing up
+// as offline and fighting the reconnect-time ownership clear.
 func FilterOffline(sessions []OfflineSession, liveClaimed map[string]string) []OfflineSession {
 	out := make([]OfflineSession, 0, len(sessions))
 	for _, s := range sessions {

@@ -40,23 +40,11 @@ type honoProducer interface {
 	Close()
 }
 
-// KafkaHonoConnector forwards device messages to Eclipse Hono-compatible Kafka topics.
-// Produces messages with Hono-standard headers (device_id, tenant_id, content-type)
-// so an existing Eclipse Ditto connection can consume them without reconfiguration.
-//
-// **SCHEMA REFERENCE** (from INWIT_KIMERA production ditto-connection-hono.json):
-//   Topics:
-//     - hono.telemetry.${tenant_id}
-//     - hono.event.${tenant_id}
-//   SASL mechanism: SCRAM-SHA-256
-//   Headers (required by Ditto's hono-to-ditto mappingScript, read as native
-//   Kafka record headers, not encoded in the key):
-//     - device_id: device UUID
-//     - tenant_id: tenant identifier
-//   Payload: JSON text (raw device payload)
-//
-// This implementation matches the production schema validated against the actual
-// INWIT_KIMERA Ditto connection configuration.
+// KafkaHonoConnector forwards device messages to Eclipse Hono-compatible
+// Kafka topics (hono.telemetry.${tenant_id}, hono.event.${tenant_id}),
+// with device_id/tenant_id as native Kafka headers rather than encoded in
+// the key, so an existing Ditto connection (SASL SCRAM-SHA-256) can
+// consume them with no reconfiguration.
 type KafkaHonoConnector struct {
 	mu       sync.RWMutex
 	producer honoProducer

@@ -25,11 +25,8 @@ func LiveEdgeNodes(members []membership.NodeMeta) map[string]bool {
 	return live
 }
 
-// LiveEdgeNodeIDs is LiveEdgeNodes's slice form — the exact shape
-// session.Reconciler's LiveEdgeNodeIDs function needs (see
-// keel-design-doc.md's Offline Session Placement ADR, phase 6b). Order is
-// not meaningful: Owner's rendezvous hash is deliberately independent of
-// input order.
+// LiveEdgeNodeIDs is LiveEdgeNodes's slice form, for session.Reconciler.
+// Order doesn't matter — Owner's rendezvous hash is order-independent.
 func LiveEdgeNodeIDs(members []membership.NodeMeta) []string {
 	live := LiveEdgeNodes(members)
 	ids := make([]string, 0, len(live))

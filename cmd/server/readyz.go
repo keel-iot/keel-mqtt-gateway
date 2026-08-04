@@ -18,44 +18,15 @@ const redisReadyzTimeout = 2 * time.Second
 // redisReadyzTimeout.
 const olricReadyzTimeout = 2 * time.Second
 
-// newReadyzHandler builds the /readyz handler. reloader is a pointer to the
-// (possibly not-yet-assigned) *broker.CertReloader variable so the handler
-// always reads its current value, even though it's registered on the mux
-// before broker.New runs — see the comment at its call site in runServer.
+// newReadyzHandler builds the /readyz handler. reloader is a double
+// pointer because it's registered on the mux before broker.New assigns it;
+// dereferencing at request time (not build time) picks up the real value.
 //
-// When tlsEnabled, readiness requires a currently valid, unexpired
-// certificate: a missing, unparsable, or expired cert reports NotReady
-// rather than silently letting the node serve plain TCP only.
-//
-// When rdb is non-nil (REDIS_ADDR configured), readiness also requires
-// Redis to actually be usable for QoS1/2 session persistence (see
-// keel-design-doc.md's risk #6) — a node that can accept MQTT connections
-// but can't talk to Redis would silently drop QoS1/2 delivery guarantees.
-// Two checks, both fail-closed:
-//   - currentRedisPrimary (nil outside cluster mode, otherwise
-//     keelraft.Registry.CurrentRedisPrimary) must report a designated
-//     primary — "don't know who's primary" is itself a not-ready reason
-//     even if the client can still Ping whatever stale address it holds
-//   - the Router's current client must answer a Ping — covers "primary
-//     known but unreachable from this node"
-//
-// raftLeaderKnown and olricPing are both nil outside core role (pure edge
-// nodes run neither raft nor an embedded Olric member, so there is nothing
-// to gate on). On a core node, both must pass before Ready: a node that
-// answers MQTT/mgmt traffic before it has rejoined raft (knows a leader) or
-// before its embedded Olric member can actually route a request would
-// silently serve session-ownership/routing-table reads against a node that
-// isn't really back in the cluster yet — exactly the "readiness gate
-// doesn't cover raft/Olric convergence after restart" gap left open in
-// keel-design-doc.md.
-//   - raftLeaderKnown fail-closed: no known leader (still electing, or
-//     partitioned) reports NotReady rather than silently serving reads
-//     against a registry that can't commit anything right now.
-//   - olricPing fail-closed: a cheap Get against the local embedded member
-//     (see cmd/server/main.go's wiring) — any error other than "key not
-//     found" means this node's Olric member can't actually serve a
-//     request yet (still joining the ring, or partitioned), even though
-//     its own Start() already returned.
+// Each check is fail-closed and independently optional (nil func/rdb skips
+// it): TLS cert validity, Redis primary reachability, raft leader known,
+// Olric member reachable. A node that answers traffic before any of these
+// are actually true would silently serve broken requests instead of
+// failing the health check.
 func newReadyzHandler(tlsEnabled bool, reloader **broker.CertReloader, rdb *redisrouter.Router, currentRedisPrimary func() (string, bool), raftLeaderKnown func() bool, olricPing func(ctx context.Context) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if tlsEnabled {

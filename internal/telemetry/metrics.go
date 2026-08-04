@@ -107,24 +107,15 @@ var (
 		Help:      "QoS1/2 messages whose inflight delivery expired or was abandoned — real message loss, by QoS level.",
 	}, []string{"qos"})
 
-	// RaftApplyDuration measures the time a single raft.Apply takes on the
-	// leader (internal/cluster/raft.LocalRegistry.apply) — the control-plane
-	// cost keel-design-doc.md's PoC checklist asks to isolate, distinct from
-	// end-to-end connect latency (which also includes auth, gossip lookups,
-	// network hops). op: "claim_session" | "release_session" | "set_redis_primary"
-	// | "acl.*". result: "success" | "error" — a raft.Apply that times out
-	// waiting for quorum still completes (it returns an error), so duration
-	// is recorded either way, not just on success.
+	// RaftApplyDuration measures a single raft.Apply call on the leader
+	// (internal/cluster/raft.LocalRegistry.apply), separate from
+	// end-to-end connect latency (auth, gossip, network hops). result is
+	// recorded even on a quorum timeout, not just on success.
 	//
-	// Buckets extend to 30s, well past applyTimeout (registry.go, 2s):
-	// found under a real 1500-device reconnect storm that applyTimeout only
-	// bounds how long raft.Apply blocks trying to ENQUEUE the command (per
-	// hashicorp/raft's own semantics) — once enqueued, waiting for actual
-	// commit+FSM-apply completion is unbounded, so a "success" result can
-	// legitimately take much longer than applyTimeout under heavy
-	// concurrent load. Narrower buckets silently clipped that tail into a
-	// single +Inf bucket, hiding exactly the number this metric exists to
-	// surface.
+	// Buckets extend well past applyTimeout (2s): that timeout only bounds
+	// enqueueing the command, not waiting for commit+FSM-apply, so a
+	// "success" can legitimately take much longer under load — narrower
+	// buckets clipped that tail into +Inf and hid it.
 	RaftApplyDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "keel_gateway",
 		Name:      "raft_apply_duration_seconds",

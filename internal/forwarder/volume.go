@@ -1,9 +1,7 @@
 // Package forwarder now holds only the per-tenant daily data-volume quota
-// (CheckAndRecordBytes) — a broker-core ACL/quota concern, used directly by
-// internal/broker/hooks.go. Everything else that used to live here (keel's
-// Redpanda topic taxonomy, twin-service envelope, Ditto/Hono compat) has
-// moved to the standalone keel OutputConnector plugin — see keel-design-doc.md
-// "Perimetro del componente".
+// (CheckAndRecordBytes), used directly by internal/broker/hooks.go.
+// Everything else that used to live here moved to the standalone
+// OutputConnector plugin.
 package forwarder
 
 import (

@@ -452,11 +452,8 @@ type clusterFlags struct {
 	rebalanceExcludeClientIDs string
 
 	// offlineSessionReconcilerInterval is the base (pre-jitter) check
-	// interval for session.Reconciler — see keel-design-doc.md's Offline
-	// Session Placement ADR. Core only: this is the process that decides
-	// (and re-asserts on membership change) which live edge owns each
-	// offline session, mirroring the "core decides, edge executes"
-	// split every other control-plane loop here already follows.
+	// interval for session.Reconciler. Core only, same core-decides/
+	// edge-executes split every other control-plane loop here follows.
 	offlineSessionReconcilerInterval time.Duration
 }
 
@@ -500,7 +497,7 @@ func parseClusterFlags() clusterFlags {
 	flag.BoolVar(&f.rebalanceScheduleEnabled, "rebalance-schedule-enabled", false, "core only: run a rebalance pass automatically every --rebalance-schedule-interval, instead of only via POST /api/cluster/rebalance")
 	flag.DurationVar(&f.rebalanceScheduleInterval, "rebalance-schedule-interval", 10*time.Minute, "core only: interval between automatic rebalance passes when --rebalance-schedule-enabled")
 	flag.BoolVar(&f.rebalanceScheduleDryRun, "rebalance-schedule-dry-run", false, "core only: log what the scheduled rebalance would do without actually evicting anyone — recommended when first enabling --rebalance-schedule-enabled on a cluster")
-	flag.DurationVar(&f.offlineSessionReconcilerInterval, "offline-session-reconciler-interval", 20*time.Second, "core only: base (pre-jitter) interval session.Reconciler recomputes and re-asserts each offline session's owner (see keel-design-doc.md's Offline Session Placement ADR)")
+	flag.DurationVar(&f.offlineSessionReconcilerInterval, "offline-session-reconciler-interval", 20*time.Second, "core only: base (pre-jitter) interval session.Reconciler recomputes and re-asserts each offline session's owner")
 	flag.StringVar(&f.rebalanceExcludeClientIDs, "rebalance-exclude-client-ids", "", "core only: comma-separated client_ids never selected for eviction by POST /api/cluster/rebalance or the scheduler (e.g. a shared bridge-consumer account) — still counted toward each node's connection total")
 	flag.Parse()
 
@@ -614,12 +611,9 @@ func runServer() {
 	}
 
 	// ── Redis (optional) ─────────────────────────────────────────────────────
-	// rdb is a *redisrouter.Router, not a raw *redis.Client: the single
-	// swappable indirection point every Redis consumer below shares (QoS/
-	// session persistence, tenant data-volume limiting), so a primary
-	// failover (core-colocated Redis primary+replica — see
-	// keel-design-doc.md's risk #6) redirects all of them at once instead
-	// of needing a separate swap site per consumer.
+	// rdb is a *redisrouter.Router, not a raw *redis.Client: a primary
+	// failover redirects every consumer at once instead of needing a
+	// separate swap site each.
 	var rdb *redisrouter.Router
 	if cfg.RedisAddr != "" {
 		// A co-located Redis's own StatefulSet pod DNS name may not be
@@ -852,31 +846,16 @@ func runServer() {
 		} else if cf.role == "edge" {
 			remoteRegistry := keelraft.NewRemoteRegistry(clusterMembership.CoreGRPCAddrs, log)
 
-			// Local routing cache: a thin (non-gossip-member) Olric
-			// client — store.NewRemoteOlricStore's doc says it's "used by
-			// edge nodes", but nothing ever constructed it here before
-			// this; NodesFor/Subscribe/Unsubscribe instead fell through
-			// to a gRPC call per invocation via remoteRegistry. Same
-			// routing.Router local trie cache + pub/sub + periodic Scan
-			// core nodes use, just a client-mode store underneath.
+			// Local routing cache: a client-mode Olric store, same
+			// trie cache/pub-sub/Scan routing.Router uses on core, so
+			// NodesFor/Subscribe/Unsubscribe don't need a gRPC round trip
+			// per call via remoteRegistry.
 			//
-			// Retried with live re-resolution of core addresses: right
-			// after this node joins gossip, core peers may not be
-			// gossip-visible yet, and even once visible, a core node's
-			// own embedded Olric member is still warming up
-			// (--olric-bootstrap-wait) — a first-attempt failure here is
-			// an expected race at cluster startup, not a fatal
-			// misconfiguration, so this retries instead of os.Exit(1)-ing
-			// the way core's Olric join budget (--olric-join-retry-interval
-			// / --olric-max-join-attempts) already does on the core side.
-			// Deliberately separate from --olric-join-retry-interval /
-			// --olric-max-join-attempts above: those are documented and
-			// tuned as "core only" (core-to-core Olric gossip join, ~300ms
-			// * 5 attempts). An edge node's wait is for a core's embedded
-			// Olric member to finish its own --olric-bootstrap-wait
-			// (default 3s) plus startup, a different and longer timing
-			// profile, so it gets its own budget rather than overloading
-			// those flags' meaning.
+			// Retries with live re-resolution of core addresses: right
+			// after joining gossip, core peers or their embedded Olric
+			// member may not be ready yet — an expected startup race, not
+			// a misconfiguration, so this gets its own retry budget
+			// instead of reusing core's join flags.
 			const (
 				edgeOlricRetryInterval = time.Second
 				edgeOlricMaxAttempts   = 30
@@ -921,11 +900,9 @@ func runServer() {
 		}
 
 		// Redirect the shared Redis router to whichever node raft has
-		// designated primary — runs on every node (core and edge alike),
-		// unlike the failover DECISION itself (membership's
-		// redisFailoverLoop), which only the raft leader makes. See
-		// internal/cluster/redisrouter's package doc and
-		// keel-design-doc.md's risk #6.
+		// designated primary — runs on every node, unlike the failover
+		// decision itself (membership's redisFailoverLoop), which only
+		// the raft leader makes.
 		if rdb != nil {
 			go redisrouter.WatchPrimary(ctx, rdb, clusterRegistry.CurrentRedisPrimary, clusterMembership.RedisAddrForNode, log)
 		}
@@ -1000,22 +977,14 @@ func runServer() {
 					rebalanceCfg, clusterFwd, cf.rebalanceScheduleDryRun, cf.rebalanceScheduleInterval, log)
 			}
 
-			// Offline Session Placement (see keel-design-doc.md's ADR):
-			// core-only, mirroring every other control-plane loop above.
-			// Nil when Redis session persistence is off (rdb == nil) —
-			// there is no offline-session inventory to reconcile without
-			// it, same precondition broker.New already applies to install
-			// RedisSessionHook at all.
+			// Offline session ownership reconciler, core-only. Nil when
+			// Redis session persistence is off — nothing to reconcile.
 			if rdb != nil {
 				offlineSessionHook := broker.NewRedisSessionHook(rdb, log)
 				offlineOwnership := &keelraft.OfflineOwnership{Registry: clusterRegistry}
 				offlineReconciler := &session.Reconciler{
-					// Redis persists a client's record for its whole life,
-					// connected or not (see session.AllFromStorage's doc),
-					// so a currently-live client must be filtered out here
-					// — see session.FilterOffline's doc for why, and phase
-					// 6e's keelHook.OnSessionEstablish, which this filter
-					// keeps from fighting.
+					// FilterOffline drops currently-live clients, which
+					// Redis alone can't tell apart from offline ones.
 					Inventory: func() ([]session.OfflineSession, error) {
 						all, err := offlineSessionHook.OfflineInventory()
 						if err != nil {

@@ -1,18 +1,11 @@
-// Package redisrouter provides a single swappable Redis client used by
-// every consumer that talks to the co-located core primary+replica pair
-// (QoS1/2 session persistence in internal/broker/redis_session.go, and
-// tenant data-volume rate limiting in internal/forwarder/volume.go).
+// Package redisrouter provides a single swappable Redis client shared by
+// every consumer talking to the co-located core primary+replica pair.
 //
-// *redis.Client is bound to a fixed address at construction — go-redis's
-// only built-in failover mechanism (NewFailoverClient) requires Redis
-// Sentinel, which this design deliberately doesn't use (see
-// keel-design-doc.md's risk #6: failover is decided via raft.Apply, the
-// same arbiter already used for session ownership, not a second consensus
-// mechanism). Redirecting to a new primary after a failover therefore
-// means constructing a new *redis.Client and swapping it in — Router is
-// the one place that happens, instead of three separate swap sites for
-// the three consumers above (a raw *redis.Client was passed to all three
-// directly before this package existed).
+// *redis.Client is bound to a fixed address at construction, and failover
+// here is decided via raft.Apply rather than Redis Sentinel, so
+// redirecting to a new primary means constructing a new client and
+// swapping it in — Router is the one place that happens instead of a
+// separate swap site per consumer.
 package redisrouter
 
 import (

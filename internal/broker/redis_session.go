@@ -274,14 +274,11 @@ func (h *RedisSessionHook) StoredSubscriptions() ([]storage.Subscription, error)
 	return out, nil
 }
 
-// OfflineInventory returns every persisted client's OfflineSession view
-// (client + its subscriptions) for the Offline Session Placement
-// Reconciler's Inventory function — see keel-design-doc.md's ADR, phase
-// 6b. Deliberately reuses StoredClients/StoredSubscriptions (the exact
-// same boot-time HGetAll this whole redesign exists to stop calling at
-// boot — see phase 6g) rather than a new Redis query, since the
-// Reconciler already runs on its own poll interval and needs the same
-// full-fleet view those two already provide.
+// OfflineInventory returns every persisted client's OfflineSession view,
+// feeding session.Reconciler's Inventory function. Reuses
+// StoredClients/StoredSubscriptions rather than a new query — same
+// full-fleet view, and the Reconciler already runs on its own poll
+// interval.
 func (h *RedisSessionHook) OfflineInventory() ([]session.OfflineSession, error) {
 	clients, err := h.StoredClients()
 	if err != nil {
@@ -383,24 +380,18 @@ func (h *RedisSessionHook) InflightForClient(clientID string) ([]storage.Message
 	return out, nil
 }
 
-// ── offline session delivery (see internal/session's OfflineDelivery) ──────
-// The two methods below back OfflineDelivery.NextPacketID/Enqueue for an
-// offline (no live mqtt.Client) session — see keel-design-doc.md's
-// "Offline Session Placement" ADR, phase 6a.
+// ── offline session delivery ────────────────────────────────────────────────
+// Backs OfflineDelivery.NextPacketID/Enqueue for a session with no live
+// mqtt.Client anywhere in the cluster.
 
 // redisPacketIDKeyPrefix namespaces the per-client packet-ID counters below
-// from the CL/SUB/IFM hashes — a plain string counter, not a hash field,
-// since each client needs exactly one integer, not a set of them.
+// from the CL/SUB/IFM hashes — a plain counter, not a hash field.
 const redisPacketIDKeyPrefix = redisKeyPrefix + "PKID:"
 
 // NextPacketID returns a persisted, monotonically increasing packet ID for
-// clientID's offline inflight queue. Deliberately NOT mqtt.Client's own
-// NextPacketID (which scans in-memory Inflight state on a live Client
-// object this path doesn't have by design — see OfflineDelivery's doc).
-// Wraps through the full valid MQTT packet-ID range (1..65535 — 0 is
-// reserved/invalid per the spec) using Redis INCR, so it stays correct
-// across process restarts and regardless of which node happens to own
-// the session at any given moment.
+// clientID's offline inflight queue — Redis INCR rather than
+// mqtt.Client's own NextPacketID, which needs a live Client object this
+// path doesn't have. Wraps at 65535, skipping 0 (reserved per spec).
 func (h *RedisSessionHook) NextPacketID(ctx context.Context, clientID string) (uint16, error) {
 	n, err := h.router.Client().Incr(ctx, redisPacketIDKeyPrefix+clientID).Result()
 	if err != nil {
@@ -412,14 +403,10 @@ func (h *RedisSessionHook) NextPacketID(ctx context.Context, clientID string) (u
 	return uint16((n-1)%65535) + 1, nil
 }
 
-// EnqueueOfflineInflight persists an offline session's queued QoS1/2
-// message into the exact same Redis hash (keel:gw:IFM) OnQosPublish
-// writes to for a live client — InflightForClient/the client's existing
-// lazy rehydration path (OnSessionEstablish) reads it back transparently
-// on reconnect, wherever in the cluster that happens, with no changes
-// needed on that side. Field key format (clientID + ":" + decimal packet
-// ID) matches inflightFieldKey exactly, without needing a *mqtt.Client or
-// packets.Packet to compute it.
+// EnqueueOfflineInflight writes into the same Redis hash (keel:gw:IFM)
+// OnQosPublish uses for live clients, so InflightForClient/
+// OnSessionEstablish picks it up transparently on reconnect, wherever
+// that happens, with no changes needed there.
 func (h *RedisSessionHook) EnqueueOfflineInflight(ctx context.Context, clientID string, packetID uint16, msg session.InflightMessage) error {
 	in := &storage.Message{
 		ID:        clientID + ":" + strconv.FormatUint(uint64(packetID), 10),

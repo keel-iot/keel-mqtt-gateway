@@ -218,12 +218,9 @@ func (m *Membership) reconcileRedisPrimary() {
 }
 
 // bootstrapRedisPrimary designates an initial Redis primary when raft has
-// never had one set (fresh cluster, or a fresh raft log after disaster
-// recovery — see keel-design-doc.md's raft backup/restore). Prefers self
-// when self is a Redis-bearing core node, purely so the very first core to
-// reach this code path (typically the bootstrap node) is the common case,
-// not because self is special in any way the rest of this loop treats
-// differently afterward.
+// never had one set (fresh cluster, or a fresh raft log after a restore).
+// Prefers self when self is a Redis-bearing core node, just so the first
+// core to reach this code path is usually the one that wins.
 func (m *Membership) bootstrapRedisPrimary(coreMembers []NodeMeta, voterCount int) {
 	if len(coreMembers) == 0 {
 		return // no Redis-bearing core known yet — nothing to designate
