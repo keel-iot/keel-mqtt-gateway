@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"time"
 
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/hooks/storage"
@@ -27,6 +28,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/session"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
@@ -359,4 +361,65 @@ func (h *RedisSessionHook) InflightForClient(clientID string) ([]storage.Message
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+// ── offline session delivery (see internal/session's OfflineDelivery) ──────
+// The two methods below back OfflineDelivery.NextPacketID/Enqueue for an
+// offline (no live mqtt.Client) session — see keel-design-doc.md's
+// "Offline Session Placement" ADR, phase 6a.
+
+// redisPacketIDKeyPrefix namespaces the per-client packet-ID counters below
+// from the CL/SUB/IFM hashes — a plain string counter, not a hash field,
+// since each client needs exactly one integer, not a set of them.
+const redisPacketIDKeyPrefix = redisKeyPrefix + "PKID:"
+
+// NextPacketID returns a persisted, monotonically increasing packet ID for
+// clientID's offline inflight queue. Deliberately NOT mqtt.Client's own
+// NextPacketID (which scans in-memory Inflight state on a live Client
+// object this path doesn't have by design — see OfflineDelivery's doc).
+// Wraps through the full valid MQTT packet-ID range (1..65535 — 0 is
+// reserved/invalid per the spec) using Redis INCR, so it stays correct
+// across process restarts and regardless of which node happens to own
+// the session at any given moment.
+func (h *RedisSessionHook) NextPacketID(ctx context.Context, clientID string) (uint16, error) {
+	n, err := h.router.Client().Incr(ctx, redisPacketIDKeyPrefix+clientID).Result()
+	if err != nil {
+		return 0, fmt.Errorf("redis session: incr packet id for %s: %w", clientID, err)
+	}
+	// n starts at 1 on the first call and counts up forever; map it onto
+	// the 65535 valid packet IDs (1..65535) so it cycles instead of
+	// overflowing uint16.
+	return uint16((n-1)%65535) + 1, nil
+}
+
+// EnqueueOfflineInflight persists an offline session's queued QoS1/2
+// message into the exact same Redis hash (keel:gw:IFM) OnQosPublish
+// writes to for a live client — InflightForClient/the client's existing
+// lazy rehydration path (OnSessionEstablish) reads it back transparently
+// on reconnect, wherever in the cluster that happens, with no changes
+// needed on that side. Field key format (clientID + ":" + decimal packet
+// ID) matches inflightFieldKey exactly, without needing a *mqtt.Client or
+// packets.Packet to compute it.
+func (h *RedisSessionHook) EnqueueOfflineInflight(ctx context.Context, clientID string, packetID uint16, msg session.InflightMessage) error {
+	in := &storage.Message{
+		ID:        clientID + ":" + strconv.FormatUint(uint64(packetID), 10),
+		T:         storage.InflightKey,
+		Client:    clientID,
+		TopicName: msg.Topic,
+		Payload:   msg.Payload,
+		PacketID:  packetID,
+		Created:   time.Now().Unix(),
+		FixedHeader: packets.FixedHeader{
+			Type: packets.Publish,
+			Qos:  msg.QoS,
+		},
+	}
+	data, err := in.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("redis session: marshal offline inflight: %w", err)
+	}
+	if err := h.router.Client().HSet(ctx, redisInflightHash, in.ID, data).Err(); err != nil {
+		return fmt.Errorf("redis session: hset offline inflight: %w", err)
+	}
+	return nil
 }
