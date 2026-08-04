@@ -43,6 +43,7 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/db"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/httpapi"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/livestatsapi"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/session"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -449,6 +450,14 @@ type clusterFlags struct {
 	// the manual endpoint or the scheduler — see
 	// internal/cluster/lifecycle.RebalanceConfig.ExcludeClientIDs's doc.
 	rebalanceExcludeClientIDs string
+
+	// offlineSessionReconcilerInterval is the base (pre-jitter) check
+	// interval for session.Reconciler — see keel-design-doc.md's Offline
+	// Session Placement ADR. Core only: this is the process that decides
+	// (and re-asserts on membership change) which live edge owns each
+	// offline session, mirroring the "core decides, edge executes"
+	// split every other control-plane loop here already follows.
+	offlineSessionReconcilerInterval time.Duration
 }
 
 func parseClusterFlags() clusterFlags {
@@ -491,6 +500,7 @@ func parseClusterFlags() clusterFlags {
 	flag.BoolVar(&f.rebalanceScheduleEnabled, "rebalance-schedule-enabled", false, "core only: run a rebalance pass automatically every --rebalance-schedule-interval, instead of only via POST /api/cluster/rebalance")
 	flag.DurationVar(&f.rebalanceScheduleInterval, "rebalance-schedule-interval", 10*time.Minute, "core only: interval between automatic rebalance passes when --rebalance-schedule-enabled")
 	flag.BoolVar(&f.rebalanceScheduleDryRun, "rebalance-schedule-dry-run", false, "core only: log what the scheduled rebalance would do without actually evicting anyone — recommended when first enabling --rebalance-schedule-enabled on a cluster")
+	flag.DurationVar(&f.offlineSessionReconcilerInterval, "offline-session-reconciler-interval", 20*time.Second, "core only: base (pre-jitter) interval session.Reconciler recomputes and re-asserts each offline session's owner (see keel-design-doc.md's Offline Session Placement ADR)")
 	flag.StringVar(&f.rebalanceExcludeClientIDs, "rebalance-exclude-client-ids", "", "core only: comma-separated client_ids never selected for eviction by POST /api/cluster/rebalance or the scheduler (e.g. a shared bridge-consumer account) — still counted toward each node's connection total")
 	flag.Parse()
 
@@ -988,6 +998,26 @@ func runServer() {
 					raftNode.Registry.SessionsSnapshot,
 					func() map[string]bool { return lifecycle.LiveEdgeNodes(clusterMembership.Members()) },
 					rebalanceCfg, clusterFwd, cf.rebalanceScheduleDryRun, cf.rebalanceScheduleInterval, log)
+			}
+
+			// Offline Session Placement (see keel-design-doc.md's ADR):
+			// core-only, mirroring every other control-plane loop above.
+			// Nil when Redis session persistence is off (rdb == nil) —
+			// there is no offline-session inventory to reconcile without
+			// it, same precondition broker.New already applies to install
+			// RedisSessionHook at all.
+			if rdb != nil {
+				offlineSessionHook := broker.NewRedisSessionHook(rdb, log)
+				offlineOwnership := &keelraft.OfflineOwnership{Registry: clusterRegistry}
+				offlineReconciler := &session.Reconciler{
+					Inventory:       offlineSessionHook.OfflineInventory,
+					LiveEdgeNodeIDs: func() []string { return lifecycle.LiveEdgeNodeIDs(clusterMembership.Members()) },
+					CurrentOwner:    offlineOwnership.CurrentOwner,
+					Place:           offlineOwnership.Place,
+					Interval:        cf.offlineSessionReconcilerInterval,
+					Log:             log,
+				}
+				go offlineReconciler.Run(ctx)
 			}
 		}
 	}
