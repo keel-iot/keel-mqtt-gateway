@@ -11,13 +11,15 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/acl"
 )
 
-// fakeACLRegistry implements both keelraft.Registry and keelraft.ACLAdmin
-// with an in-memory map, so the management API's ACL handlers can be
-// exercised without any raft/gRPC machinery.
+// fakeACLRegistry implements keelraft.Registry, keelraft.ACLAdmin and
+// keelraft.RevocationAdmin with in-memory maps, so the management API's
+// ACL and revocation-webhook handlers can be exercised without any
+// raft/gRPC machinery.
 type fakeACLRegistry struct {
 	roles           map[string]acl.Role
 	bindings        map[string][]string
 	enabledRulesets map[string]bool
+	revoked         map[string]int64
 }
 
 func newFakeACLRegistry() *fakeACLRegistry {
@@ -25,6 +27,7 @@ func newFakeACLRegistry() *fakeACLRegistry {
 		roles:           make(map[string]acl.Role),
 		bindings:        make(map[string][]string),
 		enabledRulesets: make(map[string]bool),
+		revoked:         make(map[string]int64),
 	}
 }
 
@@ -40,6 +43,23 @@ func (f *fakeACLRegistry) EvaluateACL(clientID, username, topic string, action a
 	return acl.Decision{}
 }
 func (f *fakeACLRegistry) CurrentRedisPrimary() (string, bool) { return "", false }
+func (f *fakeACLRegistry) IsRevoked(identity string) bool {
+	_, ok := f.revoked[identity]
+	return ok
+}
+
+// RevocationAdmin interface.
+func (f *fakeACLRegistry) RevokeCertificate(identity, serial string) error {
+	f.revoked[identity] = 1
+	return nil
+}
+func (f *fakeACLRegistry) RevokedSnapshot() map[string]int64 {
+	out := make(map[string]int64, len(f.revoked))
+	for k, v := range f.revoked {
+		out[k] = v
+	}
+	return out
+}
 
 // ACLAdmin interface.
 func (f *fakeACLRegistry) CreateRole(name string, rules []acl.ACLRule) error {

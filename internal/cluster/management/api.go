@@ -8,10 +8,16 @@ package management
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/acl"
@@ -39,7 +45,16 @@ type API struct {
 	// avoid an import of internal/cluster/dataplane from this package.
 	Evictor         lifecycle.Evictor
 	RebalanceConfig lifecycle.RebalanceConfig
-	Log             *slog.Logger
+	// ClavexWebhookSecret verifies POST /api/cluster/revocations'
+	// X-Clavex-Signature header (HMAC-SHA256 over the raw request body,
+	// same scheme as Clavex's own webhook.Dispatcher/connector.HTTPConnector).
+	// Fail-closed when empty: the endpoint rejects every request rather
+	// than accepting unsigned revocations — an unverified deny-list write
+	// is a real DoS vector (anyone who can reach the endpoint could
+	// revoke arbitrary devices), so this must be explicitly configured,
+	// never silently permissive.
+	ClavexWebhookSecret string
+	Log                 *slog.Logger
 }
 
 // Router builds the http.Handler exposing the management endpoints.
@@ -53,6 +68,7 @@ func (a *API) Router() http.Handler {
 	mux.HandleFunc("GET /ui", a.handleUI)
 	mux.HandleFunc("POST /api/cluster/drain", a.handleDrain)
 	mux.HandleFunc("POST /api/cluster/rebalance", a.handleRebalance)
+	mux.HandleFunc("POST /api/cluster/revocations", a.handleRevocationWebhook)
 	mux.HandleFunc("POST /api/cluster/snapshot", a.handleSnapshot)
 
 	// ACL/RBAC management — see internal/cluster/acl and internal/cluster/
@@ -411,6 +427,103 @@ func (a *API) handleDisableRuleset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// ── Device PKI revocation webhook ────────────────────────────────────────
+
+// revocationAdmin type-asserts a.ClusterRegistry for keelraft.RevocationAdmin,
+// same duck-typed-optional-capability pattern as aclAdmin.
+func (a *API) revocationAdmin() (keelraft.RevocationAdmin, bool) {
+	admin, ok := a.ClusterRegistry.(keelraft.RevocationAdmin)
+	return admin, ok
+}
+
+// clavexEventPayload is the envelope Clavex's connector.HTTPConnector
+// posts on every event (connector.Payload upstream) — only the fields
+// this handler needs.
+type clavexEventPayload struct {
+	Event string          `json:"event"`
+	OrgID string          `json:"org_id"`
+	Data  json.RawMessage `json:"data"`
+}
+
+// clavexDeviceCertRevokedData is connector.EventDeviceCertRevoked's Data
+// field shape (internal/devicepki/service.go's RevokeCertificate
+// dispatch call, upstream in clavex-eu/clavex) — only device_id/serial
+// are used here; tenant_id comes from the envelope's org_id instead
+// (kept as the source of truth to match VerifyCertificate's CN parsing
+// convention exactly).
+type clavexDeviceCertRevokedData struct {
+	DeviceID string `json:"device_id"`
+	Serial   string `json:"serial"`
+}
+
+// handleRevocationWebhook receives an external custodian's (e.g. Clavex)
+// certificate-revocation event and records it in the raft-replicated
+// deny-list (see keelraft.RevocationAdmin), consulted by every node on
+// every mTLS connect (internal/broker/hooks.go's authenticateCert).
+//
+// Verifies X-Clavex-Signature (HMAC-SHA256 over the raw body) against
+// a.ClavexWebhookSecret — fails closed (rejects) when that secret is
+// empty or the signature doesn't match, never processes an unverified
+// body. Only acts on event == "device.cert.revoked"; any other event
+// type is acknowledged (200) but ignored, so this same webhook URL can
+// be reused for future event types without breaking delivery retries.
+func (a *API) handleRevocationWebhook(w http.ResponseWriter, r *http.Request) {
+	admin, ok := a.revocationAdmin()
+	if !ok {
+		http.Error(w, "not a core node", http.StatusServiceUnavailable)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if a.ClavexWebhookSecret == "" {
+		http.Error(w, "revocation webhook not configured", http.StatusServiceUnavailable)
+		return
+	}
+	sig := strings.TrimPrefix(r.Header.Get("X-Clavex-Signature"), "sha256=")
+	mac := hmac.New(sha256.New, []byte(a.ClavexWebhookSecret))
+	mac.Write(body)
+	want := hex.EncodeToString(mac.Sum(nil))
+	if sig == "" || subtle.ConstantTimeCompare([]byte(sig), []byte(want)) != 1 {
+		a.Log.Warn("management: revocation webhook signature mismatch")
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+
+	var payload clavexEventPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if payload.Event != "device.cert.revoked" {
+		w.WriteHeader(http.StatusOK) // unrecognized event type — ack, ignore, don't error the delivery
+		return
+	}
+
+	var data clavexDeviceCertRevokedData
+	if err := json.Unmarshal(payload.Data, &data); err != nil {
+		http.Error(w, "invalid event data: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if data.DeviceID == "" || payload.OrgID == "" {
+		http.Error(w, "device_id and org_id are required", http.StatusBadRequest)
+		return
+	}
+
+	identity := data.DeviceID + "@" + payload.OrgID
+	if err := admin.RevokeCertificate(identity, data.Serial); err != nil {
+		a.Log.Error("management: revoke certificate failed", "identity", identity, "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.Log.Info("management: certificate revoked", "identity", identity, "serial", data.Serial)
 	w.WriteHeader(http.StatusOK)
 }
 

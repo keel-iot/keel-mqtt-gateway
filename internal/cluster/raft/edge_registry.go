@@ -27,16 +27,20 @@ import (
 //     periodically-refreshed read cache — see ACLCache's doc for the
 //     explicit staleness trade-off this accepts (no push invalidation,
 //     just a poll interval).
+//   - Device cert revocation checks delegate to a RevocationCache, same
+//     periodic-poll trade-off as ACLCache — see its doc.
 type EdgeRegistry struct {
-	router   *routing.Router
-	remote   *RemoteRegistry
-	aclCache *ACLCache
+	router          *routing.Router
+	remote          *RemoteRegistry
+	aclCache        *ACLCache
+	revocationCache *RevocationCache
 }
 
 // NewEdgeRegistry composes an edge node's Registry. remote is used for
-// ClaimSession/ReleaseSession and to feed aclCache's periodic refresh.
-func NewEdgeRegistry(router *routing.Router, remote *RemoteRegistry, aclCache *ACLCache) *EdgeRegistry {
-	return &EdgeRegistry{router: router, remote: remote, aclCache: aclCache}
+// ClaimSession/ReleaseSession and to feed aclCache/revocationCache's
+// periodic refresh.
+func NewEdgeRegistry(router *routing.Router, remote *RemoteRegistry, aclCache *ACLCache, revocationCache *RevocationCache) *EdgeRegistry {
+	return &EdgeRegistry{router: router, remote: remote, aclCache: aclCache, revocationCache: revocationCache}
 }
 
 func (e *EdgeRegistry) Subscribe(topic, nodeID string) error {
@@ -80,6 +84,10 @@ func (e *EdgeRegistry) EvaluateACL(clientID, username, topic string, action acl.
 	return e.aclCache.EvaluateACL(clientID, username, topic, action)
 }
 
+func (e *EdgeRegistry) IsRevoked(identity string) bool {
+	return e.revocationCache.IsRevoked(identity)
+}
+
 // CurrentRedisPrimary forwards to RemoteRegistry — no local cache for
 // this the way EvaluateACL has ACLCache, since it's a single small value
 // polled directly by internal/cluster/redisrouter's watcher rather than
@@ -94,5 +102,6 @@ func (e *EdgeRegistry) CurrentRedisPrimary() (string, bool) {
 // resources — just lazily-dialed gRPC connections).
 func (e *EdgeRegistry) Close() error {
 	e.aclCache.Close()
+	e.revocationCache.Close()
 	return e.router.Close()
 }

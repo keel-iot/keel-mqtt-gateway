@@ -61,6 +61,12 @@ type Registry interface {
 	// been superseded by a newer ClaimSession is a safe no-op.
 	ReleaseSession(clientID, nodeID string) error
 	EvaluateACL(clientID, username, topic string, action acl.Action) acl.Decision
+	// IsRevoked reports whether identity ("<deviceID>@<tenantID>", matches
+	// a device cert's CN) has been revoked — part of the base interface
+	// for the same reason EvaluateACL is: every node that terminates
+	// mTLS connections (core and edge, wherever CertAuthEnabled) needs
+	// this on every connect, not just core.
+	IsRevoked(identity string) bool
 	// CurrentRedisPrimary returns the nodeID currently designated primary
 	// for the co-located Redis pair (see fsm.go's OpSetRedisPrimary), if
 	// one has ever been set. Part of the base interface (like
@@ -92,6 +98,19 @@ type ACLAdmin interface {
 	RolesSnapshot() map[string]acl.Role
 	BindingsSnapshot() map[string][]string
 	EnabledRulesetsSnapshot() []string
+}
+
+// RevocationAdmin is an optional Registry extension for recording a
+// device cert revocation — used by internal/cluster/management's
+// revocation webhook handler. Deliberately not part of Registry, same
+// rationale as ACLAdmin: a rare administrative write (fed by an external
+// custodian's webhook, which per design targets a core node), not
+// something every node needs to implement. Implemented by CoreRegistry
+// (delegates to LocalRegistry, with the same leader-forwarding fallback
+// used by the ACL mutations above).
+type RevocationAdmin interface {
+	RevokeCertificate(identity, serial string) error
+	RevokedSnapshot() map[string]int64
 }
 
 // BatchUnsubscriber is an optional Registry extension for removing many
@@ -258,6 +277,11 @@ func (l *LocalRegistry) EvaluateACL(clientID, username, topic string, action acl
 	return l.fsm.evaluateACL(clientID, username, topic, action)
 }
 
+// IsRevoked is a pure FSM read, same posture as EvaluateACL.
+func (l *LocalRegistry) IsRevoked(identity string) bool {
+	return l.fsm.isRevoked(identity)
+}
+
 // RolesSnapshot exposes custom roles for the management API.
 func (l *LocalRegistry) RolesSnapshot() map[string]acl.Role {
 	return l.fsm.rolesSnapshot()
@@ -291,6 +315,20 @@ func (l *LocalRegistry) SetRedisPrimary(nodeID string) error {
 // any has ever been set.
 func (l *LocalRegistry) CurrentRedisPrimary() (string, bool) {
 	return l.fsm.currentRedisPrimary()
+}
+
+// ── Device PKI revocation ─────────────────────────────────────────────────
+
+// RevokeCertificate records identity as revoked.
+func (l *LocalRegistry) RevokeCertificate(identity, serial string) error {
+	_, err := l.apply(Command{Op: OpRevokeCertificate, Identity: identity, Serial: serial})
+	return err
+}
+
+// RevokedSnapshot exposes the full revoked-identity set for the
+// management API and RevocationCache's periodic refresh.
+func (l *LocalRegistry) RevokedSnapshot() map[string]int64 {
+	return l.fsm.revokedSnapshot()
 }
 
 // IsLeader reports whether the local raft node currently holds leadership.

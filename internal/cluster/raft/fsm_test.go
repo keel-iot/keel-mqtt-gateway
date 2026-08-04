@@ -397,3 +397,87 @@ func TestFSMRestorePreACLSnapshot(t *testing.T) {
 		t.Fatalf("expected role creation to work after restoring a pre-ACL snapshot, got %v", roles)
 	}
 }
+
+func TestFSMRevokeCertificate(t *testing.T) {
+	f := NewFSM()
+	identity := "device-1@tenant-1"
+
+	if f.isRevoked(identity) {
+		t.Fatal("expected identity not revoked before OpRevokeCertificate")
+	}
+
+	res := apply(t, f, Command{Op: OpRevokeCertificate, Identity: identity, Serial: "abc123"})
+	if !res.ok {
+		t.Fatalf("apply OpRevokeCertificate: %+v", res)
+	}
+
+	if !f.isRevoked(identity) {
+		t.Fatal("expected identity revoked after OpRevokeCertificate")
+	}
+	if f.isRevoked("someone-else@tenant-1") {
+		t.Fatal("expected unrelated identity to remain not-revoked")
+	}
+
+	snap := f.revokedSnapshot()
+	revokedAt, ok := snap[identity]
+	if !ok || revokedAt <= 0 {
+		t.Fatalf("expected revokedSnapshot to include %q with a positive timestamp, got %v", identity, snap)
+	}
+}
+
+func TestFSMSnapshotRestoreRevokedState(t *testing.T) {
+	f := NewFSM()
+	apply(t, f, Command{Op: OpRevokeCertificate, Identity: "device-1@tenant-1", Serial: "s1"})
+
+	snap, err := f.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	sink := newMemSink()
+	if err := snap.Persist(sink); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	f2 := NewFSM()
+	if err := f2.Restore(sink.reader()); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if !f2.isRevoked("device-1@tenant-1") {
+		t.Fatal("expected revocation to survive snapshot/restore")
+	}
+}
+
+// TestFSMRestorePreRevocationSnapshot verifies nil-safety when restoring a
+// snapshot that predates the Revoked field — must not panic on a nil-map
+// write afterward.
+func TestFSMRestorePreRevocationSnapshot(t *testing.T) {
+	f := NewFSM()
+	old := struct {
+		Sessions map[string]string `json:"sessions"`
+	}{Sessions: map[string]string{"device-1": "core-1"}}
+
+	b, err := json.Marshal(old)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	sink := newMemSink()
+	if _, err := sink.Write(b); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	if err := f.Restore(sink.reader()); err != nil {
+		t.Fatalf("restore pre-revocation snapshot: %v", err)
+	}
+
+	// Must not panic (nil map write) and should behave as empty before.
+	if f.isRevoked("device-1@tenant-1") {
+		t.Fatal("expected nothing revoked after restoring a pre-revocation snapshot")
+	}
+	apply(t, f, Command{Op: OpRevokeCertificate, Identity: "device-1@tenant-1"})
+	if !f.isRevoked("device-1@tenant-1") {
+		t.Fatal("expected revocation to work after restoring a pre-revocation snapshot")
+	}
+}

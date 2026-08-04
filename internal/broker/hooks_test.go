@@ -35,6 +35,11 @@ type fakeRegistry struct {
 	mu               sync.Mutex
 	releaseCalls     []releaseCall
 	unsubscribeCalls []unsubscribeCall
+
+	// revokedIdentities, when non-nil, controls IsRevoked's answer for
+	// specific identities; nil means "nothing is revoked" (the common
+	// case other tests in this file rely on).
+	revokedIdentities map[string]bool
 }
 
 type releaseCall struct {
@@ -70,6 +75,7 @@ func (f *fakeRegistry) EvaluateACL(clientID, username, topic string, action acl.
 	return f.decision
 }
 func (f *fakeRegistry) CurrentRedisPrimary() (string, bool) { return "", false }
+func (f *fakeRegistry) IsRevoked(identity string) bool      { return f.revokedIdentities[identity] }
 
 // fakeForwarder is a minimal dataplane.Forwarder stand-in that records
 // Evict calls — used to verify claimClusterSession tells the previous

@@ -497,6 +497,11 @@ func (h *keelHook) authenticateCert(ctx context.Context, state tls.ConnectionSta
 	}
 
 	deviceID, tenantID, err = auth.VerifyCertificate(cert, trustedCAPEMs)
+	if err == nil && h.clusterRegistry != nil && h.clusterRegistry.IsRevoked(deviceID+"@"+tenantID) {
+		h.log.Warn("mqtt-gateway: cert revoked", "tenant", tenantID, "device", deviceID)
+		telemetry.ConnectionsTotal.WithLabelValues(tenantID, "auth_failed").Inc()
+		return nil, method, false
+	}
 	if err != nil {
 		h.log.Warn("mqtt-gateway: cert verification failed", "tenant", tenantID, "error", err)
 		telemetry.ConnectionsTotal.WithLabelValues(tenantID, "auth_failed").Inc()

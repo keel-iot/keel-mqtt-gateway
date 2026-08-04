@@ -275,3 +275,45 @@ func (r *RemoteRegistry) DisableRuleset(name string) error {
 		return err
 	})
 }
+
+// IsRevoked is best-effort/any-peer, same fail-closed-on-transport-error
+// rationale as EvaluateACL: an unreachable cluster must never be read as
+// "not revoked".
+func (r *RemoteRegistry) IsRevoked(identity string) bool {
+	var revoked bool
+	err := r.forEachPeer(func(c pb.RegistryClient, ctx context.Context) error {
+		resp, err := c.IsRevoked(ctx, &pb.IsRevokedRequest{Identity: identity})
+		if err != nil {
+			return err
+		}
+		revoked = resp.GetRevoked()
+		return nil
+	})
+	if err != nil {
+		return true // unreachable cluster: fail closed, same posture as EvaluateACL
+	}
+	return revoked
+}
+
+func (r *RemoteRegistry) RevokeCertificate(identity, serial string) error {
+	return r.forEachPeer(func(c pb.RegistryClient, ctx context.Context) error {
+		_, err := c.RevokeCertificate(ctx, &pb.RevokeCertificateRequest{Identity: identity, Serial: serial})
+		return err
+	})
+}
+
+// RevokedSnapshot fetches the full revoked-identity set from any
+// reachable core node — used by RevocationCache to populate/refresh
+// every node's local cache. Same any-peer rationale as ACLSnapshot.
+func (r *RemoteRegistry) RevokedSnapshot() (map[string]int64, error) {
+	var out map[string]int64
+	err := r.forEachPeer(func(c pb.RegistryClient, ctx context.Context) error {
+		resp, callErr := c.RevocationSnapshot(ctx, &pb.RevocationSnapshotRequest{})
+		if callErr != nil {
+			return callErr
+		}
+		out = resp.GetRevokedIdentities()
+		return nil
+	})
+	return out, err
+}

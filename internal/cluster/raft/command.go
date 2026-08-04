@@ -42,6 +42,16 @@ const (
 	// IsLeader() exactly like reconcileVotersLoop — one arbiter, no second
 	// consensus mechanism.
 	OpSetRedisPrimary Op = "redis.set_primary"
+
+	// OpRevokeCertificate records Identity ("<deviceID>@<tenantID>",
+	// matches the device cert's CN) as revoked — kept on this same
+	// FSM/log for the same reason ACL rules are: "is this identity
+	// revoked" must read as an authoritative fact from every node
+	// (fail-closed if unknown), not something a node could independently
+	// derive. Written only by internal/cluster/management's revocation
+	// webhook handler, fed by an external custodian's revocation event
+	// (e.g. Clavex's device.cert.revoked).
+	OpRevokeCertificate Op = "device_pki.revoke_certificate"
 )
 
 // Command is the unit of replication applied to the FSM through raft.Apply.
@@ -65,4 +75,8 @@ type Command struct {
 	Rules       []acl.ACLRule `json:"rules,omitempty"`        // create_role
 	Principal   string        `json:"principal,omitempty"`    // create_binding, delete_binding
 	RulesetName string        `json:"ruleset_name,omitempty"` // enable_ruleset, disable_ruleset
+
+	// Device PKI revocation payload fields.
+	Identity string `json:"identity,omitempty"` // revoke_certificate — "<deviceID>@<tenantID>"
+	Serial   string `json:"serial,omitempty"`   // revoke_certificate — audit/reference only
 }

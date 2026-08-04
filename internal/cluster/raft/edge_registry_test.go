@@ -127,7 +127,12 @@ func TestEdgeRegistry_RoutingServedLocallyNotOverRPC(t *testing.T) {
 	}, 50*time.Millisecond, testLog())
 	defer cache.Close()
 
-	e := NewEdgeRegistry(router, nil, cache) // remote intentionally nil
+	revocationCache := NewRevocationCache(func() (map[string]int64, error) {
+		return map[string]int64{}, nil
+	}, 50*time.Millisecond, testLog())
+	defer revocationCache.Close()
+
+	e := NewEdgeRegistry(router, nil, cache, revocationCache) // remote intentionally nil
 
 	if err := e.Subscribe("telemetry/#", "edge-1"); err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -174,7 +179,12 @@ func TestEdgeRegistry_EvaluateACLServedLocallyNotOverRPC(t *testing.T) {
 	}
 	defer router.Close()
 
-	e := NewEdgeRegistry(router, nil, cache) // remote intentionally nil
+	revocationCache := NewRevocationCache(func() (map[string]int64, error) {
+		return map[string]int64{}, nil
+	}, 50*time.Millisecond, testLog())
+	defer revocationCache.Close()
+
+	e := NewEdgeRegistry(router, nil, cache, revocationCache) // remote intentionally nil
 
 	if fetchCalls != 1 {
 		t.Fatalf("expected exactly 1 synchronous fetch at cache construction, got %d", fetchCalls)

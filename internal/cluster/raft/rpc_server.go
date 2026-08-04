@@ -196,6 +196,41 @@ func (s *RPCServer) DisableRuleset(_ context.Context, req *pb.DisableRulesetRequ
 	return &pb.DisableRulesetResponse{}, nil
 }
 
+// IsRevoked is part of the base Registry interface (every node needs it,
+// same as EvaluateACL) — no type-assertion needed.
+func (s *RPCServer) IsRevoked(_ context.Context, req *pb.IsRevokedRequest) (*pb.IsRevokedResponse, error) {
+	return &pb.IsRevokedResponse{Revoked: s.registry.IsRevoked(req.GetIdentity())}, nil
+}
+
+// revocationAdmin type-asserts the wrapped registry for the revocation
+// mutation RPC below, same rationale/fallback as aclAdmin.
+func (s *RPCServer) revocationAdmin() (RevocationAdmin, error) {
+	admin, ok := s.registry.(RevocationAdmin)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "revocation admin not supported by this registry")
+	}
+	return admin, nil
+}
+
+func (s *RPCServer) RevokeCertificate(_ context.Context, req *pb.RevokeCertificateRequest) (*pb.RevokeCertificateResponse, error) {
+	admin, err := s.revocationAdmin()
+	if err != nil {
+		return nil, err
+	}
+	if err := admin.RevokeCertificate(req.GetIdentity(), req.GetSerial()); err != nil {
+		return nil, notLeaderStatus(err)
+	}
+	return &pb.RevokeCertificateResponse{}, nil
+}
+
+func (s *RPCServer) RevocationSnapshot(_ context.Context, _ *pb.RevocationSnapshotRequest) (*pb.RevocationSnapshotResponse, error) {
+	admin, err := s.revocationAdmin()
+	if err != nil {
+		return nil, err
+	}
+	return &pb.RevocationSnapshotResponse{RevokedIdentities: admin.RevokedSnapshot()}, nil
+}
+
 // Register mounts the Registry gRPC service on an existing *grpc.Server.
 func Register(s *grpc.Server, registry Registry) {
 	pb.RegisterRegistryServer(s, NewRPCServer(registry))

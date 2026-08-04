@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	hraft "github.com/hashicorp/raft"
 
@@ -63,11 +64,19 @@ type state struct {
 	// Empty until the first designation — e.g. before any failover loop has
 	// ever run, or on a fresh single-core cluster that hasn't set one yet.
 	redisPrimary string
+
+	// revoked maps a device cert's CN identity ("<deviceID>@<tenantID>")
+	// to the unix-seconds it was revoked at (see OpRevokeCertificate).
+	// Same rationale as ACL state for staying on raft rather than an AP
+	// store: "is this identity revoked" must be an authoritative,
+	// fail-closed fact, not something a node reconstructs independently.
+	revoked map[string]int64
 }
 
 func newState() *state {
 	return &state{
 		sessions:        make(map[string]string),
+		revoked:         make(map[string]int64),
 		roles:           make(map[string]acl.Role),
 		bindings:        make(map[string][]string),
 		enabledRulesets: make(map[string]bool),
@@ -183,6 +192,10 @@ func (f *FSM) Apply(log *hraft.Log) interface{} {
 		f.state.redisPrimary = cmd.NodeID
 		return applyResult{ok: true}
 
+	case OpRevokeCertificate:
+		f.state.revoked[cmd.Identity] = time.Now().Unix()
+		return applyResult{ok: true}
+
 	default:
 		return applyResult{err: fmt.Errorf("fsm: unknown op %q", cmd.Op)}
 	}
@@ -200,6 +213,7 @@ func (f *FSM) Snapshot() (hraft.FSMSnapshot, error) {
 		Bindings:        make(map[string][]string, len(f.state.bindings)),
 		EnabledRulesets: make(map[string]bool, len(f.state.enabledRulesets)),
 		RedisPrimary:    f.state.redisPrimary,
+		Revoked:         make(map[string]int64, len(f.state.revoked)),
 	}
 	for clientID, nodeID := range f.state.sessions {
 		snap.Sessions[clientID] = nodeID
@@ -214,6 +228,9 @@ func (f *FSM) Snapshot() (hraft.FSMSnapshot, error) {
 	}
 	for name, enabled := range f.state.enabledRulesets {
 		snap.EnabledRulesets[name] = enabled
+	}
+	for identity, revokedAt := range f.state.revoked {
+		snap.Revoked[identity] = revokedAt
 	}
 	return snap, nil
 }
@@ -247,6 +264,11 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 		f.state.enabledRulesets = make(map[string]bool)
 	}
 	f.state.redisPrimary = snap.RedisPrimary
+	if snap.Revoked != nil {
+		f.state.revoked = snap.Revoked
+	} else {
+		f.state.revoked = make(map[string]int64)
+	}
 	f.state.mu.Unlock()
 	return nil
 }
@@ -357,6 +379,27 @@ func (f *FSM) enabledRulesetsSnapshot() []string {
 	return names
 }
 
+// isRevoked reports whether identity ("<deviceID>@<tenantID>") has ever
+// been revoked.
+func (f *FSM) isRevoked(identity string) bool {
+	f.state.mu.RLock()
+	defer f.state.mu.RUnlock()
+	_, ok := f.state.revoked[identity]
+	return ok
+}
+
+// revokedSnapshot exposes the full revoked-identity set for the
+// management API and RevocationCache's periodic refresh.
+func (f *FSM) revokedSnapshot() map[string]int64 {
+	f.state.mu.RLock()
+	defer f.state.mu.RUnlock()
+	out := make(map[string]int64, len(f.state.revoked))
+	for k, v := range f.state.revoked {
+		out[k] = v
+	}
+	return out
+}
+
 // snapshot is the JSON-serialisable form of state, used for both raft
 // snapshots and FSMSnapshot.Persist.
 type snapshot struct {
@@ -365,6 +408,7 @@ type snapshot struct {
 	Bindings        map[string][]string `json:"bindings"`
 	EnabledRulesets map[string]bool     `json:"enabled_rulesets"`
 	RedisPrimary    string              `json:"redis_primary,omitempty"`
+	Revoked         map[string]int64    `json:"revoked,omitempty"`
 }
 
 func (s *snapshot) Persist(sink hraft.SnapshotSink) error {

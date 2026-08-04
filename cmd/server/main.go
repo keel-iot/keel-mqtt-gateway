@@ -896,7 +896,11 @@ func runServer() {
 			// staleness trade-off (no push invalidation, poll only).
 			aclCache := keelraft.NewACLCache(remoteRegistry.ACLSnapshot, 0, log)
 
-			clusterRegistry = keelraft.NewEdgeRegistry(edgeRouter, remoteRegistry, aclCache)
+			// Local revocation cache: same poll-based trade-off as
+			// aclCache above, see RevocationCache's doc.
+			revocationCache := keelraft.NewRevocationCache(remoteRegistry.RevokedSnapshot, 0, log)
+
+			clusterRegistry = keelraft.NewEdgeRegistry(edgeRouter, remoteRegistry, aclCache, revocationCache)
 		}
 
 		// Redirect the shared Redis router to whichever node raft has
@@ -936,13 +940,14 @@ func runServer() {
 			}
 
 			mgmtAPI := &management.API{
-				SelfNodeID:      cf.nodeID,
-				RaftNode:        raftNode,
-				Membership:      clusterMembership,
-				ClusterRegistry: clusterRegistry,
-				Evictor:         clusterFwd,
-				RebalanceConfig: rebalanceCfg,
-				Log:             log,
+				SelfNodeID:          cf.nodeID,
+				RaftNode:            raftNode,
+				Membership:          clusterMembership,
+				ClusterRegistry:     clusterRegistry,
+				Evictor:             clusterFwd,
+				RebalanceConfig:     rebalanceCfg,
+				ClavexWebhookSecret: cfg.ClavexWebhookSecret,
+				Log:                 log,
 			}
 			mgmtServer = &http.Server{
 				Addr:         cf.managementAddr,

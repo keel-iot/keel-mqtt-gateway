@@ -48,6 +48,26 @@ service Registry {
   rpc DeleteBinding(DeleteBindingRequest) returns (DeleteBindingResponse);
   rpc EnableRuleset(EnableRulesetRequest) returns (EnableRulesetResponse);
   rpc DisableRuleset(DisableRulesetRequest) returns (DisableRulesetResponse);
+
+  // RevokeCertificate is a write (same leader-only rationale as the ACL
+  // mutations above) — records identity ("<deviceID>@<tenantID>", matches
+  // the device cert's CN) as revoked. Called by the management API's
+  // revocation webhook handler (see internal/cluster/management), itself
+  // fed by an external custodian's revocation event (e.g. Clavex's
+  // device.cert.revoked).
+  rpc RevokeCertificate(RevokeCertificateRequest) returns (RevokeCertificateResponse);
+  // IsRevoked is a single-identity read, same fail-closed-on-transport-
+  // -error rationale as EvaluateACL (an unreachable cluster must never
+  // read as "not revoked"). Mirrors EvaluateACL/ACLSnapshot's split: this
+  // is the live single-check RPC, RevocationSnapshot below is the bulk
+  // fetch used to populate/refresh a local cache.
+  rpc IsRevoked(IsRevokedRequest) returns (IsRevokedResponse);
+  // RevocationSnapshot is a read, same fail-closed-safe/any-peer
+  // rationale as ACLSnapshot — used by every node (core and edge) to
+  // populate/refresh a local revocation cache
+  // (internal/cluster/raft.RevocationCache) instead of round-tripping
+  // this RPC on every connect.
+  rpc RevocationSnapshot(RevocationSnapshotRequest) returns (RevocationSnapshotResponse);
 }
 
 message SubscribeRequest {
@@ -169,6 +189,26 @@ message DisableRulesetRequest {
   string name = 1;
 }
 message DisableRulesetResponse {}
+
+message RevokeCertificateRequest {
+  string identity = 1; // "<deviceID>@<tenantID>", matches cert CN
+  string serial = 2;   // audit/reference only, not used for the deny-list lookup itself
+}
+message RevokeCertificateResponse {}
+
+message IsRevokedRequest {
+  string identity = 1;
+}
+message IsRevokedResponse {
+  bool revoked = 1;
+}
+
+message RevocationSnapshotRequest {}
+message RevocationSnapshotResponse {
+  // revoked_identities -> unix seconds the revocation was recorded, for
+  // audit/debugging parity with the FSM's own state.
+  map<string, int64> revoked_identities = 1;
+}
 
 // Dataplane carries MQTT message payloads directly between nodes,
 // point-to-point, kept off the raft log entirely. This is the phase-1

@@ -33,6 +33,9 @@ const (
 	Registry_DeleteBinding_FullMethodName       = "/keel.cluster.Registry/DeleteBinding"
 	Registry_EnableRuleset_FullMethodName       = "/keel.cluster.Registry/EnableRuleset"
 	Registry_DisableRuleset_FullMethodName      = "/keel.cluster.Registry/DisableRuleset"
+	Registry_RevokeCertificate_FullMethodName   = "/keel.cluster.Registry/RevokeCertificate"
+	Registry_IsRevoked_FullMethodName           = "/keel.cluster.Registry/IsRevoked"
+	Registry_RevocationSnapshot_FullMethodName  = "/keel.cluster.Registry/RevocationSnapshot"
 )
 
 // RegistryClient is the client API for Registry service.
@@ -80,6 +83,25 @@ type RegistryClient interface {
 	DeleteBinding(ctx context.Context, in *DeleteBindingRequest, opts ...grpc.CallOption) (*DeleteBindingResponse, error)
 	EnableRuleset(ctx context.Context, in *EnableRulesetRequest, opts ...grpc.CallOption) (*EnableRulesetResponse, error)
 	DisableRuleset(ctx context.Context, in *DisableRulesetRequest, opts ...grpc.CallOption) (*DisableRulesetResponse, error)
+	// RevokeCertificate is a write (same leader-only rationale as the ACL
+	// mutations above) — records identity ("<deviceID>@<tenantID>", matches
+	// the device cert's CN) as revoked. Called by the management API's
+	// revocation webhook handler (see internal/cluster/management), itself
+	// fed by an external custodian's revocation event (e.g. Clavex's
+	// device.cert.revoked).
+	RevokeCertificate(ctx context.Context, in *RevokeCertificateRequest, opts ...grpc.CallOption) (*RevokeCertificateResponse, error)
+	// IsRevoked is a single-identity read, same fail-closed-on-transport-
+	// -error rationale as EvaluateACL (an unreachable cluster must never
+	// read as "not revoked"). Mirrors EvaluateACL/ACLSnapshot's split: this
+	// is the live single-check RPC, RevocationSnapshot below is the bulk
+	// fetch used to populate/refresh a local cache.
+	IsRevoked(ctx context.Context, in *IsRevokedRequest, opts ...grpc.CallOption) (*IsRevokedResponse, error)
+	// RevocationSnapshot is a read, same fail-closed-safe/any-peer
+	// rationale as ACLSnapshot — used by every node (core and edge) to
+	// populate/refresh a local revocation cache
+	// (internal/cluster/raft.RevocationCache) instead of round-tripping
+	// this RPC on every connect.
+	RevocationSnapshot(ctx context.Context, in *RevocationSnapshotRequest, opts ...grpc.CallOption) (*RevocationSnapshotResponse, error)
 }
 
 type registryClient struct {
@@ -230,6 +252,36 @@ func (c *registryClient) DisableRuleset(ctx context.Context, in *DisableRulesetR
 	return out, nil
 }
 
+func (c *registryClient) RevokeCertificate(ctx context.Context, in *RevokeCertificateRequest, opts ...grpc.CallOption) (*RevokeCertificateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RevokeCertificateResponse)
+	err := c.cc.Invoke(ctx, Registry_RevokeCertificate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *registryClient) IsRevoked(ctx context.Context, in *IsRevokedRequest, opts ...grpc.CallOption) (*IsRevokedResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IsRevokedResponse)
+	err := c.cc.Invoke(ctx, Registry_IsRevoked_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *registryClient) RevocationSnapshot(ctx context.Context, in *RevocationSnapshotRequest, opts ...grpc.CallOption) (*RevocationSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RevocationSnapshotResponse)
+	err := c.cc.Invoke(ctx, Registry_RevocationSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RegistryServer is the server API for Registry service.
 // All implementations must embed UnimplementedRegistryServer
 // for forward compatibility.
@@ -275,6 +327,25 @@ type RegistryServer interface {
 	DeleteBinding(context.Context, *DeleteBindingRequest) (*DeleteBindingResponse, error)
 	EnableRuleset(context.Context, *EnableRulesetRequest) (*EnableRulesetResponse, error)
 	DisableRuleset(context.Context, *DisableRulesetRequest) (*DisableRulesetResponse, error)
+	// RevokeCertificate is a write (same leader-only rationale as the ACL
+	// mutations above) — records identity ("<deviceID>@<tenantID>", matches
+	// the device cert's CN) as revoked. Called by the management API's
+	// revocation webhook handler (see internal/cluster/management), itself
+	// fed by an external custodian's revocation event (e.g. Clavex's
+	// device.cert.revoked).
+	RevokeCertificate(context.Context, *RevokeCertificateRequest) (*RevokeCertificateResponse, error)
+	// IsRevoked is a single-identity read, same fail-closed-on-transport-
+	// -error rationale as EvaluateACL (an unreachable cluster must never
+	// read as "not revoked"). Mirrors EvaluateACL/ACLSnapshot's split: this
+	// is the live single-check RPC, RevocationSnapshot below is the bulk
+	// fetch used to populate/refresh a local cache.
+	IsRevoked(context.Context, *IsRevokedRequest) (*IsRevokedResponse, error)
+	// RevocationSnapshot is a read, same fail-closed-safe/any-peer
+	// rationale as ACLSnapshot — used by every node (core and edge) to
+	// populate/refresh a local revocation cache
+	// (internal/cluster/raft.RevocationCache) instead of round-tripping
+	// this RPC on every connect.
+	RevocationSnapshot(context.Context, *RevocationSnapshotRequest) (*RevocationSnapshotResponse, error)
 	mustEmbedUnimplementedRegistryServer()
 }
 
@@ -326,6 +397,15 @@ func (UnimplementedRegistryServer) EnableRuleset(context.Context, *EnableRuleset
 }
 func (UnimplementedRegistryServer) DisableRuleset(context.Context, *DisableRulesetRequest) (*DisableRulesetResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DisableRuleset not implemented")
+}
+func (UnimplementedRegistryServer) RevokeCertificate(context.Context, *RevokeCertificateRequest) (*RevokeCertificateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevokeCertificate not implemented")
+}
+func (UnimplementedRegistryServer) IsRevoked(context.Context, *IsRevokedRequest) (*IsRevokedResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method IsRevoked not implemented")
+}
+func (UnimplementedRegistryServer) RevocationSnapshot(context.Context, *RevocationSnapshotRequest) (*RevocationSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevocationSnapshot not implemented")
 }
 func (UnimplementedRegistryServer) mustEmbedUnimplementedRegistryServer() {}
 func (UnimplementedRegistryServer) testEmbeddedByValue()                  {}
@@ -600,6 +680,60 @@ func _Registry_DisableRuleset_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Registry_RevokeCertificate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokeCertificateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RegistryServer).RevokeCertificate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Registry_RevokeCertificate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RegistryServer).RevokeCertificate(ctx, req.(*RevokeCertificateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Registry_IsRevoked_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IsRevokedRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RegistryServer).IsRevoked(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Registry_IsRevoked_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RegistryServer).IsRevoked(ctx, req.(*IsRevokedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Registry_RevocationSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevocationSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RegistryServer).RevocationSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Registry_RevocationSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RegistryServer).RevocationSnapshot(ctx, req.(*RevocationSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Registry_ServiceDesc is the grpc.ServiceDesc for Registry service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -662,6 +796,18 @@ var Registry_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DisableRuleset",
 			Handler:    _Registry_DisableRuleset_Handler,
+		},
+		{
+			MethodName: "RevokeCertificate",
+			Handler:    _Registry_RevokeCertificate_Handler,
+		},
+		{
+			MethodName: "IsRevoked",
+			Handler:    _Registry_IsRevoked_Handler,
+		},
+		{
+			MethodName: "RevocationSnapshot",
+			Handler:    _Registry_RevocationSnapshot_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

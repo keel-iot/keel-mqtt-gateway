@@ -1470,6 +1470,264 @@ func (*DisableRulesetResponse) Descriptor() ([]byte, []int) {
 	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{30}
 }
 
+type RevokeCertificateRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Identity      string                 `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"` // "<deviceID>@<tenantID>", matches cert CN
+	Serial        string                 `protobuf:"bytes,2,opt,name=serial,proto3" json:"serial,omitempty"`     // audit/reference only, not used for the deny-list lookup itself
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevokeCertificateRequest) Reset() {
+	*x = RevokeCertificateRequest{}
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevokeCertificateRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevokeCertificateRequest) ProtoMessage() {}
+
+func (x *RevokeCertificateRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevokeCertificateRequest.ProtoReflect.Descriptor instead.
+func (*RevokeCertificateRequest) Descriptor() ([]byte, []int) {
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *RevokeCertificateRequest) GetIdentity() string {
+	if x != nil {
+		return x.Identity
+	}
+	return ""
+}
+
+func (x *RevokeCertificateRequest) GetSerial() string {
+	if x != nil {
+		return x.Serial
+	}
+	return ""
+}
+
+type RevokeCertificateResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevokeCertificateResponse) Reset() {
+	*x = RevokeCertificateResponse{}
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevokeCertificateResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevokeCertificateResponse) ProtoMessage() {}
+
+func (x *RevokeCertificateResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevokeCertificateResponse.ProtoReflect.Descriptor instead.
+func (*RevokeCertificateResponse) Descriptor() ([]byte, []int) {
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{32}
+}
+
+type IsRevokedRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Identity      string                 `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IsRevokedRequest) Reset() {
+	*x = IsRevokedRequest{}
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IsRevokedRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IsRevokedRequest) ProtoMessage() {}
+
+func (x *IsRevokedRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IsRevokedRequest.ProtoReflect.Descriptor instead.
+func (*IsRevokedRequest) Descriptor() ([]byte, []int) {
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *IsRevokedRequest) GetIdentity() string {
+	if x != nil {
+		return x.Identity
+	}
+	return ""
+}
+
+type IsRevokedResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Revoked       bool                   `protobuf:"varint,1,opt,name=revoked,proto3" json:"revoked,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IsRevokedResponse) Reset() {
+	*x = IsRevokedResponse{}
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IsRevokedResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IsRevokedResponse) ProtoMessage() {}
+
+func (x *IsRevokedResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IsRevokedResponse.ProtoReflect.Descriptor instead.
+func (*IsRevokedResponse) Descriptor() ([]byte, []int) {
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *IsRevokedResponse) GetRevoked() bool {
+	if x != nil {
+		return x.Revoked
+	}
+	return false
+}
+
+type RevocationSnapshotRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevocationSnapshotRequest) Reset() {
+	*x = RevocationSnapshotRequest{}
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevocationSnapshotRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevocationSnapshotRequest) ProtoMessage() {}
+
+func (x *RevocationSnapshotRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevocationSnapshotRequest.ProtoReflect.Descriptor instead.
+func (*RevocationSnapshotRequest) Descriptor() ([]byte, []int) {
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{35}
+}
+
+type RevocationSnapshotResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// revoked_identities -> unix seconds the revocation was recorded, for
+	// audit/debugging parity with the FSM's own state.
+	RevokedIdentities map[string]int64 `protobuf:"bytes,1,rep,name=revoked_identities,json=revokedIdentities,proto3" json:"revoked_identities,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *RevocationSnapshotResponse) Reset() {
+	*x = RevocationSnapshotResponse{}
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevocationSnapshotResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevocationSnapshotResponse) ProtoMessage() {}
+
+func (x *RevocationSnapshotResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevocationSnapshotResponse.ProtoReflect.Descriptor instead.
+func (*RevocationSnapshotResponse) Descriptor() ([]byte, []int) {
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *RevocationSnapshotResponse) GetRevokedIdentities() map[string]int64 {
+	if x != nil {
+		return x.RevokedIdentities
+	}
+	return nil
+}
+
 type ForwardRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SourceNodeId  string                 `protobuf:"bytes,1,opt,name=source_node_id,json=sourceNodeId,proto3" json:"source_node_id,omitempty"`
@@ -1483,7 +1741,7 @@ type ForwardRequest struct {
 
 func (x *ForwardRequest) Reset() {
 	*x = ForwardRequest{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[31]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1495,7 +1753,7 @@ func (x *ForwardRequest) String() string {
 func (*ForwardRequest) ProtoMessage() {}
 
 func (x *ForwardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[31]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1508,7 +1766,7 @@ func (x *ForwardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardRequest.ProtoReflect.Descriptor instead.
 func (*ForwardRequest) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{31}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ForwardRequest) GetSourceNodeId() string {
@@ -1554,7 +1812,7 @@ type ForwardResponse struct {
 
 func (x *ForwardResponse) Reset() {
 	*x = ForwardResponse{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[32]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1566,7 +1824,7 @@ func (x *ForwardResponse) String() string {
 func (*ForwardResponse) ProtoMessage() {}
 
 func (x *ForwardResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[32]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1579,7 +1837,7 @@ func (x *ForwardResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardResponse.ProtoReflect.Descriptor instead.
 func (*ForwardResponse) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{32}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{38}
 }
 
 type EvictRequest struct {
@@ -1591,7 +1849,7 @@ type EvictRequest struct {
 
 func (x *EvictRequest) Reset() {
 	*x = EvictRequest{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[33]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1603,7 +1861,7 @@ func (x *EvictRequest) String() string {
 func (*EvictRequest) ProtoMessage() {}
 
 func (x *EvictRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[33]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1616,7 +1874,7 @@ func (x *EvictRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EvictRequest.ProtoReflect.Descriptor instead.
 func (*EvictRequest) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{33}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *EvictRequest) GetClientId() string {
@@ -1634,7 +1892,7 @@ type EvictResponse struct {
 
 func (x *EvictResponse) Reset() {
 	*x = EvictResponse{}
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[34]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1646,7 +1904,7 @@ func (x *EvictResponse) String() string {
 func (*EvictResponse) ProtoMessage() {}
 
 func (x *EvictResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[34]
+	mi := &file_internal_cluster_proto_cluster_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1659,7 +1917,7 @@ func (x *EvictResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EvictResponse.ProtoReflect.Descriptor instead.
 func (*EvictResponse) Descriptor() ([]byte, []int) {
-	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{34}
+	return file_internal_cluster_proto_cluster_proto_rawDescGZIP(), []int{40}
 }
 
 var File_internal_cluster_proto_cluster_proto protoreflect.FileDescriptor
@@ -1738,7 +1996,21 @@ const file_internal_cluster_proto_cluster_proto_rawDesc = "" +
 	"\x15EnableRulesetResponse\"+\n" +
 	"\x15DisableRulesetRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"\x18\n" +
-	"\x16DisableRulesetResponse\"\x95\x01\n" +
+	"\x16DisableRulesetResponse\"N\n" +
+	"\x18RevokeCertificateRequest\x12\x1a\n" +
+	"\bidentity\x18\x01 \x01(\tR\bidentity\x12\x16\n" +
+	"\x06serial\x18\x02 \x01(\tR\x06serial\"\x1b\n" +
+	"\x19RevokeCertificateResponse\".\n" +
+	"\x10IsRevokedRequest\x12\x1a\n" +
+	"\bidentity\x18\x01 \x01(\tR\bidentity\"-\n" +
+	"\x11IsRevokedResponse\x12\x18\n" +
+	"\arevoked\x18\x01 \x01(\bR\arevoked\"\x1b\n" +
+	"\x19RevocationSnapshotRequest\"\xd2\x01\n" +
+	"\x1aRevocationSnapshotResponse\x12n\n" +
+	"\x12revoked_identities\x18\x01 \x03(\v2?.keel.cluster.RevocationSnapshotResponse.RevokedIdentitiesEntryR\x11revokedIdentities\x1aD\n" +
+	"\x16RevokedIdentitiesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\x95\x01\n" +
 	"\x0eForwardRequest\x12$\n" +
 	"\x0esource_node_id\x18\x01 \x01(\tR\fsourceNodeId\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x14\n" +
@@ -1748,7 +2020,7 @@ const file_internal_cluster_proto_cluster_proto_rawDesc = "" +
 	"\x0fForwardResponse\"+\n" +
 	"\fEvictRequest\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\tR\bclientId\"\x0f\n" +
-	"\rEvictResponse2\xcc\t\n" +
+	"\rEvictResponse2\xe9\v\n" +
 	"\bRegistry\x12L\n" +
 	"\tSubscribe\x12\x1e.keel.cluster.SubscribeRequest\x1a\x1f.keel.cluster.SubscribeResponse\x12R\n" +
 	"\vUnsubscribe\x12 .keel.cluster.UnsubscribeRequest\x1a!.keel.cluster.UnsubscribeResponse\x12I\n" +
@@ -1765,7 +2037,10 @@ const file_internal_cluster_proto_cluster_proto_rawDesc = "" +
 	"\rCreateBinding\x12\".keel.cluster.CreateBindingRequest\x1a#.keel.cluster.CreateBindingResponse\x12X\n" +
 	"\rDeleteBinding\x12\".keel.cluster.DeleteBindingRequest\x1a#.keel.cluster.DeleteBindingResponse\x12X\n" +
 	"\rEnableRuleset\x12\".keel.cluster.EnableRulesetRequest\x1a#.keel.cluster.EnableRulesetResponse\x12[\n" +
-	"\x0eDisableRuleset\x12#.keel.cluster.DisableRulesetRequest\x1a$.keel.cluster.DisableRulesetResponse2\x95\x01\n" +
+	"\x0eDisableRuleset\x12#.keel.cluster.DisableRulesetRequest\x1a$.keel.cluster.DisableRulesetResponse\x12d\n" +
+	"\x11RevokeCertificate\x12&.keel.cluster.RevokeCertificateRequest\x1a'.keel.cluster.RevokeCertificateResponse\x12L\n" +
+	"\tIsRevoked\x12\x1e.keel.cluster.IsRevokedRequest\x1a\x1f.keel.cluster.IsRevokedResponse\x12g\n" +
+	"\x12RevocationSnapshot\x12'.keel.cluster.RevocationSnapshotRequest\x1a(.keel.cluster.RevocationSnapshotResponse2\x95\x01\n" +
 	"\tDataplane\x12F\n" +
 	"\aForward\x12\x1c.keel.cluster.ForwardRequest\x1a\x1d.keel.cluster.ForwardResponse\x12@\n" +
 	"\x05Evict\x12\x1a.keel.cluster.EvictRequest\x1a\x1b.keel.cluster.EvictResponseBHZFgithub.com/keel-iot/keel-mqtt-gateway/internal/cluster/proto/clusterpbb\x06proto3"
@@ -1782,7 +2057,7 @@ func file_internal_cluster_proto_cluster_proto_rawDescGZIP() []byte {
 	return file_internal_cluster_proto_cluster_proto_rawDescData
 }
 
-var file_internal_cluster_proto_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_internal_cluster_proto_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_internal_cluster_proto_cluster_proto_goTypes = []any{
 	(*SubscribeRequest)(nil),            // 0: keel.cluster.SubscribeRequest
 	(*SubscribeResponse)(nil),           // 1: keel.cluster.SubscribeResponse
@@ -1815,53 +2090,67 @@ var file_internal_cluster_proto_cluster_proto_goTypes = []any{
 	(*EnableRulesetResponse)(nil),       // 28: keel.cluster.EnableRulesetResponse
 	(*DisableRulesetRequest)(nil),       // 29: keel.cluster.DisableRulesetRequest
 	(*DisableRulesetResponse)(nil),      // 30: keel.cluster.DisableRulesetResponse
-	(*ForwardRequest)(nil),              // 31: keel.cluster.ForwardRequest
-	(*ForwardResponse)(nil),             // 32: keel.cluster.ForwardResponse
-	(*EvictRequest)(nil),                // 33: keel.cluster.EvictRequest
-	(*EvictResponse)(nil),               // 34: keel.cluster.EvictResponse
+	(*RevokeCertificateRequest)(nil),    // 31: keel.cluster.RevokeCertificateRequest
+	(*RevokeCertificateResponse)(nil),   // 32: keel.cluster.RevokeCertificateResponse
+	(*IsRevokedRequest)(nil),            // 33: keel.cluster.IsRevokedRequest
+	(*IsRevokedResponse)(nil),           // 34: keel.cluster.IsRevokedResponse
+	(*RevocationSnapshotRequest)(nil),   // 35: keel.cluster.RevocationSnapshotRequest
+	(*RevocationSnapshotResponse)(nil),  // 36: keel.cluster.RevocationSnapshotResponse
+	(*ForwardRequest)(nil),              // 37: keel.cluster.ForwardRequest
+	(*ForwardResponse)(nil),             // 38: keel.cluster.ForwardResponse
+	(*EvictRequest)(nil),                // 39: keel.cluster.EvictRequest
+	(*EvictResponse)(nil),               // 40: keel.cluster.EvictResponse
+	nil,                                 // 41: keel.cluster.RevocationSnapshotResponse.RevokedIdentitiesEntry
 }
 var file_internal_cluster_proto_cluster_proto_depIdxs = []int32{
 	12, // 0: keel.cluster.RoleEntry.rules:type_name -> keel.cluster.ACLRule
 	14, // 1: keel.cluster.ACLSnapshotResponse.roles:type_name -> keel.cluster.RoleEntry
 	15, // 2: keel.cluster.ACLSnapshotResponse.bindings:type_name -> keel.cluster.BindingEntry
 	12, // 3: keel.cluster.CreateRoleRequest.rules:type_name -> keel.cluster.ACLRule
-	0,  // 4: keel.cluster.Registry.Subscribe:input_type -> keel.cluster.SubscribeRequest
-	2,  // 5: keel.cluster.Registry.Unsubscribe:input_type -> keel.cluster.UnsubscribeRequest
-	4,  // 6: keel.cluster.Registry.NodesFor:input_type -> keel.cluster.NodesForRequest
-	6,  // 7: keel.cluster.Registry.ClaimSession:input_type -> keel.cluster.ClaimSessionRequest
-	8,  // 8: keel.cluster.Registry.ReleaseSession:input_type -> keel.cluster.ReleaseSessionRequest
-	10, // 9: keel.cluster.Registry.EvaluateACL:input_type -> keel.cluster.EvaluateACLRequest
-	13, // 10: keel.cluster.Registry.ACLSnapshot:input_type -> keel.cluster.ACLSnapshotRequest
-	17, // 11: keel.cluster.Registry.CurrentRedisPrimary:input_type -> keel.cluster.CurrentRedisPrimaryRequest
-	19, // 12: keel.cluster.Registry.CreateRole:input_type -> keel.cluster.CreateRoleRequest
-	21, // 13: keel.cluster.Registry.DeleteRole:input_type -> keel.cluster.DeleteRoleRequest
-	23, // 14: keel.cluster.Registry.CreateBinding:input_type -> keel.cluster.CreateBindingRequest
-	25, // 15: keel.cluster.Registry.DeleteBinding:input_type -> keel.cluster.DeleteBindingRequest
-	27, // 16: keel.cluster.Registry.EnableRuleset:input_type -> keel.cluster.EnableRulesetRequest
-	29, // 17: keel.cluster.Registry.DisableRuleset:input_type -> keel.cluster.DisableRulesetRequest
-	31, // 18: keel.cluster.Dataplane.Forward:input_type -> keel.cluster.ForwardRequest
-	33, // 19: keel.cluster.Dataplane.Evict:input_type -> keel.cluster.EvictRequest
-	1,  // 20: keel.cluster.Registry.Subscribe:output_type -> keel.cluster.SubscribeResponse
-	3,  // 21: keel.cluster.Registry.Unsubscribe:output_type -> keel.cluster.UnsubscribeResponse
-	5,  // 22: keel.cluster.Registry.NodesFor:output_type -> keel.cluster.NodesForResponse
-	7,  // 23: keel.cluster.Registry.ClaimSession:output_type -> keel.cluster.ClaimSessionResponse
-	9,  // 24: keel.cluster.Registry.ReleaseSession:output_type -> keel.cluster.ReleaseSessionResponse
-	11, // 25: keel.cluster.Registry.EvaluateACL:output_type -> keel.cluster.EvaluateACLResponse
-	16, // 26: keel.cluster.Registry.ACLSnapshot:output_type -> keel.cluster.ACLSnapshotResponse
-	18, // 27: keel.cluster.Registry.CurrentRedisPrimary:output_type -> keel.cluster.CurrentRedisPrimaryResponse
-	20, // 28: keel.cluster.Registry.CreateRole:output_type -> keel.cluster.CreateRoleResponse
-	22, // 29: keel.cluster.Registry.DeleteRole:output_type -> keel.cluster.DeleteRoleResponse
-	24, // 30: keel.cluster.Registry.CreateBinding:output_type -> keel.cluster.CreateBindingResponse
-	26, // 31: keel.cluster.Registry.DeleteBinding:output_type -> keel.cluster.DeleteBindingResponse
-	28, // 32: keel.cluster.Registry.EnableRuleset:output_type -> keel.cluster.EnableRulesetResponse
-	30, // 33: keel.cluster.Registry.DisableRuleset:output_type -> keel.cluster.DisableRulesetResponse
-	32, // 34: keel.cluster.Dataplane.Forward:output_type -> keel.cluster.ForwardResponse
-	34, // 35: keel.cluster.Dataplane.Evict:output_type -> keel.cluster.EvictResponse
-	20, // [20:36] is the sub-list for method output_type
-	4,  // [4:20] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	41, // 4: keel.cluster.RevocationSnapshotResponse.revoked_identities:type_name -> keel.cluster.RevocationSnapshotResponse.RevokedIdentitiesEntry
+	0,  // 5: keel.cluster.Registry.Subscribe:input_type -> keel.cluster.SubscribeRequest
+	2,  // 6: keel.cluster.Registry.Unsubscribe:input_type -> keel.cluster.UnsubscribeRequest
+	4,  // 7: keel.cluster.Registry.NodesFor:input_type -> keel.cluster.NodesForRequest
+	6,  // 8: keel.cluster.Registry.ClaimSession:input_type -> keel.cluster.ClaimSessionRequest
+	8,  // 9: keel.cluster.Registry.ReleaseSession:input_type -> keel.cluster.ReleaseSessionRequest
+	10, // 10: keel.cluster.Registry.EvaluateACL:input_type -> keel.cluster.EvaluateACLRequest
+	13, // 11: keel.cluster.Registry.ACLSnapshot:input_type -> keel.cluster.ACLSnapshotRequest
+	17, // 12: keel.cluster.Registry.CurrentRedisPrimary:input_type -> keel.cluster.CurrentRedisPrimaryRequest
+	19, // 13: keel.cluster.Registry.CreateRole:input_type -> keel.cluster.CreateRoleRequest
+	21, // 14: keel.cluster.Registry.DeleteRole:input_type -> keel.cluster.DeleteRoleRequest
+	23, // 15: keel.cluster.Registry.CreateBinding:input_type -> keel.cluster.CreateBindingRequest
+	25, // 16: keel.cluster.Registry.DeleteBinding:input_type -> keel.cluster.DeleteBindingRequest
+	27, // 17: keel.cluster.Registry.EnableRuleset:input_type -> keel.cluster.EnableRulesetRequest
+	29, // 18: keel.cluster.Registry.DisableRuleset:input_type -> keel.cluster.DisableRulesetRequest
+	31, // 19: keel.cluster.Registry.RevokeCertificate:input_type -> keel.cluster.RevokeCertificateRequest
+	33, // 20: keel.cluster.Registry.IsRevoked:input_type -> keel.cluster.IsRevokedRequest
+	35, // 21: keel.cluster.Registry.RevocationSnapshot:input_type -> keel.cluster.RevocationSnapshotRequest
+	37, // 22: keel.cluster.Dataplane.Forward:input_type -> keel.cluster.ForwardRequest
+	39, // 23: keel.cluster.Dataplane.Evict:input_type -> keel.cluster.EvictRequest
+	1,  // 24: keel.cluster.Registry.Subscribe:output_type -> keel.cluster.SubscribeResponse
+	3,  // 25: keel.cluster.Registry.Unsubscribe:output_type -> keel.cluster.UnsubscribeResponse
+	5,  // 26: keel.cluster.Registry.NodesFor:output_type -> keel.cluster.NodesForResponse
+	7,  // 27: keel.cluster.Registry.ClaimSession:output_type -> keel.cluster.ClaimSessionResponse
+	9,  // 28: keel.cluster.Registry.ReleaseSession:output_type -> keel.cluster.ReleaseSessionResponse
+	11, // 29: keel.cluster.Registry.EvaluateACL:output_type -> keel.cluster.EvaluateACLResponse
+	16, // 30: keel.cluster.Registry.ACLSnapshot:output_type -> keel.cluster.ACLSnapshotResponse
+	18, // 31: keel.cluster.Registry.CurrentRedisPrimary:output_type -> keel.cluster.CurrentRedisPrimaryResponse
+	20, // 32: keel.cluster.Registry.CreateRole:output_type -> keel.cluster.CreateRoleResponse
+	22, // 33: keel.cluster.Registry.DeleteRole:output_type -> keel.cluster.DeleteRoleResponse
+	24, // 34: keel.cluster.Registry.CreateBinding:output_type -> keel.cluster.CreateBindingResponse
+	26, // 35: keel.cluster.Registry.DeleteBinding:output_type -> keel.cluster.DeleteBindingResponse
+	28, // 36: keel.cluster.Registry.EnableRuleset:output_type -> keel.cluster.EnableRulesetResponse
+	30, // 37: keel.cluster.Registry.DisableRuleset:output_type -> keel.cluster.DisableRulesetResponse
+	32, // 38: keel.cluster.Registry.RevokeCertificate:output_type -> keel.cluster.RevokeCertificateResponse
+	34, // 39: keel.cluster.Registry.IsRevoked:output_type -> keel.cluster.IsRevokedResponse
+	36, // 40: keel.cluster.Registry.RevocationSnapshot:output_type -> keel.cluster.RevocationSnapshotResponse
+	38, // 41: keel.cluster.Dataplane.Forward:output_type -> keel.cluster.ForwardResponse
+	40, // 42: keel.cluster.Dataplane.Evict:output_type -> keel.cluster.EvictResponse
+	24, // [24:43] is the sub-list for method output_type
+	5,  // [5:24] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_internal_cluster_proto_cluster_proto_init() }
@@ -1875,7 +2164,7 @@ func file_internal_cluster_proto_cluster_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_cluster_proto_cluster_proto_rawDesc), len(file_internal_cluster_proto_cluster_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   35,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

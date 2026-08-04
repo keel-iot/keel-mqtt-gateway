@@ -118,6 +118,12 @@ func (c *CoreRegistry) EvaluateACL(clientID, username, topic string, action acl.
 	return c.local.EvaluateACL(clientID, username, topic, action)
 }
 
+// IsRevoked is a pure FSM read, same no-leader-forwarding-needed
+// rationale as EvaluateACL.
+func (c *CoreRegistry) IsRevoked(identity string) bool {
+	return c.local.IsRevoked(identity)
+}
+
 // CurrentRedisPrimary is a pure FSM read, same no-leader-forwarding-needed
 // rationale as EvaluateACL.
 func (c *CoreRegistry) CurrentRedisPrimary() (string, bool) {
@@ -203,4 +209,22 @@ func (c *CoreRegistry) BindingsSnapshot() map[string][]string {
 
 func (c *CoreRegistry) EnabledRulesetsSnapshot() []string {
 	return c.local.EnabledRulesetsSnapshot()
+}
+
+// ── Device PKI revocation ─────────────────────────────────────────────────
+// RevokeCertificate is a write, same leader-forwarding fallback as the ACL
+// mutations above. RevokedSnapshot is a pure FSM read.
+
+func (c *CoreRegistry) RevokeCertificate(identity, serial string) error {
+	if err := c.local.RevokeCertificate(identity, serial); err != nil {
+		if IsNotLeader(err) {
+			return c.fallback.RevokeCertificate(identity, serial)
+		}
+		return err
+	}
+	return nil
+}
+
+func (c *CoreRegistry) RevokedSnapshot() map[string]int64 {
+	return c.local.RevokedSnapshot()
 }

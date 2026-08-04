@@ -49,6 +49,11 @@ type Config struct {
 	// Empty string disables auto-provisioning.
 	AutoProvisioningURL string
 
+	// ClavexWebhookSecret verifies POST /api/cluster/revocations —
+	// see management.API.ClavexWebhookSecret's doc. Empty (default) makes
+	// that endpoint reject every request (fail-closed, not permissive).
+	ClavexWebhookSecret string
+
 	// DefaultTenantID is the fallback tenant used for password-auth
 	// CONNECTs whose username has no "<deviceID>@<tenantID>" separator —
 	// see broker.Config.DefaultTenantID's doc. Empty (default) preserves
@@ -269,6 +274,7 @@ func Load() (*Config, error) {
 		OTLPEndpoint:              os.Getenv("OTLP_ENDPOINT"),
 		MetricsAddr:               metricsAddr,
 		AutoProvisioningURL:       os.Getenv("AUTO_PROV_URL"),
+		ClavexWebhookSecret:       os.Getenv("CLAVEX_WEBHOOK_SECRET"),
 		DefaultTenantID:           os.Getenv("DEFAULT_TENANT_ID"),
 		TenantCacheTTL:            tenantCacheTTL,
 		JWKSCacheTTL:              jwksCacheTTL,
