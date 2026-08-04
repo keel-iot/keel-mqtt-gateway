@@ -1,0 +1,99 @@
+# Compose override used only by olric-nongraceful-crash.sh: remaps every
+# host port docker-compose.core-edge-split.yml publishes so this e2e run
+# never collides with another already-running stack — same convention as
+# the other e2e scripts. Own 23xxx range (unused: kafka-redpanda 20xxx,
+# redis-single-core 24xxx, olric-reconcile 25xxx/26xxx/28xxx,
+# olric-quorum-loss/redis-failover 22xxx/27xxx, qos-crash-loss 29xxx,
+# backup-restore 19xxx/155xx/164xx).
+#
+# Also appends --olric-routing-table-push-interval to each core's command
+# — value substituted at runtime by the driver script via
+# OLRIC_ROUTING_TABLE_PUSH_INTERVAL (docker compose var substitution),
+# so the same override serves both the baseline (unset/1min default) and
+# tuned (e.g. 3s) runs without duplicating the file.
+#
+# `!override` forces a wholesale replacement of each ports:/command: list
+# — compose merges list-valued keys by concatenation otherwise.
+services:
+  postgres:
+    ports: !override
+      - "23532:5432"
+  redis-core-1:
+    ports: !override
+      - "23479:6379"
+  redis-core-2:
+    ports: !override
+      - "23480:6379"
+  redis-core-3:
+    ports: !override
+      - "23481:6379"
+  core-1:
+    ports: !override
+      - "23190:8090"
+    command: !override
+      - "--role=core"
+      - "--node-id=core-1"
+      - "--bootstrap=true"
+      - "--raft-bind=core-1:7000"
+      - "--raft-data-dir=/data/raft"
+      - "--gossip-bind=0.0.0.0"
+      - "--gossip-port=7946"
+      - "--gossip-advertise=core-1"
+      - "--gossip-peers=core-2:7946,core-3:7946"
+      - "--grpc-bind=0.0.0.0:7100"
+      - "--grpc-advertise=core-1:7100"
+      - "--management-addr=0.0.0.0:8090"
+      - "--olric-bind=0.0.0.0"
+      - "--olric-port=7300"
+      - "--olric-gossip-port=7301"
+      - "--olric-advertise=core-1"
+      - "--olric-routing-table-push-interval=${OLRIC_ROUTING_TABLE_PUSH_INTERVAL:-0s}"
+  core-2:
+    ports: !override
+      - "23290:8090"
+    command: !override
+      - "--role=core"
+      - "--node-id=core-2"
+      - "--raft-bind=core-2:7000"
+      - "--raft-data-dir=/data/raft"
+      - "--gossip-bind=0.0.0.0"
+      - "--gossip-port=7946"
+      - "--gossip-advertise=core-2"
+      - "--gossip-peers=core-1:7946"
+      - "--grpc-bind=0.0.0.0:7100"
+      - "--grpc-advertise=core-2:7100"
+      - "--management-addr=0.0.0.0:8090"
+      - "--olric-bind=0.0.0.0"
+      - "--olric-port=7300"
+      - "--olric-gossip-port=7301"
+      - "--olric-advertise=core-2"
+      - "--olric-routing-table-push-interval=${OLRIC_ROUTING_TABLE_PUSH_INTERVAL:-0s}"
+  core-3:
+    ports: !override
+      - "23390:8090"
+    command: !override
+      - "--role=core"
+      - "--node-id=core-3"
+      - "--raft-bind=core-3:7000"
+      - "--raft-data-dir=/data/raft"
+      - "--gossip-bind=0.0.0.0"
+      - "--gossip-port=7946"
+      - "--gossip-advertise=core-3"
+      - "--gossip-peers=core-1:7946"
+      - "--grpc-bind=0.0.0.0:7100"
+      - "--grpc-advertise=core-3:7100"
+      - "--management-addr=0.0.0.0:8090"
+      - "--olric-bind=0.0.0.0"
+      - "--olric-port=7300"
+      - "--olric-gossip-port=7301"
+      - "--olric-advertise=core-3"
+      - "--olric-routing-table-push-interval=${OLRIC_ROUTING_TABLE_PUSH_INTERVAL:-0s}"
+  edge-1:
+    ports: !override
+      - "23183:1883"
+  edge-2:
+    ports: !override
+      - "23283:1883"
+  edge-3:
+    ports: !override
+      - "23383:1883"

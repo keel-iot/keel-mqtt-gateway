@@ -408,6 +408,11 @@ type clusterFlags struct {
 	olricJoinRetry       time.Duration
 	olricMaxJoinAttempts int
 
+	// olricRoutingTablePushInterval — see
+	// internal/cluster/store.OlricConfig.RoutingTablePushInterval's doc.
+	// Zero (default) leaves Olric's own 1-minute default in place.
+	olricRoutingTablePushInterval time.Duration
+
 	// TLS listener flags. Not cluster-specific, but registered here since
 	// flag.Parse() is only ever called once, in parseClusterFlags.
 	tlsEnabled    bool
@@ -472,6 +477,7 @@ func parseClusterFlags() clusterFlags {
 	flag.DurationVar(&f.olricBootstrapWait, "olric-bootstrap-wait", 3*time.Second, "core only: how long to wait after joining gossip before starting the embedded Olric member, so siblings starting at the same time are more likely to already be gossip-visible")
 	flag.DurationVar(&f.olricJoinRetry, "olric-join-retry-interval", 300*time.Millisecond, "core only: gap between Olric join attempts against currently-known core peers before falling back to a single-node bootstrap — each attempt re-resolves the peer list live (see internal/cluster/store.OlricConfig.PeersFunc's doc). Widen alongside --olric-max-join-attempts for staggered rollouts (e.g. K8s), since Olric has no way to add a peer once this budget is exhausted and it has moved on")
 	flag.IntVar(&f.olricMaxJoinAttempts, "olric-max-join-attempts", 5, "core only: number of Olric join attempts before falling back to a single-node bootstrap — see --olric-join-retry-interval")
+	flag.DurationVar(&f.olricRoutingTablePushInterval, "olric-routing-table-push-interval", 0, "core only: how often Olric repropagates its own internal partition-ownership table cluster-wide (0 = Olric's own 1-minute default) — lower this to test whether stale ownership entries after a non-graceful core crash are a config/tuning issue rather than a real bug in Olric's immediate node-left path, see test/e2e/olric-nongraceful-crash.sh")
 	flag.BoolVar(&f.tlsEnabled, "tls-enabled", false, "require the MQTT TLS listener: readiness (/readyz) reports NotReady until a valid certificate is loaded from --tls-cert-dir, instead of silently falling back to plain TCP")
 	flag.StringVar(&f.tlsCertDir, "tls-cert-dir", "", "directory containing tls.crt/tls.key (K8s Secret volume layout); watched and reloaded automatically on change, no restart needed. Required when --tls-enabled=true or MQTT_TLS_PORT is set")
 	flag.StringVar(&f.tlsClientAuth, "tls-client-auth", "request", `tls.Config.ClientAuth for the TLS listener: "none", "request" (default — optional client cert, needed for the existing X.509 device-auth path), or "require-and-verify"`)
@@ -810,9 +816,10 @@ func runServer() {
 				PeersFunc: func() ([]string, error) {
 					return clusterMembership.CoreOlricAddrs(), nil
 				},
-				JoinRetryInterval: cf.olricJoinRetry,
-				MaxJoinAttempts:   cf.olricMaxJoinAttempts,
-				Log:               log,
+				JoinRetryInterval:        cf.olricJoinRetry,
+				MaxJoinAttempts:          cf.olricMaxJoinAttempts,
+				RoutingTablePushInterval: cf.olricRoutingTablePushInterval,
+				Log:                      log,
 			})
 			if err != nil {
 				log.Error("cluster: start olric store", "error", err)

@@ -61,6 +61,23 @@ type OlricConfig struct {
 	JoinRetryInterval time.Duration
 	MaxJoinAttempts   int
 
+	// RoutingTablePushInterval bounds how often Olric's own internal
+	// partition-ownership table (a separate thing from this project's own
+	// routing.Router, backed by Olric only as a K/V store) is repropagated
+	// cluster-wide — Olric's own default (config.DefaultRoutingTablePushInterval)
+	// is 1 minute. Olric already updates this table immediately on its own
+	// node-left cluster event, so this interval is meant as a periodic
+	// backup/repair, not the primary path — but a non-graceful core crash
+	// (kill, not a clean leave) has been observed leaving stale ownership
+	// entries for 5+ minutes (see design doc's "Gap architetturale trovato,
+	// non fixato"), well beyond both this default and keel's own 30s
+	// heartbeat-based routing-table purge (internal/cluster/lifecycle.Monitor,
+	// a completely separate mechanism on keel's own table). Lowering this
+	// is the cheap thing to try before assuming a real bug in Olric's
+	// immediate node-left path needs an upstream fix — see
+	// test/e2e/olric-nongraceful-crash.sh.
+	RoutingTablePushInterval time.Duration
+
 	DMapName string
 	Log      *slog.Logger
 	// StartTimeout bounds how long to wait for Olric's Started callback.
@@ -136,6 +153,10 @@ func NewEmbeddedOlricStore(cfg OlricConfig) (*OlricStore, error) {
 	}
 	c.JoinRetryInterval = joinRetryInterval
 	c.MaxJoinAttempts = maxJoinAttempts
+
+	// Zero-value passthrough is deliberate: Olric applies its own
+	// DefaultRoutingTablePushInterval (1 minute) when this is left unset.
+	c.RoutingTablePushInterval = cfg.RoutingTablePushInterval
 
 	mc, err := config.NewMemberlistConfig("lan")
 	if err != nil {
