@@ -25,6 +25,20 @@ func LiveEdgeNodes(members []membership.NodeMeta) map[string]bool {
 	return live
 }
 
+// LiveEdgeNodeIDs is LiveEdgeNodes's slice form — the exact shape
+// session.Reconciler's LiveEdgeNodeIDs function needs (see
+// keel-design-doc.md's Offline Session Placement ADR, phase 6b). Order is
+// not meaningful: Owner's rendezvous hash is deliberately independent of
+// input order.
+func LiveEdgeNodeIDs(members []membership.NodeMeta) []string {
+	live := LiveEdgeNodes(members)
+	ids := make([]string, 0, len(live))
+	for nodeID := range live {
+		ids = append(ids, nodeID)
+	}
+	return ids
+}
+
 // Evictor forces a client_id's connection closed on targetNodeID — see
 // dataplane.Forwarder.Evict, which this is satisfied by directly. Kept as
 // a narrow local interface so this package doesn't need to import

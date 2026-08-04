@@ -274,6 +274,26 @@ func (h *RedisSessionHook) StoredSubscriptions() ([]storage.Subscription, error)
 	return out, nil
 }
 
+// OfflineInventory returns every persisted client's OfflineSession view
+// (client + its subscriptions) for the Offline Session Placement
+// Reconciler's Inventory function — see keel-design-doc.md's ADR, phase
+// 6b. Deliberately reuses StoredClients/StoredSubscriptions (the exact
+// same boot-time HGetAll this whole redesign exists to stop calling at
+// boot — see phase 6g) rather than a new Redis query, since the
+// Reconciler already runs on its own poll interval and needs the same
+// full-fleet view those two already provide.
+func (h *RedisSessionHook) OfflineInventory() ([]session.OfflineSession, error) {
+	clients, err := h.StoredClients()
+	if err != nil {
+		return nil, fmt.Errorf("redis session: offline inventory clients: %w", err)
+	}
+	subs, err := h.StoredSubscriptions()
+	if err != nil {
+		return nil, fmt.Errorf("redis session: offline inventory subscriptions: %w", err)
+	}
+	return session.AllFromStorage(clients, subs), nil
+}
+
 // StoredInflightMessages returns all in-flight messages persisted in Redis.
 func (h *RedisSessionHook) StoredInflightMessages() ([]storage.Message, error) {
 	rows, err := h.router.Client().HGetAll(context.Background(), redisInflightHash).Result()

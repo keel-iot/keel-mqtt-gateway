@@ -289,6 +289,29 @@ func TestLiveEdgeNodes_FiltersByRole(t *testing.T) {
 	}
 }
 
+func TestLiveEdgeNodeIDs_FiltersByRole(t *testing.T) {
+	members := []membership.NodeMeta{
+		{NodeID: "core-1", Role: membership.RoleCore},
+		{NodeID: "edge-1", Role: membership.RoleEdge},
+		{NodeID: "edge-2", Role: membership.RoleEdge},
+	}
+	ids := LiveEdgeNodeIDs(members)
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 live edge node IDs, got %v", ids)
+	}
+	set := map[string]bool{ids[0]: true, ids[1]: true}
+	if !set["edge-1"] || !set["edge-2"] || set["core-1"] {
+		t.Fatalf("unexpected node ID set: %v", ids)
+	}
+}
+
+func TestLiveEdgeNodeIDs_NoEdgeNodes_ReturnsEmptyNotNil(t *testing.T) {
+	ids := LiveEdgeNodeIDs([]membership.NodeMeta{{NodeID: "core-1", Role: membership.RoleCore}})
+	if len(ids) != 0 {
+		t.Fatalf("expected empty slice, got %v", ids)
+	}
+}
+
 func TestRebalance_ExcludedClientsNeverEvicted(t *testing.T) {
 	sessions := sessionsWithCounts(map[string]int{"edge-1": 5, "edge-2": 5, "edge-3": 30})
 	live := map[string]bool{"edge-1": true, "edge-2": true, "edge-3": true}

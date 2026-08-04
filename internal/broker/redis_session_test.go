@@ -5,6 +5,9 @@ import (
 	"os"
 	"testing"
 
+	mqtt "github.com/mochi-mqtt/server/v2"
+	"github.com/mochi-mqtt/server/v2/packets"
+
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/session"
 )
@@ -75,6 +78,45 @@ func TestNextPacketID_NeverZeroWrapsPast65535(t *testing.T) {
 	}
 	if id != 1 {
 		t.Fatalf("expected wraparound to 1 (never 0), got %d", id)
+	}
+}
+
+func TestOfflineInventory_JoinsClientsWithTheirSubscriptions(t *testing.T) {
+	h, _ := newTestRedisSessionHook(t)
+
+	client := &mqtt.Client{ID: "device-1"}
+	client.Properties.Clean = false
+	h.saveClient(client)
+	pk := packets.Packet{Filters: packets.Subscriptions{
+		{Filter: "telemetry/#"},
+	}}
+	h.OnSubscribed(client, pk, []byte{1})
+
+	inv, err := h.OfflineInventory()
+	if err != nil {
+		t.Fatalf("OfflineInventory: %v", err)
+	}
+	if len(inv) != 1 {
+		t.Fatalf("expected 1 offline session, got %d: %+v", len(inv), inv)
+	}
+	got := inv[0]
+	if got.ClientID != "device-1" {
+		t.Fatalf("expected client ID device-1, got %q", got.ClientID)
+	}
+	if len(got.Subscriptions) != 1 || got.Subscriptions[0].Filter != "telemetry/#" || got.Subscriptions[0].QoS != 1 {
+		t.Fatalf("unexpected subscriptions: %+v", got.Subscriptions)
+	}
+}
+
+func TestOfflineInventory_NoClients_ReturnsEmptyNotError(t *testing.T) {
+	h, _ := newTestRedisSessionHook(t)
+
+	inv, err := h.OfflineInventory()
+	if err != nil {
+		t.Fatalf("OfflineInventory: %v", err)
+	}
+	if len(inv) != 0 {
+		t.Fatalf("expected no offline sessions, got %+v", inv)
 	}
 }
 
