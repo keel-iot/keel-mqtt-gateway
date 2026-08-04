@@ -222,8 +222,8 @@ services:
       DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
       # Seed only — this edge's actual read/write target is redirected by
       # internal/cluster/redisrouter.WatchPrimary within one poll interval
-      # of startup, based on the raft-designated primary (see
-      # keel-design-doc.md's risk #6), not fixed to core-1 permanently.
+      # of startup, based on the raft-designated primary, not fixed to
+      # core-1 permanently.
       REDIS_ADDR: "redis-core-1:6379"
       AUTH_BACKEND: "file"
       CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
@@ -261,8 +261,8 @@ services:
       DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
       # Seed only — this edge's actual read/write target is redirected by
       # internal/cluster/redisrouter.WatchPrimary within one poll interval
-      # of startup, based on the raft-designated primary (see
-      # keel-design-doc.md's risk #6), not fixed to core-1 permanently.
+      # of startup, based on the raft-designated primary, not fixed to
+      # core-1 permanently.
       REDIS_ADDR: "redis-core-1:6379"
       AUTH_BACKEND: "file"
       CREDENTIAL_FILE: "/etc/keel/credentials.yaml"
@@ -300,8 +300,8 @@ services:
       DATABASE_URL: "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable"
       # Seed only — this edge's actual read/write target is redirected by
       # internal/cluster/redisrouter.WatchPrimary within one poll interval
-      # of startup, based on the raft-designated primary (see
-      # keel-design-doc.md's risk #6), not fixed to core-1 permanently.
+      # of startup, based on the raft-designated primary, not fixed to
+      # core-1 permanently.
       REDIS_ADDR: "redis-core-1:6379"
       AUTH_BACKEND: "file"
       CREDENTIAL_FILE: "/etc/keel/credentials.yaml"

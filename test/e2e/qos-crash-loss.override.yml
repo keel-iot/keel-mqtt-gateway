@@ -3,8 +3,8 @@
 # with another already-running stack based on the same file, or with
 # olric-reconcile.sh's (28xxx) or backup-restore.sh's (19xxx/155xx/164xx) own
 # ranges — see those scripts' override files for the port-collision history.
-# redis-core-1/2/3 (one per co-located Redis instance — see risk #6 in
-# keel-design-doc.md) replace the single old "redis" service's remap.
+# redis-core-1/2/3 (one per co-located Redis instance) replace the single
+# old "redis" service's remap.
 #
 # `!override` forces a wholesale replacement of each ports: list — compose
 # merges list-valued keys by concatenation otherwise.

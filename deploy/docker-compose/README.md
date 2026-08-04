@@ -1,6 +1,6 @@
 # keel-mqtt-gateway — docker-compose PoC
 
-3 core nodes, no edge nodes (per the design doc's phase-1 scope). The
+3 core nodes, no edge nodes. The
 gateway migrates its own schema on startup (see `internal/db`) against an
 otherwise-empty Postgres — `devices.tenant_gateway_config` ends up empty
 (the query's safe default applies); `AUTH_BACKEND=file` with

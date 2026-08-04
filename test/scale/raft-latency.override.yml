@@ -1,7 +1,5 @@
-# Compose override for the Raft Apply latency PoC measurement
-# (keel-design-doc.md's PoC checklist: "overhead reale di latenza
-# introdotto da Raft sul piano di controllo... a scala Kimera (1-2k
-# device)"). Adds host ports for the Prometheus /metrics endpoint on each
+# Compose override for the Raft Apply latency measurement at scale
+# (~1-2k devices). Adds host ports for the Prometheus /metrics endpoint on each
 # combined node — docker-compose.yml doesn't expose 9090 by default,
 # only used internally — and swaps the credentials file for one with 1500
 # generated devicesim devices merged in (see

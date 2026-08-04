@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Track B PoC follow-up: validate the kafka-hono OutputConnector
-# (internal/connector/kafka_hono.go) against a REAL Kafka-compatible broker
-# (single-node Redpanda, no ZooKeeper — the simplest option, see
-# keel-design-doc.md's "Connettore Kafka/Ditto" section) instead of only the
-# existing unit tests, which mock the producer entirely.
+# Validates the kafka-hono OutputConnector (internal/connector/kafka_hono.go)
+# against a REAL Kafka-compatible broker (single-node Redpanda, no
+# ZooKeeper) instead of only the existing unit tests, which mock the
+# producer entirely.
 #
 # What this validates, explicitly:
 #   1. the connector actually connects and produces to a real broker with

@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Design-doc PoC checklist item (keel-design-doc.md, "Cosa resta da
-# validare in PoC"): "comportamento sotto perdita di quorum Olric durante
-# reconnect storm: i client MQTT si bloccano? i messaggi in-flight (via
-# gRPC diretto, non dipendenti da Olric) si perdono? conferma che il piano
-# dati resta funzionante in degrado anche con Olric non disponibile".
+# Validates behavior under Olric quorum loss during a reconnect storm: do
+# MQTT clients stall? Do in-flight messages (routed via direct gRPC, not
+# dependent on Olric) get lost? Confirms the data plane keeps working in
+# a degraded mode even with Olric unavailable.
 #
 # Honest scope note: Olric and Raft are co-located in the same core
-# process in this codebase (see keel-design-doc.md's "Decisioni operative
-# per l'integrazione Olric") — there is no way to kill only Olric's quorum
+# process in this codebase — there is no way to kill only Olric's quorum
 # while leaving Raft's quorum intact on the same node set. This script
 # therefore kills ALL THREE core containers together (total control-plane
 # outage: Olric ring gone AND Raft quorum gone at once), which is a
@@ -186,7 +184,7 @@ wait_for_leader "$MGMT_1" 60 || fail "cluster never re-elected a leader after re
 log "cluster recovered, leader re-elected"
 sleep 5
 
-log "10. after recovery: a new connect must eventually succeed again (retrying — the cluster reporting a leader doesn't mean raft quorum has actually caught up yet across all 3 restarted cores, same class of readiness-gate gap already documented once in keel-design-doc.md). Checked via a NEW publisher, each retry tagged distinctly, observed on the SAME never-reconnected subscriber from step 3 — this validates both 'new connect succeeds' and 'delivery still works post-recovery' in one shot, instead of a throwaway subscriber waiting for a message nobody sends."
+log "10. after recovery: a new connect must eventually succeed again (retrying — the cluster reporting a leader doesn't mean raft quorum has actually caught up yet across all 3 restarted cores). Checked via a NEW publisher, each retry tagged distinctly, observed on the SAME never-reconnected subscriber from step 3 — this validates both 'new connect succeeds' and 'delivery still works post-recovery' in one shot, instead of a throwaway subscriber waiting for a message nobody sends."
 NEWCONN_OK=0
 for ((i = 0; i < 60; i++)); do
   TAG="newconn-$i"

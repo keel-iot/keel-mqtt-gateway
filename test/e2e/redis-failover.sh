@@ -14,11 +14,10 @@
 #      querying every survivor's own Redis INFO replication directly, not
 #      just observing application-level behavior after the fact
 #   2. how many of the N queued messages are lost in the async-replication
-#      window (this design's declared, accepted residual risk — see
-#      keel-design-doc.md's risk #6) — messages are published immediately
-#      before the kill, deliberately minimizing the replication catch-up
-#      window, to measure the realistic worst case rather than a padded
-#      best case
+#      window (this design's declared, accepted residual risk) —
+#      messages are published immediately before the kill, deliberately
+#      minimizing the replication catch-up window, to measure the
+#      realistic worst case rather than a padded best case
 #   3. the routing/ACL-identity side of the affected client's session
 #      still works after the failover (reusing the same recovery check
 #      qos-crash-loss.sh already validates for the edge-crash case)

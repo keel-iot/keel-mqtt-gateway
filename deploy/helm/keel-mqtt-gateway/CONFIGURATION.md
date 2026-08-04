@@ -298,8 +298,8 @@ kubectl exec <release>-core-0 -- \
 ```
 
 Both endpoints, plus `GET /api/metrics` (aggregated connections/msg-sec
-across every edge) and `GET /api/live/clients`, are documented in
-`keel-design-doc.md`'s "Osservabilità e controllo" section.
+across every edge) and `GET /api/live/clients`, are part of the same
+management API.
 
 ### Monitoring dashboard
 
@@ -324,7 +324,7 @@ Not wired into a CronJob by this chart yet — run manually via
 kubectl exec <release>-core-0 -- \
   keel-mqtt-gateway backup raft --output /tmp/snapshot
 
-# Restore (disaster recovery — see keel-design-doc.md's "Backup/restore" section)
+# Restore (disaster recovery)
 kubectl exec <release>-core-0 -- \
   keel-mqtt-gateway restore raft --snapshot /tmp/snapshot --voters <release>-core-0,<release>-core-1,<release>-core-2
 

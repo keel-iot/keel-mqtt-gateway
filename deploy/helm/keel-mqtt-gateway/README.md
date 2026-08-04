@@ -1,8 +1,6 @@
 # keel-mqtt-gateway
 
-Helm chart for the core/edge MQTT clustering gateway — see
-`keel-design-doc.md` (repo root, one level up from this project) for the
-full architecture.
+Helm chart for the core/edge MQTT clustering gateway.
 
 ## External dependencies — always external, never bundled
 
@@ -44,9 +42,9 @@ it (`templates/secrets.yaml`). Never set both; `existingSecret` wins if
 present.
 
 Redis is different: it's co-located with each core pod (primary+replica
-across cores, see risk #6 in the design doc) and fully managed by this
-chart — not an "external" dependency in the same sense, no host/credential
-pointer needed beyond the optional shared `core.redis.password`.
+across cores) and fully managed by this chart — not an "external"
+dependency in the same sense, no host/credential pointer needed beyond
+the optional shared `core.redis.password`.
 
 ## Topology
 
@@ -62,26 +60,23 @@ from every core pod's stable DNS name.
 
 ## TLS
 
-MQTT TLS termination happens inside the edge pods themselves (never at a
-load balancer — see the design doc), via `internal/broker.CertReloader`
-watching a mounted Secret. Either let cert-manager manage it
-(`tls.certManager.enabled: true` with an `issuerRef`) or point at an
-existing Secret (`tls.existingSecret`).
+MQTT TLS termination happens inside the edge pods themselves, never at a
+load balancer, via `internal/broker.CertReloader` watching a mounted
+Secret. Either let cert-manager manage it (`tls.certManager.enabled: true`
+with an `issuerRef`) or point at an existing Secret (`tls.existingSecret`).
 
-## Known limitation
+## Readiness
 
-`/readyz` today only reflects TLS certificate readiness (see
-`cmd/server/main.go`'s `newReadyzHandler`), not "raft joined" or "Olric
-joined" — a pod can report Ready before it has actually rejoined the
-cluster's gossip mesh. Acceptable for now; revisit if it causes premature
-traffic routing during rollouts.
+`/readyz` (see `cmd/server/main.go`'s `newReadyzHandler`) checks TLS
+certificate validity, Redis primary reachability, raft leader known, and
+local Olric reachability — each independently, only for whatever's
+actually configured.
 
 ## Backup/restore, ACL management
 
-The binary ships `backup`/`restore`/`acl` CLI subcommands (see the design
-doc's "Backup/restore" and "Sistema ACL configurabile" sections) — not
-wired into a CronJob or Job by this chart yet. Use `kubectl exec` against
-a core pod in the meantime:
+The binary ships `backup`/`restore`/`acl` CLI subcommands, not wired into
+a CronJob or Job by this chart yet. Use `kubectl exec` against a core pod
+in the meantime:
 
 ```
 kubectl exec {{ "<release>-core-0" }} -- keel-mqtt-gateway backup raft --output /tmp/snap

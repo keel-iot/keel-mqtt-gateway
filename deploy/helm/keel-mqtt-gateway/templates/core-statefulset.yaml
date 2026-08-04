@@ -116,8 +116,7 @@ spec:
             preStop:
               exec:
                 # See internal/cluster/lifecycle/drain.go — leadership
-                # transfer if this node is leader, notify voluntary exit —
-                # matches keel-design-doc.md's "Uscita pianificata" design.
+                # transfer if this node is leader, notify voluntary exit.
                 command: ["/usr/local/bin/keel-mqtt-gateway", "drain"]
           ports:
             - name: raft

@@ -1,7 +1,7 @@
 # Compose override used only by kafka-redpanda.sh: adds a single-node
-# Redpanda broker (Kafka-compatible, no ZooKeeper — the "simplest option"
+# Redpanda broker (Kafka-compatible, no ZooKeeper — the simplest option)
 # for validating the kafka-hono OutputConnector against a real broker
-# instead of only unit tests, per keel-design-doc.md's PoC checklist).
+# instead of only unit tests.
 #
 # No host port published for redpanda: verification reads the topic
 # straight from inside the container (`docker exec ... rpk topic consume`),

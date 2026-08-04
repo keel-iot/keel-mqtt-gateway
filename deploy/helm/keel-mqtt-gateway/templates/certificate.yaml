@@ -1,10 +1,9 @@
 {{- if .Values.tls.certManager.enabled }}
 {{/*
-cert-manager Certificate for the edge MQTT TLS listener — see
-keel-design-doc.md's TLS section: internal/broker.CertReloader watches
-the resulting Secret's mounted volume and rotates without a restart, no
-extra wiring needed here beyond mounting the Secret (see
-edge-deployment.yaml's "tls" volume).
+cert-manager Certificate for the edge MQTT TLS listener.
+internal/broker.CertReloader watches the resulting Secret's mounted
+volume and rotates without a restart, no extra wiring needed here beyond
+mounting the Secret (see edge-deployment.yaml's "tls" volume).
 */}}
 apiVersion: cert-manager.io/v1
 kind: Certificate

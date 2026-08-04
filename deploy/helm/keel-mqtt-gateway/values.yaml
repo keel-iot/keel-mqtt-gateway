@@ -1,10 +1,9 @@
 # Default values for keel-mqtt-gateway.
 #
 # Topology default: core (pure, --role=core) + edge (pure, --role=edge),
-# not "combined" — this is the topology keel-design-doc.md's "Test
-# topologia core/edge separata" section validated as the real production
-# shape; "combined" only exists for a single-process all-in-one
-# docker-compose convenience, not recommended for K8s.
+# not "combined" — this is the validated production shape; "combined"
+# only exists for a single-process all-in-one docker-compose
+# convenience, not recommended for K8s.
 #
 # External dependencies (IMPORTANT): PostgreSQL and Redpanda/Kafka are
 # ALWAYS treated as pre-existing, externally-managed services — this chart
@@ -49,8 +48,8 @@ postgresql:
 # keel's own Redpanda topic taxonomy (twin-service feed, OTA/CA status
 # mirrors, device connection events) and Ditto/Hono compat used to live
 # here too (internal/forwarder), but that's moved out to a standalone
-# OutputConnector plugin — see keel-design-doc.md "Perimetro del
-# componente". This chart does not deploy that plugin (not published yet).
+# OutputConnector plugin. This chart does not deploy that plugin (not
+# published yet).
 redpanda:
   enabled: false
   external:
@@ -132,10 +131,10 @@ core:
       size: 2Gi
       storageClassName: ""
 
-  # Co-located Redis (primary+replica across cores) — see risk #6 in
-  # keel-design-doc.md. This is NOT an "external" dependency like
-  # postgresql/redpanda above: it's part of keel's own topology, one
-  # instance per core pod, managed entirely by this chart.
+  # Co-located Redis (primary+replica across cores). This is NOT an
+  # "external" dependency like postgresql/redpanda above: it's part of
+  # keel's own topology, one instance per core pod, managed entirely by
+  # this chart.
   redis:
     image:
       repository: redis
@@ -222,11 +221,9 @@ edge:
   extraVolumeMounts: []
 
 # ── TLS (MQTT client-facing listener) ────────────────────────────────────
-# See keel-design-doc.md's TLS section: terminated IN the application
-# (mochi-mqtt listener), never at a load balancer in front — same
-# "identical on K8s/VM/Docker Compose" constraint driving the rest of the
-# design. internal/broker.CertReloader watches the mounted secret and
-# rotates without a restart.
+# Terminated IN the application (mochi-mqtt listener), never at a load
+# balancer in front. internal/broker.CertReloader watches the mounted
+# secret and rotates without a restart.
 tls:
   enabled: false
   clientAuth: request # "none" | "request" | "require-and-verify" — see --tls-client-auth
@@ -258,7 +255,7 @@ metrics:
 # take a pod out of service (fail-closed, working as intended), but
 # liveness failing kills the container outright. Default failureThreshold
 # widened from k8s's implicit 3 (~35s grace with the settings below) to 6
-# (~65s): observed in practice (Kimera rollouts, 2026-08-03) that a
+# (~65s): observed in practice (real GKE rollouts, 2026-08-03) that a
 # freshly (re)created pod occasionally doesn't respond to /healthz within
 # the tighter window — likely pod-network/iptables propagation lag right
 # after creation, not application slowness — causing an avoidable extra

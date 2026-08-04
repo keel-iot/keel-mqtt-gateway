@@ -283,9 +283,9 @@ Keel is currently production-ready for its core feature set.
 - JWKS auto-fetch and key rotation
 - Core/edge pod kills (leader failover, edge pod restart) on a real K8s cluster
 - MQTT 5.0 Shared Subscriptions (`$share/group/topic`), exactly-once delivery per group across the whole cluster
-- Output plugin isolation: a slow/failing Kafka-Redpanda producer can no longer block MQTT delivery (fixed 2026-07-31, see design doc)
+- Output plugin isolation: a slow/failing Kafka-Redpanda producer can no longer block MQTT delivery (fixed 2026-07-31)
 - StatefulSet rolling update (Olric cold-start sequencing) — `/readyz` (TLS, Redis, raft leader, local Olric reachability, present since v0.2.3) has been through several real rolling updates on GKE (v0.2.0 → v0.2.5) with no issues observed
-- HPA edge load metric end-to-end on GKE: `prometheus-adapter` (VictoriaMetrics-backed) registering `custom.metrics.k8s.io`, HPA reading real `keel_edge_load_score` values (`ScalingActive: True`, `ValidMetricFound`) — confirmed on Kimera 2026-08-03
+- HPA edge load metric end-to-end on GKE: `prometheus-adapter` (VictoriaMetrics-backed) registering `custom.metrics.k8s.io`, HPA reading real `keel_edge_load_score` values (`ScalingActive: True`, `ValidMetricFound`) — confirmed on a real GKE cluster 2026-08-03
 
 **Roadmap / Known Gaps:**
 - Auth/ACL staged plugin interface (JWT/OAuth/other providers today require code changes, not a plugin) — deliberately deferred

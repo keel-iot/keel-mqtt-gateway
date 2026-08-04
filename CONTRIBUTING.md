@@ -23,16 +23,13 @@ manually, not yet part of CI (see below).
 
 ## Proposing architectural changes
 
-[`keel-design-doc.md`](../keel-design-doc.md) (repo root, one level up from
-this directory) is the source of truth for architectural decisions —
-clustering model, Raft/Olric split, TLS, backpressure, etc. — including the
-reasoning behind each choice and what was tried and rejected.
-
 Before proposing a change to core architecture (clustering, session
-ownership, routing, ACL model), read the relevant section of the design
-doc first. If your change conflicts with a documented decision, explain
-why in your PR description, referencing the section you're revising —
-don't just silently diverge from it.
+ownership, routing, ACL model), read the relevant package docs and
+existing comments — most non-obvious decisions (why Raft vs. Olric for a
+given piece of state, TLS termination point, backpressure strategy) are
+explained inline where they apply. If your change conflicts with an
+existing decision, explain why in your PR description instead of
+silently diverging from it.
 
 For bug fixes, small features, or anything that doesn't touch a documented
 architectural decision, no design-doc update is expected — just open a PR.

@@ -18,8 +18,7 @@
 # dropped from partition ownership ("has been deleted from the primary
 # owners list"). If the tuned run drops this in a few seconds while the
 # baseline run is still stale after a comparable wait, this is a config
-# tuning issue, not an Olric bug — see keel-design-doc.md for the
-# conclusion this script's output is expected to feed.
+# tuning issue, not an Olric bug.
 set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
