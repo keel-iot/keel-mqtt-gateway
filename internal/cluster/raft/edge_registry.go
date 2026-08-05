@@ -6,29 +6,16 @@ import (
 )
 
 // EdgeRegistry is the edge-node Registry implementation, composing three
-// independent backends behind the single Registry interface — mirroring
-// CoreRegistry's split, but with routing and ACL evaluation now served
-// from local caches instead of an RPC per call:
+// independent backends — mirroring CoreRegistry's split, but routing and
+// ACL evaluation now come from local caches instead of a per-call RPC:
 //
-//   - routing (Subscribe/Unsubscribe/NodesFor/UnsubscribeBatch) delegates
-//     to a routing.Router backed by a thin Olric client
-//     (store.NewRemoteOlricStore) — the same local trie cache + pub/sub +
-//     periodic Scan reconciliation core nodes use, just talking to Olric
-//     as a non-member client instead of an embedded member. This was
-//     already built (store.NewRemoteOlricStore's doc literally says "used
-//     by edge nodes") but never wired up here — NodesFor previously fell
-//     through to RemoteRegistry's per-call gRPC to a core node instead.
-//   - session ownership (ClaimSession/ReleaseSession) still delegates to
-//     RemoteRegistry/gRPC: this is genuinely raft-backed, strongly
-//     consistent state that only exists on core nodes, so there is no
-//     local-cache equivalent to give it — every claim/release must reach
-//     the raft leader.
-//   - ACL evaluation delegates to an ACLCache, a locally-held,
-//     periodically-refreshed read cache — see ACLCache's doc for the
-//     explicit staleness trade-off this accepts (no push invalidation,
-//     just a poll interval).
-//   - Device cert revocation checks delegate to a RevocationCache, same
-//     periodic-poll trade-off as ACLCache — see its doc.
+//   - routing delegates to a routing.Router over a thin Olric client
+//     (store.NewRemoteOlricStore) instead of RemoteRegistry's old gRPC path
+//   - session ownership still delegates to RemoteRegistry/gRPC — raft
+//     state only exists on core nodes
+//   - ACL and cert-revocation checks go through ACLCache/RevocationCache,
+//     periodically-refreshed local reads — see their own docs for the
+//     staleness trade-off
 type EdgeRegistry struct {
 	router          *routing.Router
 	remote          *RemoteRegistry

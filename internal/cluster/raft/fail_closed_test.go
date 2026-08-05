@@ -60,32 +60,15 @@ func awaitLeader(t *testing.T, nodes []*hraft.Raft, timeout time.Duration) *hraf
 }
 
 // TestEvaluateACLFailsClosedUnderReplicationLag builds a real 2-node raft
-// cluster (in-memory transport/storage, no mocks of raft itself), commits
-// an ACL role+binding allowing device-1 to publish on
-// telemetry/device-1/#, then partitions the follower away from the leader
-// (hraft.InmemTransport.Disconnect, simulating a network split — the
-// leader can no longer replicate to it) and applies a *second* write
-// (revoking that binding) that only the leader/majority can commit while
-// partitioned.
+// cluster, applies an ACL grant, partitions the follower, then revokes the
+// grant (only the leader/majority can commit while partitioned).
 //
-// The core assertion: while partitioned, the isolated follower's local
-// FSM still reflects the pre-partition state (the revoke hasn't reached
-// it) — EvaluateACL against it is a stale/lagging read. This test does
-// NOT assert that the stale follower magically denies the read (it can't
-// know about the revoke it hasn't received — that would require
-// linearizable reads through the leader, which CoreRegistry.EvaluateACL
-// explicitly does not do, see the comment in core_registry.go: "a
-// possibly-lagging follower read is safe by construction (fail-closed)").
-// Instead it asserts the actual fail-closed *design* invariant that makes
-// staleness safe: a lagging replica can only ever be stale in the
-// direction of *not yet having* a revoke/deny — Evaluate's own default
-// (acl.Decision{Effect: EffectDeny, Rule: nil} when no rule matches at
-// all, see evaluate.go) means an FSM that has received *nothing* (e.g. a
-// brand new follower that joined after the writes, or one so far behind
-// it has no ACL state whatsoever) denies by default rather than
-// optimistically allowing. It also confirms that once the partition
-// heals and the follower catches up, its EvaluateACL result converges
-// with the leader's.
+// It does not assert that the stale follower denies the read — it can't
+// know about a revoke it never received. It asserts the fail-closed
+// invariant that makes staleness safe instead: Evaluate defaults to deny
+// when no rule matches (see evaluate.go), so a lagging or empty FSM denies
+// rather than allows. Also checks EvaluateACL converges once the follower
+// catches up after the partition heals.
 func TestEvaluateACLFailsClosedUnderReplicationLag(t *testing.T) {
 	const (
 		leaderID   = "node-leader"
