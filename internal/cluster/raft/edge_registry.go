@@ -55,6 +55,10 @@ func (e *EdgeRegistry) NodesFor(topic, localNodeID string) []string {
 	return e.router.NodesFor(topic, localNodeID)
 }
 
+func (e *EdgeRegistry) OfflineNodesFor(topic string) []string {
+	return e.router.OfflineNodesFor(topic)
+}
+
 // UnsubscribeBatch satisfies the optional BatchUnsubscriber capability
 // hooks.go's OnDisconnect type-asserts for — previously only CoreRegistry
 // implemented it, so edge nodes fell back to a per-filter Unsubscribe

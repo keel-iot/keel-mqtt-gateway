@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/routing"
 )
 
 // fakeOfflineOwnerRegistry is an in-memory stand-in for routing.Router,
@@ -106,7 +108,7 @@ func TestOfflineOwnership_Place_SubscribesNewOwnerBeforeUnsubscribingOld(t *test
 		t.Fatalf("Place: %v", err)
 	}
 
-	want := []string{"subscribe:edge-2", "unsubscribe:edge-1"}
+	want := []string{"subscribe:edge-2", "subscribe:edge-2", "unsubscribe:edge-1"}
 	if len(reg.events) != len(want) {
 		t.Fatalf("expected events %v, got %v", want, reg.events)
 	}
@@ -114,6 +116,69 @@ func TestOfflineOwnership_Place_SubscribesNewOwnerBeforeUnsubscribingOld(t *test
 		if reg.events[i] != ev {
 			t.Fatalf("expected events %v, got %v", want, reg.events)
 		}
+	}
+}
+
+func TestOfflineOwnership_Place_RegistersOfflineRoutingIndex(t *testing.T) {
+	reg := newFakeOfflineOwnerRegistry()
+	o := &OfflineOwnership{Registry: reg}
+
+	if err := o.Place("device-1", "telemetry/#", "edge-1"); err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+
+	nodes := reg.NodesFor(routing.OfflineRouteKey("telemetry/#"), "")
+	if len(nodes) != 1 || nodes[0] != "edge-1" {
+		t.Fatalf("expected edge-1 registered in the offline routing index, got %v", nodes)
+	}
+}
+
+// TestOfflineOwnership_Place_OfflineRoutingIndexIsAddOnly verifies the
+// documented trade-off: moving ownership away does NOT remove the old
+// owner from the offline routing index (no reference count — a different
+// client on the same node might still need it), unlike the exact
+// per-(clientID,filter) ownership key, which IS precisely removed.
+func TestOfflineOwnership_Place_OfflineRoutingIndexIsAddOnly(t *testing.T) {
+	reg := newFakeOfflineOwnerRegistry()
+	o := &OfflineOwnership{Registry: reg}
+
+	if err := o.Place("device-1", "telemetry/#", "edge-1"); err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+	if err := o.Place("device-1", "telemetry/#", "edge-2"); err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+
+	nodes := reg.NodesFor(routing.OfflineRouteKey("telemetry/#"), "")
+	set := map[string]bool{}
+	for _, n := range nodes {
+		set[n] = true
+	}
+	if !set["edge-1"] || !set["edge-2"] {
+		t.Fatalf("expected both edge-1 (stale, never removed) and edge-2 in the offline routing index, got %v", nodes)
+	}
+
+	// The exact ownership key, by contrast, must show only the new owner.
+	owner, ok := o.CurrentOwner("device-1", "telemetry/#")
+	if !ok || owner != "edge-2" {
+		t.Fatalf("expected exact ownership to show only edge-2, got %q ok=%v", owner, ok)
+	}
+}
+
+func TestOfflineOwnership_Clear_DoesNotTouchOfflineRoutingIndex(t *testing.T) {
+	reg := newFakeOfflineOwnerRegistry()
+	o := &OfflineOwnership{Registry: reg}
+
+	if err := o.Place("device-1", "telemetry/#", "edge-1"); err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+	if err := o.Clear("device-1", "telemetry/#"); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+
+	nodes := reg.NodesFor(routing.OfflineRouteKey("telemetry/#"), "")
+	if len(nodes) != 1 || nodes[0] != "edge-1" {
+		t.Fatalf("expected edge-1 to remain in the offline routing index after Clear, got %v", nodes)
 	}
 }
 

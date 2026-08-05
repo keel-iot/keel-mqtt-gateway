@@ -247,6 +247,30 @@ func (r *Router) NodesFor(topic, localNodeID string) []string {
 	return out
 }
 
+// offlineRoutePrefix namespaces the Offline Routing Index from the Live
+// Routing Index in the same trie: "this node owns an offline session
+// matching this filter" is a different question from "this node has a
+// live subscriber for this filter" — kept as two distinct indices (see
+// OfflineNodesFor) rather than merged into NodesFor's result, so NodesFor
+// keeps meaning exactly what it always has.
+const offlineRoutePrefix = "$offlineroute/"
+
+// OfflineRouteKey builds the Offline Routing Index key for filter — used
+// both to register an offline owner (Subscribe/Unsubscribe) and to query
+// it (via OfflineNodesFor).
+func OfflineRouteKey(filter string) string {
+	return offlineRoutePrefix + filter
+}
+
+// OfflineNodesFor returns the node IDs owning at least one offline
+// session whose subscription filter matches topic — the Offline Routing
+// Index. Delegates to the same trie NodesFor uses, just under the
+// Offline Routing Index's namespace, so a publish's fan-out target list
+// is a single extra call away, no separate mechanism to maintain.
+func (r *Router) OfflineNodesFor(topic string) []string {
+	return r.NodesFor(OfflineRouteKey(topic), "")
+}
+
 // TopicsForNode returns every filter nodeID is currently registered
 // against, per this process's local cache (may lag a live write from
 // another node by up to the pub/sub propagation delay, or the

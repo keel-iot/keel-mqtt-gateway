@@ -50,6 +50,10 @@ type Registry interface {
 	// across the cluster. Non-shared subscriptions are unaffected: the
 	// full matching set is always returned.
 	NodesFor(topic, localNodeID string) []string
+	// OfflineNodesFor returns the node IDs owning at least one offline
+	// session matching topic — the Offline Routing Index, kept distinct
+	// from NodesFor's live-subscriber result (see routing.Router's doc).
+	OfflineNodesFor(topic string) []string
 	// ClaimSession records nodeID as clientID's owner (new connection
 	// always wins — see fsm.go's OpClaimSession). evictedFrom is the
 	// previous owner's node ID when it differs from nodeID, empty

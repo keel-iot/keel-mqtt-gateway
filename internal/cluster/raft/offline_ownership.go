@@ -1,6 +1,10 @@
 package raft
 
-import "encoding/base64"
+import (
+	"encoding/base64"
+
+	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/routing"
+)
 
 // offlineOwnerRegistry is the narrow slice of Registry's method set
 // OfflineOwnership needs — defined locally rather than depending on the
@@ -50,10 +54,22 @@ func (o *OfflineOwnership) CurrentOwner(clientID, filter string) (string, bool) 
 // owner at all — duplicates are tolerable (QoS1 already allows them by
 // spec; QoS2 closes the gap via PublishID dedup, see OfflineDelivery),
 // but a missed enqueue is not.
+//
+// Also registers newOwner in the Offline Routing Index (routing.OfflineRouteKey,
+// keyed by filter alone, shared across every client with that filter).
+// Deliberately add-only there: unlike the exact per-(clientID,filter) key
+// above, this one has no reference count, so unsubscribing the old owner
+// could remove an entry a different client on the same node still needs.
+// A stale entry only costs one harmless extra Forward to a node that
+// finds nothing to deliver; PurgeNode clears a dead node's entries on
+// crash regardless.
 func (o *OfflineOwnership) Place(clientID, filter, newOwner string) error {
 	key := offlineOwnerKey(clientID, filter)
 	old, hadOwner := o.CurrentOwner(clientID, filter)
 	if err := o.Registry.Subscribe(key, newOwner); err != nil {
+		return err
+	}
+	if err := o.Registry.Subscribe(routing.OfflineRouteKey(filter), newOwner); err != nil {
 		return err
 	}
 	if hadOwner && old != newOwner {

@@ -65,6 +65,10 @@ func (c *CoreRegistry) NodesFor(topic, localNodeID string) []string {
 	return c.router.NodesFor(topic, localNodeID)
 }
 
+func (c *CoreRegistry) OfflineNodesFor(topic string) []string {
+	return c.router.OfflineNodesFor(topic)
+}
+
 // UnsubscribeBatch removes multiple filters for nodeID in one routing
 // write — see routing.Router.UnsubscribeBatch.
 func (c *CoreRegistry) UnsubscribeBatch(topics []string, nodeID string) error {

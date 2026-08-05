@@ -309,3 +309,60 @@ func TestRouterSharedSubscriptionMixedWithRegular(t *testing.T) {
 	}
 	t.Fatalf("expected core-1 plus exactly one of core-2/core-3, got %v", nodes)
 }
+
+// waitForOfflineNodes mirrors waitForNodes for OfflineNodesFor.
+func waitForOfflineNodes(t *testing.T, r *Router, topic string, want []string) []string {
+	t.Helper()
+	wantSet := make(map[string]bool, len(want))
+	for _, n := range want {
+		wantSet[n] = true
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got []string
+	for time.Now().Before(deadline) {
+		got = r.OfflineNodesFor(topic)
+		if len(got) == len(wantSet) {
+			gotSet := make(map[string]bool, len(got))
+			for _, n := range got {
+				gotSet[n] = true
+			}
+			match := true
+			for n := range wantSet {
+				if !gotSet[n] {
+					match = false
+					break
+				}
+			}
+			if match {
+				return got
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("OfflineNodesFor(%q): timed out waiting for %v, last got %v", topic, want, got)
+	return nil
+}
+
+func TestRouterOfflineNodesFor_MatchesWildcard(t *testing.T) {
+	r := newTestRouter(t)
+	if err := r.Subscribe(OfflineRouteKey("telemetry/#"), "edge-1"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	waitForOfflineNodes(t, r, "telemetry/device-1", []string{"edge-1"})
+}
+
+// TestRouterOfflineNodesFor_NeverMatchesLiveRoutingIndex verifies the two
+// indices stay distinct: a live subscription to a real filter must never
+// show up in OfflineNodesFor's result for the same topic, and vice versa.
+func TestRouterOfflineNodesFor_NeverMatchesLiveRoutingIndex(t *testing.T) {
+	r := newTestRouter(t)
+	if err := r.Subscribe("telemetry/device-1", "edge-1"); err != nil {
+		t.Fatalf("subscribe (live): %v", err)
+	}
+	if err := r.Subscribe(OfflineRouteKey("telemetry/device-1"), "edge-2"); err != nil {
+		t.Fatalf("subscribe (offline route): %v", err)
+	}
+	waitForNodes(t, r, "telemetry/device-1", []string{"edge-1"})
+	waitForOfflineNodes(t, r, "telemetry/device-1", []string{"edge-2"})
+}

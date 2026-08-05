@@ -35,6 +35,7 @@ func newFakeACLRegistry() *fakeACLRegistry {
 func (f *fakeACLRegistry) Subscribe(topic, nodeID string) error        { return nil }
 func (f *fakeACLRegistry) Unsubscribe(topic, nodeID string) error      { return nil }
 func (f *fakeACLRegistry) NodesFor(topic, localNodeID string) []string { return nil }
+func (f *fakeACLRegistry) OfflineNodesFor(topic string) []string       { return nil }
 func (f *fakeACLRegistry) ClaimSession(clientID, nodeID string) (string, error) {
 	return "", nil
 }
