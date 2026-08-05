@@ -1,0 +1,50 @@
+# Compose override for the same-edge-node delivery benchmark: remaps every
+# host port to a free range (30xxx) so this run never collides with another
+# already-running stack based on docker-compose.core-edge-split.yml — see
+# the other test/e2e/*.override.yml files for the port-collision history
+# this convention avoids.
+#
+# edge-1 additionally gets KEEL_ENABLE_PPROF + its metrics/pprof port
+# published to the host: devicesim is pointed at edge-1 only (single
+# -brokers entry), so publisher and the one monitor-per-node subscriber are
+# both on edge-1 — pprof lets us confirm no goroutine is blocked on a
+# gRPC/Olric round-trip on that hot path (see "Test topologia core/edge
+# separata" in keel-design-doc.md for the same technique used on the
+# ProduceSync investigation).
+#
+# `!override` forces a wholesale replacement of each ports: list — compose
+# merges list-valued keys by concatenation otherwise.
+services:
+  postgres:
+    ports: !override
+      - "30532:5432"
+  redis-core-1:
+    ports: !override
+      - "30479:6379"
+  redis-core-2:
+    ports: !override
+      - "30480:6379"
+  redis-core-3:
+    ports: !override
+      - "30481:6379"
+  core-1:
+    ports: !override
+      - "30190:8090"
+  core-2:
+    ports: !override
+      - "30290:8090"
+  core-3:
+    ports: !override
+      - "30390:8090"
+  edge-1:
+    environment:
+      KEEL_ENABLE_PPROF: "true"
+    ports: !override
+      - "30183:1883"
+      - "30909:9090"
+  edge-2:
+    ports: !override
+      - "30283:1883"
+  edge-3:
+    ports: !override
+      - "30383:1883"
