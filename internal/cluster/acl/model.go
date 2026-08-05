@@ -72,13 +72,13 @@ type Role struct {
 	Rules []ACLRule `json:"rules"`
 }
 
-// Binding attaches a custom Role to a principal. Principal is whatever
-// identity string the broker hook resolves for a connection — today that's
-// the device UUID (auth.DeviceInfo.ID.String()) for device connections, or
-// another stable identifier for non-device principals (e.g. a named
-// test/service role). Bindings are always custom (never implicit); a
-// principal's standard-ruleset rules come from whichever rulesets are
-// enabled cluster-wide (see EnabledRulesets), not from a binding.
+// Binding attaches a custom Role to a principal. Principal is matched
+// against either the MQTT client ID or the username of the connection
+// (see FSM.evaluateACL) — never the resolved device UUID, regardless of
+// whether the connection is device auth. Bindings are always custom
+// (never implicit); a principal's standard-ruleset rules come from
+// whichever rulesets are enabled cluster-wide (see EnabledRulesets), not
+// from a binding.
 type Binding struct {
 	Principal string `json:"principal"`
 	RoleName  string `json:"role_name"`
