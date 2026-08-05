@@ -242,3 +242,37 @@ func TestEnqueueOfflineInflight_ReadableViaInflightForClient(t *testing.T) {
 		t.Fatalf("expected QoS 1, got %d", got.FixedHeader.Qos)
 	}
 }
+
+// TestProvides_NeverAdvertisesBootTimeRestore verifies the phase 6g
+// cutover: mochi-mqtt's own readStore() only calls StoredClients/
+// StoredSubscriptions/StoredInflightMessages when Provides() says yes to
+// them, so never advertising them here is what stops the fleet-wide
+// eager load at every boot.
+func TestProvides_NeverAdvertisesBootTimeRestore(t *testing.T) {
+	h := &RedisSessionHook{}
+	for _, b := range []byte{byte(mqtt.StoredClients), byte(mqtt.StoredSubscriptions), byte(mqtt.StoredInflightMessages)} {
+		if h.Provides(b) {
+			t.Fatalf("expected Provides(%d) to be false (boot-time restore must stay disabled)", b)
+		}
+	}
+}
+
+// TestProvides_StillAdvertisesLiveHooks guards against accidentally
+// dropping one of the capabilities RedisSessionHook still needs while
+// trimming the boot-time ones above.
+func TestProvides_StillAdvertisesLiveHooks(t *testing.T) {
+	h := &RedisSessionHook{}
+	for _, b := range []byte{
+		byte(mqtt.OnSessionEstablished),
+		byte(mqtt.OnDisconnect),
+		byte(mqtt.OnSubscribed),
+		byte(mqtt.OnUnsubscribed),
+		byte(mqtt.OnQosPublish),
+		byte(mqtt.OnQosComplete),
+		byte(mqtt.OnQosDropped),
+	} {
+		if !h.Provides(b) {
+			t.Fatalf("expected Provides(%d) to still be true", b)
+		}
+	}
+}

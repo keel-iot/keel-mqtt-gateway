@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Track B / task 1: measure QoS1 message loss when the edge node owning a
-# disconnected client's persistent session is killed unplanned (docker kill,
-# not a drain) — design doc risk #6.
+# Measure QoS1 message loss when the edge node owning a disconnected
+# client's persistent session is killed unplanned (docker kill, not a drain).
 #
 #   1. bring up the core/edge split cluster (docker-compose.core-edge-split.yml)
 #   2. register TWO independent persistent (clean_session=false) QoS1

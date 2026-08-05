@@ -61,6 +61,17 @@ func NewRedisSessionHook(router *redisrouter.Router, log *slog.Logger) *RedisSes
 
 func (h *RedisSessionHook) ID() string { return "keel-redis-session" }
 
+// Provides deliberately omits StoredClients/StoredSubscriptions/
+// StoredInflightMessages: mochi-mqtt's own readStore() would otherwise
+// eagerly load and materialize every persisted client fleet-wide as an
+// in-memory *mqtt.Client at every boot, regardless of whether this node
+// serves or owns any of them — the root cause of a real OOM incident.
+// Rehydration now happens lazily, per client, on actual reconnect (see
+// OnSessionEstablish), and offline delivery goes straight to Redis (see
+// DeliverOffline), so no in-memory Client is ever needed for a session
+// nobody is connected to. The three methods stay defined below (mqtt.Hook
+// requires them structurally) but are otherwise unreachable from
+// mochi-mqtt now; the first two are still used directly by OfflineInventory.
 func (h *RedisSessionHook) Provides(b byte) bool {
 	return bytes.Contains([]byte{
 		byte(mqtt.OnSessionEstablished),
@@ -70,9 +81,6 @@ func (h *RedisSessionHook) Provides(b byte) bool {
 		byte(mqtt.OnQosPublish),
 		byte(mqtt.OnQosComplete),
 		byte(mqtt.OnQosDropped),
-		byte(mqtt.StoredClients),
-		byte(mqtt.StoredInflightMessages),
-		byte(mqtt.StoredSubscriptions),
 	}, []byte{b})
 }
 
