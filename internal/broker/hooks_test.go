@@ -41,6 +41,15 @@ type fakeRegistry struct {
 	// specific identities; nil means "nothing is revoked" (the common
 	// case other tests in this file rely on).
 	revokedIdentities map[string]bool
+
+	// nodesFor/offlineNodesFor, when non-nil, control NodesFor/
+	// OfflineNodesFor's per-topic answer; a missing topic key returns nil,
+	// same as the zero-value fake other tests in this file rely on.
+	nodesFor        map[string][]string
+	offlineNodesFor map[string][]string
+	// ownedClientIDs, when non-nil, controls OwnedClientIDs' per-node
+	// answer.
+	ownedClientIDs map[string][]string
 }
 
 type releaseCall struct {
@@ -58,9 +67,9 @@ func (f *fakeRegistry) Unsubscribe(topic, nodeID string) error {
 	f.unsubscribeCalls = append(f.unsubscribeCalls, unsubscribeCall{topic, nodeID})
 	return nil
 }
-func (f *fakeRegistry) NodesFor(topic, localNodeID string) []string { return nil }
-func (f *fakeRegistry) OfflineNodesFor(topic string) []string       { return nil }
-func (f *fakeRegistry) OwnedClientIDs(nodeID string) []string       { return nil }
+func (f *fakeRegistry) NodesFor(topic, localNodeID string) []string { return f.nodesFor[topic] }
+func (f *fakeRegistry) OfflineNodesFor(topic string) []string       { return f.offlineNodesFor[topic] }
+func (f *fakeRegistry) OwnedClientIDs(nodeID string) []string       { return f.ownedClientIDs[nodeID] }
 func (f *fakeRegistry) ClaimSession(clientID, nodeID string) (string, error) {
 	if f.claimFn != nil {
 		return f.claimFn(clientID, nodeID)
@@ -85,16 +94,25 @@ func (f *fakeRegistry) IsRevoked(identity string) bool      { return f.revokedId
 // owner to disconnect its local client, instead of silently allowing two
 // nodes to both believe they own the same client_id.
 type fakeForwarder struct {
-	mu         sync.Mutex
-	evictCalls []evictCall
-	evictErr   error
+	mu           sync.Mutex
+	evictCalls   []evictCall
+	evictErr     error
+	forwardCalls []forwardCall
 }
 
 type evictCall struct {
 	targetNodeID, clientID string
 }
 
+type forwardCall struct {
+	targetNodeID string
+	msg          *dataplane.Message
+}
+
 func (f *fakeForwarder) Forward(ctx context.Context, targetNodeID string, msg *dataplane.Message) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forwardCalls = append(f.forwardCalls, forwardCall{targetNodeID, msg})
 	return nil
 }
 func (f *fakeForwarder) Subscribe(handler func(*dataplane.Message)) error { return nil }
@@ -929,4 +947,71 @@ func TestOnSessionEstablish_NoOfflineOwnership_Noop(t *testing.T) {
 
 	cl := server.NewClient(nil, "tcp", "device-1", false)
 	h.OnSessionEstablish(cl, packets.Packet{Connect: packets.ConnectParams{Clean: false}}) // must not panic
+}
+
+func TestFanOutNodes_UnionsLiveAndOfflineWithoutDuplicates(t *testing.T) {
+	reg := &fakeRegistry{
+		nodesFor:        map[string][]string{"telemetry/device-1": {"edge-1", "edge-2"}},
+		offlineNodesFor: map[string][]string{"telemetry/device-1": {"edge-2", "edge-3"}},
+	}
+	h := newClusterTestHook(reg, &fakeForwarder{}, "self")
+
+	got := h.fanOutNodes("telemetry/device-1")
+
+	want := map[string]bool{"edge-1": true, "edge-2": true, "edge-3": true}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for _, n := range got {
+		if !want[n] {
+			t.Fatalf("unexpected node %q in %v", n, got)
+		}
+	}
+}
+
+func TestFanOutNodes_NoOfflineOwners_ReturnsLiveOnly(t *testing.T) {
+	reg := &fakeRegistry{
+		nodesFor: map[string][]string{"telemetry/device-1": {"edge-1"}},
+	}
+	h := newClusterTestHook(reg, &fakeForwarder{}, "self")
+
+	got := h.fanOutNodes("telemetry/device-1")
+	if len(got) != 1 || got[0] != "edge-1" {
+		t.Fatalf("expected [edge-1], got %v", got)
+	}
+}
+
+// TestForwardToClusterSubscribers_DeliversLocallyOwnedOfflineSession
+// verifies a session this node owns is delivered directly (no
+// self-forward), while a remote live subscriber still gets a real
+// Forward call carrying a non-zero PublishID.
+func TestForwardToClusterSubscribers_DeliversLocallyOwnedOfflineSession(t *testing.T) {
+	reg := &fakeRegistry{
+		nodesFor:       map[string][]string{"telemetry/device-1": {"edge-9"}},
+		ownedClientIDs: map[string][]string{"self": {"device-2"}},
+	}
+	fwd := &fakeForwarder{}
+	h := newClusterTestHook(reg, fwd, "self")
+	store := newFakeOfflineDeliveryStore()
+	store.sessions["device-2"] = session.OfflineSession{
+		ClientID:      "device-2",
+		Subscriptions: []session.OfflineSubscription{{Filter: "telemetry/#", QoS: 1}},
+	}
+	h.offlineDeliveryStore = store
+
+	info := &auth.DeviceInfo{TenantID: uuid.MustParse("11111111-1111-1111-1111-111111111111")}
+	pk := packets.Packet{TopicName: "telemetry/device-1", Payload: []byte("23.5"), FixedHeader: packets.FixedHeader{Qos: 1}}
+	h.forwardToClusterSubscribers(context.Background(), info, pk)
+
+	if len(store.enqueued) != 1 || store.enqueued[0] != "device-2" {
+		t.Fatalf("expected device-2 delivered locally, got %v", store.enqueued)
+	}
+
+	calls := fwd.forwardCalls
+	if len(calls) != 1 || calls[0].targetNodeID != "edge-9" {
+		t.Fatalf("expected exactly 1 Forward call to edge-9, got %+v", calls)
+	}
+	if calls[0].msg.PublishID == uuid.Nil {
+		t.Fatalf("expected a non-zero PublishID on the forwarded message")
+	}
 }

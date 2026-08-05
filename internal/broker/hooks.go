@@ -74,6 +74,15 @@ type keelHook struct {
 	offlineOwnership offlineOwnershipStore
 	liveEdgeNodeIDs  func() []string
 
+	// offlineDeliveryStore backs DeliverOffline for this node's own
+	// locally-owned offline sessions (see OnPublish) — the same Redis
+	// access sessionStore already uses, just the offline-delivery method
+	// subset. Nil when Redis isn't configured (standalone mode); every
+	// call site guards for nil.
+	offlineDeliveryStore offlineDeliveryStore
+	// offlineDedupTTL bounds DeliverOffline's MarkDelivered markers.
+	offlineDedupTTL time.Duration
+
 	// server is this node's own mochi-mqtt server, wired in broker.New right
 	// after construction — used by OnSessionEstablish to check whether THIS
 	// node already has local state for a reconnecting persistent session
@@ -983,16 +992,37 @@ func (h *keelHook) OnUnsubscribed(cl *mqtt.Client, pk packets.Packet) {
 	}
 }
 
-// forwardToClusterSubscribers looks up which other nodes own a subscriber
-// for pk.TopicName and forwards the payload to each over the cluster data
-// plane. The inbound side (dataplane.Forwarder.Subscribe handler,
-// registered in cmd/server) republishes it into the receiving node's
-// local mochi-mqtt server so its own connected clients get it.
+// forwardToClusterSubscribers looks up which other nodes own a live
+// subscriber or an offline session matching pk.TopicName and forwards
+// the payload to each over the cluster data plane. The inbound side
+// (dataplane.Forwarder.Subscribe handler, registered in cmd/server)
+// republishes it into the receiving node's local mochi-mqtt server (live
+// subscribers) and runs DeliverOffline (owned offline sessions).
+//
+// PublishID is generated once here — the only place mochi-mqtt dispatches
+// OnPublish for this message — and never regenerated downstream; it
+// identifies this MQTT PUBLISH event, not its content, so DeliverOffline
+// can dedup a delivery attempt that reaches the same session twice (see
+// OfflineOwnership.Place's handoff window).
 func (h *keelHook) forwardToClusterSubscribers(ctx context.Context, info *auth.DeviceInfo, pk packets.Packet) {
-	if h.clusterRegistry == nil || h.clusterFwd == nil {
+	if h.clusterRegistry == nil {
 		return
 	}
-	nodes := h.clusterRegistry.NodesFor(pk.TopicName, h.clusterNodeID)
+
+	publishID, err := uuid.NewV7()
+	if err != nil {
+		h.log.Warn("cluster: publish id generation failed, offline delivery dedup disabled for this message", "error", err)
+	}
+
+	// This node's own owned offline sessions, if any — never needs a
+	// network round trip, so it's handled directly rather than via a
+	// self-addressed Forward call below.
+	DeliverOffline(ctx, h.clusterRegistry, h.offlineDeliveryStore, h.clusterNodeID, publishID, pk.TopicName, pk.Payload, pk.FixedHeader.Qos, h.offlineDedupTTL, h.log)
+
+	if h.clusterFwd == nil {
+		return
+	}
+	nodes := h.fanOutNodes(pk.TopicName)
 	if len(nodes) == 0 {
 		return
 	}
@@ -1002,15 +1032,43 @@ func (h *keelHook) forwardToClusterSubscribers(ctx context.Context, info *auth.D
 		Topic:        pk.TopicName,
 		Payload:      pk.Payload,
 		QoS:          pk.FixedHeader.Qos,
+		PublishID:    publishID,
 	}
 	for _, nodeID := range nodes {
 		if nodeID == h.clusterNodeID {
-			continue // local subscribers are already served by mochi-mqtt itself
+			continue // handled directly above, no self-forward
 		}
 		if err := h.clusterFwd.Forward(ctx, nodeID, msg); err != nil {
 			h.log.Error("cluster: forward publish failed", "target_node", nodeID, "topic", pk.TopicName, "error", err)
 		}
 	}
+}
+
+// fanOutNodes returns the union of live-subscriber nodes (NodesFor) and
+// offline-session-owner nodes (OfflineNodesFor) for topic — two distinct
+// indices (see keelraft.Registry's doc), combined here only for this
+// forward's target list, never merged in the registry itself.
+func (h *keelHook) fanOutNodes(topic string) []string {
+	live := h.clusterRegistry.NodesFor(topic, h.clusterNodeID)
+	offline := h.clusterRegistry.OfflineNodesFor(topic)
+	if len(offline) == 0 {
+		return live
+	}
+	seen := make(map[string]struct{}, len(live)+len(offline))
+	out := make([]string, 0, len(live)+len(offline))
+	for _, n := range live {
+		if _, dup := seen[n]; !dup {
+			seen[n] = struct{}{}
+			out = append(out, n)
+		}
+	}
+	for _, n := range offline {
+		if _, dup := seen[n]; !dup {
+			seen[n] = struct{}{}
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // forwardToOutputConnector fans a device publish out to every configured

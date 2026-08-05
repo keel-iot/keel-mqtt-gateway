@@ -455,6 +455,25 @@ type clusterFlags struct {
 	// interval for session.Reconciler. Core only, same core-decides/
 	// edge-executes split every other control-plane loop here follows.
 	offlineSessionReconcilerInterval time.Duration
+
+	// offlineDedupTTL bounds broker.DeliverOffline's MarkDelivered
+	// markers. Zero (default) derives it from
+	// offlineSessionReconcilerInterval instead of a fixed constant — see
+	// resolveOfflineDedupTTL — since the window it needs to outlive (the
+	// offline-ownership handoff) scales with that interval, not with a
+	// number picked in isolation.
+	offlineDedupTTL time.Duration
+}
+
+// resolveOfflineDedupTTL returns configured if set, otherwise a multiple
+// of reconcilerInterval — the dedup marker only needs to outlive the
+// offline-ownership handoff window (bounded by how often the reconciler
+// runs), not survive indefinitely.
+func resolveOfflineDedupTTL(configured, reconcilerInterval time.Duration) time.Duration {
+	if configured > 0 {
+		return configured
+	}
+	return 2 * reconcilerInterval
 }
 
 func parseClusterFlags() clusterFlags {
@@ -498,6 +517,7 @@ func parseClusterFlags() clusterFlags {
 	flag.DurationVar(&f.rebalanceScheduleInterval, "rebalance-schedule-interval", 10*time.Minute, "core only: interval between automatic rebalance passes when --rebalance-schedule-enabled")
 	flag.BoolVar(&f.rebalanceScheduleDryRun, "rebalance-schedule-dry-run", false, "core only: log what the scheduled rebalance would do without actually evicting anyone — recommended when first enabling --rebalance-schedule-enabled on a cluster")
 	flag.DurationVar(&f.offlineSessionReconcilerInterval, "offline-session-reconciler-interval", 20*time.Second, "core only: base (pre-jitter) interval session.Reconciler recomputes and re-asserts each offline session's owner")
+	flag.DurationVar(&f.offlineDedupTTL, "offline-dedup-ttl", 0, "how long an offline-delivery dedup marker survives (0 = 2x --offline-session-reconciler-interval)")
 	flag.StringVar(&f.rebalanceExcludeClientIDs, "rebalance-exclude-client-ids", "", "core only: comma-separated client_ids never selected for eviction by POST /api/cluster/rebalance or the scheduler (e.g. a shared bridge-consumer account) — still counted toward each node's connection total")
 	flag.Parse()
 
@@ -1161,6 +1181,7 @@ func runServer() {
 		if clusterMembership != nil {
 			liveEdgeNodeIDsFn = func() []string { return lifecycle.LiveEdgeNodeIDs(clusterMembership.Members()) }
 		}
+		offlineDedupTTL := resolveOfflineDedupTTL(cf.offlineDedupTTL, cf.offlineSessionReconcilerInterval)
 
 		mqttServer, certReloader, err = broker.New(broker.Config{
 			MQTTPort:              cfg.MQTTPort,
@@ -1180,6 +1201,7 @@ func runServer() {
 			SessionExpiryInterval: cfg.SessionExpiryInterval,
 			LiveStats:             liveStats,
 			LiveEdgeNodeIDs:       liveEdgeNodeIDsFn,
+			OfflineDedupTTL:       offlineDedupTTL,
 		}, provider, log)
 		if err != nil {
 			log.Error("create MQTT broker", "error", err)
@@ -1236,13 +1258,27 @@ func runServer() {
 		liveHandlers.Register(metricsMux)
 
 		// Inbound side of the cluster data plane: a message another node
-		// forwarded to us (because we own a local subscriber for its topic)
-		// gets republished into this node's own mochi-mqtt server, which
-		// delivers it exactly like any other local publish.
+		// forwarded to us gets republished into this node's own mochi-mqtt
+		// server (live subscribers) and checked against this node's own
+		// owned offline sessions (DeliverOffline) — the same split as the
+		// outbound fan-out in hooks.go's forwardToClusterSubscribers.
 		if gForwarder != nil {
+			var inboundOfflineStore *broker.RedisSessionHook
+			if rdb != nil {
+				inboundOfflineStore = broker.NewRedisSessionHook(rdb, log)
+			}
 			_ = gForwarder.Subscribe(func(msg *dataplane.Message) {
 				if err := mqttServer.Publish(msg.Topic, msg.Payload, false, msg.QoS); err != nil {
 					log.Error("cluster: publish forwarded message locally", "topic", msg.Topic, "error", err)
+				}
+				// Typed-nil guard (see broker.go's own comment on the same
+				// issue): only pass inboundOfflineStore through as the
+				// offlineDeliveryStore interface when it's genuinely
+				// non-nil, since a nil *RedisSessionHook wrapped in a
+				// non-nil interface value would defeat DeliverOffline's
+				// own nil check.
+				if inboundOfflineStore != nil {
+					broker.DeliverOffline(context.Background(), clusterRegistry, inboundOfflineStore, cf.nodeID, msg.PublishID, msg.Topic, msg.Payload, msg.QoS, offlineDedupTTL, log)
 				}
 			})
 

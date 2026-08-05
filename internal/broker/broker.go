@@ -84,6 +84,11 @@ type Config struct {
 	// session.Reconciler still catches up on its own next tick.
 	LiveEdgeNodeIDs func() []string
 
+	// OfflineDedupTTL bounds DeliverOffline's MarkDelivered markers — see
+	// that function's doc. Zero uses session.OfflineDelivery's own
+	// caller-supplied default (see cmd/server/main.go's wiring).
+	OfflineDedupTTL time.Duration
+
 	// OutputConnectors forward device messages to external systems (e.g.,
 	// Ditto via Hono Kafka, or an attached plugin sidecar — see
 	// internal/connector/pluginhost). Each entry is fanned out to
@@ -184,12 +189,14 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 		liveStats:        cfg.LiveStats,
 		defaultTenantID:  cfg.DefaultTenantID,
 		liveEdgeNodeIDs:  cfg.LiveEdgeNodeIDs,
+		offlineDedupTTL:  cfg.OfflineDedupTTL,
 	}
 	// Typed nil guard: an interface value holding a nil *RedisSessionHook is
 	// itself non-nil, which would defeat OnSessionEstablish's `h.sessionStore
 	// == nil` check — only assign when Redis is actually configured.
 	if redisHook != nil {
 		hook.sessionStore = redisHook
+		hook.offlineDeliveryStore = redisHook
 	}
 	// Same typed-nil concern as above: only assign when there's an actual
 	// cluster registry to back it (offline-session ownership is meaningless
