@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -365,4 +366,55 @@ func TestRouterOfflineNodesFor_NeverMatchesLiveRoutingIndex(t *testing.T) {
 	}
 	waitForNodes(t, r, "telemetry/device-1", []string{"edge-1"})
 	waitForOfflineNodes(t, r, "telemetry/device-1", []string{"edge-2"})
+}
+
+func TestOwnershipKey_DeterministicAndUnique(t *testing.T) {
+	k1 := OwnershipKey("device-1", "telemetry/#")
+	k2 := OwnershipKey("device-1", "telemetry/#")
+	if k1 != k2 {
+		t.Fatalf("expected deterministic key, got %q != %q", k1, k2)
+	}
+	k3 := OwnershipKey("device-2", "telemetry/#")
+	if k1 == k3 {
+		t.Fatalf("expected different clientIDs to produce different keys")
+	}
+	if !strings.HasPrefix(k1, "$offline/") {
+		t.Fatalf("expected $offline/ prefix, got %q", k1)
+	}
+	for _, seg := range strings.Split(k1, "/") {
+		if seg == "+" || seg == "#" {
+			t.Fatalf("key must never contain a bare wildcard level, got %q in %q", seg, k1)
+		}
+	}
+}
+
+func TestRouterOwnedClientIDs_DedupesAcrossFilters(t *testing.T) {
+	r := newTestRouter(t)
+	if err := r.Subscribe(OwnershipKey("device-1", "telemetry/#"), "edge-1"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := r.Subscribe(OwnershipKey("device-1", "cmd/device-1"), "edge-1"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := r.Subscribe(OwnershipKey("device-2", "telemetry/#"), "edge-2"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var owned []string
+	for time.Now().Before(deadline) {
+		owned = r.OwnedClientIDs("edge-1")
+		if len(owned) == 1 && owned[0] == "device-1" {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("expected exactly [device-1] (deduplicated across its two filters), got %v", owned)
+}
+
+func TestRouterOwnedClientIDs_NoEntries_ReturnsEmptyNotNil(t *testing.T) {
+	r := newTestRouter(t)
+	if owned := r.OwnedClientIDs("edge-1"); len(owned) != 0 {
+		t.Fatalf("expected no owned clientIDs, got %v", owned)
+	}
 }

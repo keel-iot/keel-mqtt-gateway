@@ -16,6 +16,7 @@ package routing
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -269,6 +270,62 @@ func OfflineRouteKey(filter string) string {
 // is a single extra call away, no separate mechanism to maintain.
 func (r *Router) OfflineNodesFor(topic string) []string {
 	return r.NodesFor(OfflineRouteKey(topic), "")
+}
+
+// ownershipKeyPrefix namespaces the Ownership Index — exact per
+// (clientID, filter) ownership, never matched via wildcard, only ever
+// looked up by its exact key or enumerated via OwnedClientIDs below.
+const ownershipKeyPrefix = "$offline/"
+
+// OwnershipKey encodes (clientID, filter) as one opaque topic level.
+// Deliberately one opaque base64 level, not clientID+"/"+filter: NodesFor
+// does real wildcard matching, so a raw "+" or "#" segment could
+// cross-match a different client's filter. base64.RawURLEncoding never
+// emits '+', '/', or '=', so the level can't ever be a wildcard, and the
+// "$" prefix keeps it outside any real client's wildcard subscriptions.
+func OwnershipKey(clientID, filter string) string {
+	return ownershipKeyPrefix + base64.RawURLEncoding.EncodeToString([]byte(clientID+"\x00"+filter))
+}
+
+// ownershipKeyClientID recovers clientID from a key built by OwnershipKey,
+// discarding the filter — all OwnedClientIDs needs.
+func ownershipKeyClientID(key string) (clientID string, ok bool) {
+	if !strings.HasPrefix(key, ownershipKeyPrefix) {
+		return "", false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(key, ownershipKeyPrefix))
+	if err != nil {
+		return "", false
+	}
+	i := strings.IndexByte(string(raw), 0)
+	if i < 0 {
+		return "", false
+	}
+	return string(raw[:i]), true
+}
+
+// OwnedClientIDs returns every distinct clientID this node owns at least
+// one offline-session filter for — the Edge Ownership Index, materialized
+// view of the reconciler's own placement decisions (Ownership Index
+// above), not a separate write: nothing extra is registered for this,
+// it's a filtered, deduplicated read over the same entries Place already
+// maintains precisely.
+func (r *Router) OwnedClientIDs(nodeID string) []string {
+	topics := r.TopicsForNode(nodeID)
+	seen := make(map[string]struct{}, len(topics))
+	out := make([]string, 0, len(topics))
+	for _, t := range topics {
+		clientID, ok := ownershipKeyClientID(t)
+		if !ok {
+			continue
+		}
+		if _, dup := seen[clientID]; dup {
+			continue
+		}
+		seen[clientID] = struct{}{}
+		out = append(out, clientID)
+	}
+	return out
 }
 
 // TopicsForNode returns every filter nodeID is currently registered

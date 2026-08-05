@@ -54,6 +54,11 @@ type Registry interface {
 	// session matching topic — the Offline Routing Index, kept distinct
 	// from NodesFor's live-subscriber result (see routing.Router's doc).
 	OfflineNodesFor(topic string) []string
+	// OwnedClientIDs returns every clientID this node currently owns at
+	// least one offline-session filter for — the Edge Ownership Index, a
+	// filtered read over the same entries Subscribe/Unsubscribe above
+	// already maintain precisely, not a separate write.
+	OwnedClientIDs(nodeID string) []string
 	// ClaimSession records nodeID as clientID's owner (new connection
 	// always wins — see fsm.go's OpClaimSession). evictedFrom is the
 	// previous owner's node ID when it differs from nodeID, empty

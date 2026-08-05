@@ -2,7 +2,6 @@ package raft
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/routing"
@@ -267,25 +266,5 @@ func TestOfflineOwnership_Clear_NothingRegistered_NoOp(t *testing.T) {
 
 	if err := o.Clear("device-1", "telemetry/#"); err != nil {
 		t.Fatalf("expected no error clearing an unregistered (clientID, filter), got %v", err)
-	}
-}
-
-func TestOfflineOwnerKey_DeterministicAndUnique(t *testing.T) {
-	k1 := offlineOwnerKey("device-1", "telemetry/#")
-	k2 := offlineOwnerKey("device-1", "telemetry/#")
-	if k1 != k2 {
-		t.Fatalf("expected deterministic key, got %q != %q", k1, k2)
-	}
-	k3 := offlineOwnerKey("device-2", "telemetry/#")
-	if k1 == k3 {
-		t.Fatalf("expected different clientIDs to produce different keys")
-	}
-	if !strings.HasPrefix(k1, "$offline/") {
-		t.Fatalf("expected $offline/ prefix, got %q", k1)
-	}
-	for _, seg := range strings.Split(k1, "/") {
-		if seg == "+" || seg == "#" {
-			t.Fatalf("key must never contain a bare wildcard level, got %q in %q", seg, k1)
-		}
 	}
 }

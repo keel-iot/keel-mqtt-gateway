@@ -1,8 +1,6 @@
 package raft
 
 import (
-	"encoding/base64"
-
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/routing"
 )
 
@@ -17,17 +15,6 @@ type offlineOwnerRegistry interface {
 	NodesFor(topic, localNodeID string) []string
 }
 
-// offlineOwnerKey encodes (clientID, filter) as one opaque MQTT topic
-// level under "$offline/", reusing the routing table as the ownership
-// store instead of adding a new one. Not clientID+"/"+filter: NodesFor
-// does real wildcard matching, so a raw "+" or "#" segment could
-// cross-match a different client's filter. base64.RawURLEncoding never
-// emits '+', '/', or '=', so the level can't ever be a wildcard, and the
-// "$" prefix keeps it outside any real client's wildcard subscriptions.
-func offlineOwnerKey(clientID, filter string) string {
-	return "$offline/" + base64.RawURLEncoding.EncodeToString([]byte(clientID+"\x00"+filter))
-}
-
 // OfflineOwnership backs session.Reconciler's CurrentOwner/Place against
 // this node's routing Registry — no separate storage, since ownership is
 // a derived fact (session.Owner's hash), not state kept in sync on the
@@ -40,7 +27,7 @@ type OfflineOwnership struct {
 // CurrentOwner reports the node currently registered as clientID's owner
 // for filter, if any.
 func (o *OfflineOwnership) CurrentOwner(clientID, filter string) (string, bool) {
-	nodes := o.Registry.NodesFor(offlineOwnerKey(clientID, filter), "")
+	nodes := o.Registry.NodesFor(routing.OwnershipKey(clientID, filter), "")
 	if len(nodes) == 0 {
 		return "", false
 	}
@@ -64,7 +51,7 @@ func (o *OfflineOwnership) CurrentOwner(clientID, filter string) (string, bool) 
 // finds nothing to deliver; PurgeNode clears a dead node's entries on
 // crash regardless.
 func (o *OfflineOwnership) Place(clientID, filter, newOwner string) error {
-	key := offlineOwnerKey(clientID, filter)
+	key := routing.OwnershipKey(clientID, filter)
 	old, hadOwner := o.CurrentOwner(clientID, filter)
 	if err := o.Registry.Subscribe(key, newOwner); err != nil {
 		return err
@@ -86,5 +73,5 @@ func (o *OfflineOwnership) Clear(clientID, filter string) error {
 	if !ok {
 		return nil
 	}
-	return o.Registry.Unsubscribe(offlineOwnerKey(clientID, filter), old)
+	return o.Registry.Unsubscribe(routing.OwnershipKey(clientID, filter), old)
 }

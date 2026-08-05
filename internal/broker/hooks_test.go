@@ -60,6 +60,7 @@ func (f *fakeRegistry) Unsubscribe(topic, nodeID string) error {
 }
 func (f *fakeRegistry) NodesFor(topic, localNodeID string) []string { return nil }
 func (f *fakeRegistry) OfflineNodesFor(topic string) []string       { return nil }
+func (f *fakeRegistry) OwnedClientIDs(nodeID string) []string       { return nil }
 func (f *fakeRegistry) ClaimSession(clientID, nodeID string) (string, error) {
 	if f.claimFn != nil {
 		return f.claimFn(clientID, nodeID)
