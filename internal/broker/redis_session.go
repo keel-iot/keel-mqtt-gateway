@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/google/uuid"
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/hooks/storage"
 	"github.com/mochi-mqtt/server/v2/packets"
@@ -306,6 +307,34 @@ func (h *RedisSessionHook) OwnedOfflineSessions(ownedClientIDs []string) ([]sess
 		out = append(out, session.FromStorage(clientID, subs))
 	}
 	return out, nil
+}
+
+// redisDedupKeyPrefix namespaces the offline-delivery dedup markers below
+// from the CL/SUB/IFM/PKID hashes.
+const redisDedupKeyPrefix = redisKeyPrefix + "PUBDEDUP:"
+
+// MarkDelivered records that publishID has been delivered to clientID,
+// returning true the first time (the caller should proceed with
+// delivery) and false if it was already marked (a duplicate delivery
+// attempt for the same MQTT PUBLISH event, e.g. during the brief window
+// where two nodes are both registered as offline owner — see
+// OfflineOwnership.Place). ttl bounds how long the marker survives; it
+// only needs to outlive that handoff window, not the message itself.
+//
+// A zero publishID (no PublishID was ever set — e.g. a peer mid rolling
+// upgrade that predates this field) always returns true: there is
+// nothing to dedup against, so the caller proceeds and accepts the
+// at-least-once delivery QoS1/2 already tolerate.
+func (h *RedisSessionHook) MarkDelivered(ctx context.Context, publishID uuid.UUID, clientID string, ttl time.Duration) (firstTime bool, err error) {
+	if publishID == uuid.Nil {
+		return true, nil
+	}
+	key := redisDedupKeyPrefix + publishID.String() + ":" + clientID
+	ok, err := h.router.Client().SetNX(ctx, key, 1, ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("redis session: mark delivered: %w", err)
+	}
+	return ok, nil
 }
 
 // StoredInflightMessages returns all in-flight messages persisted in Redis.

@@ -4,7 +4,9 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/packets"
 
@@ -154,6 +156,62 @@ func TestOwnedOfflineSessions_EmptyInput_ReturnsEmptyNotNil(t *testing.T) {
 	}
 	if len(owned) != 0 {
 		t.Fatalf("expected no owned sessions, got %+v", owned)
+	}
+}
+
+func TestMarkDelivered_FirstTimeTrue_SecondTimeFalse(t *testing.T) {
+	h, ctx := newTestRedisSessionHook(t)
+	publishID := uuid.New()
+
+	first, err := h.MarkDelivered(ctx, publishID, "device-1", time.Minute)
+	if err != nil {
+		t.Fatalf("MarkDelivered: %v", err)
+	}
+	if !first {
+		t.Fatalf("expected true (first time), got false")
+	}
+
+	second, err := h.MarkDelivered(ctx, publishID, "device-1", time.Minute)
+	if err != nil {
+		t.Fatalf("MarkDelivered: %v", err)
+	}
+	if second {
+		t.Fatalf("expected false (already marked), got true")
+	}
+}
+
+func TestMarkDelivered_DifferentClientsIndependent(t *testing.T) {
+	h, ctx := newTestRedisSessionHook(t)
+	publishID := uuid.New()
+
+	if _, err := h.MarkDelivered(ctx, publishID, "device-1", time.Minute); err != nil {
+		t.Fatalf("MarkDelivered: %v", err)
+	}
+	first, err := h.MarkDelivered(ctx, publishID, "device-2", time.Minute)
+	if err != nil {
+		t.Fatalf("MarkDelivered: %v", err)
+	}
+	if !first {
+		t.Fatalf("expected true for a different clientID with the same publishID, got false")
+	}
+}
+
+func TestMarkDelivered_ZeroPublishID_AlwaysTrue(t *testing.T) {
+	h, ctx := newTestRedisSessionHook(t)
+
+	first, err := h.MarkDelivered(ctx, uuid.Nil, "device-1", time.Minute)
+	if err != nil {
+		t.Fatalf("MarkDelivered: %v", err)
+	}
+	if !first {
+		t.Fatalf("expected true (nothing to dedup against), got false")
+	}
+	second, err := h.MarkDelivered(ctx, uuid.Nil, "device-1", time.Minute)
+	if err != nil {
+		t.Fatalf("MarkDelivered: %v", err)
+	}
+	if !second {
+		t.Fatalf("expected true again — zero PublishID never dedups, got false")
 	}
 }
 

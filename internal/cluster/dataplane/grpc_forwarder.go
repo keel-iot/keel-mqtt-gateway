@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -75,12 +76,18 @@ func (s *dataplaneServer) Forward(_ context.Context, req *pb.ForwardRequest) (*p
 	h := f.handler
 	f.handlerMu.RUnlock()
 	if h != nil {
+		// Zero UUID on parse failure (e.g. empty from an old peer mid
+		// rolling-upgrade) — offline delivery dedup treats a zero
+		// PublishID as "unknown, skip dedup" rather than dropping the
+		// message.
+		publishID, _ := uuid.Parse(req.GetPublishId())
 		h(&Message{
 			SourceNodeID: req.GetSourceNodeId(),
 			TenantID:     req.GetTenantId(),
 			Topic:        req.GetTopic(),
 			Payload:      req.GetPayload(),
 			QoS:          byte(req.GetQos()),
+			PublishID:    publishID,
 		})
 	}
 	return &pb.ForwardResponse{}, nil
@@ -131,6 +138,7 @@ func (f *GRPCForwarder) Forward(ctx context.Context, targetNodeID string, msg *M
 		Topic:        msg.Topic,
 		Payload:      msg.Payload,
 		Qos:          uint32(msg.QoS),
+		PublishId:    msg.PublishID.String(),
 	})
 	if err != nil {
 		return fmt.Errorf("dataplane: forward to %s (%s): %w", targetNodeID, addr, err)
