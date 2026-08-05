@@ -14,6 +14,7 @@ type fakeOfflineOwnerRegistry struct {
 	byTopic  map[string][]string
 	subErr   error
 	unsubErr error
+	events   []string // "subscribe:nodeID" / "unsubscribe:nodeID", in call order
 }
 
 func newFakeOfflineOwnerRegistry() *fakeOfflineOwnerRegistry {
@@ -21,6 +22,7 @@ func newFakeOfflineOwnerRegistry() *fakeOfflineOwnerRegistry {
 }
 
 func (f *fakeOfflineOwnerRegistry) Subscribe(topic, nodeID string) error {
+	f.events = append(f.events, "subscribe:"+nodeID)
 	if f.subErr != nil {
 		return f.subErr
 	}
@@ -34,6 +36,7 @@ func (f *fakeOfflineOwnerRegistry) Subscribe(topic, nodeID string) error {
 }
 
 func (f *fakeOfflineOwnerRegistry) Unsubscribe(topic, nodeID string) error {
+	f.events = append(f.events, "unsubscribe:"+nodeID)
 	if f.unsubErr != nil {
 		return f.unsubErr
 	}
@@ -84,6 +87,33 @@ func TestOfflineOwnership_PlaceMovesOwnership_RemovesOldRegistration(t *testing.
 	owner, ok := o.CurrentOwner("device-1", "telemetry/#")
 	if !ok || owner != "edge-2" {
 		t.Fatalf("expected edge-2 after move, got %q ok=%v", owner, ok)
+	}
+}
+
+// TestOfflineOwnership_Place_SubscribesNewOwnerBeforeUnsubscribingOld
+// verifies the handoff window favors a brief duplicate over any gap with
+// no owner at all: Subscribe(new) must happen before Unsubscribe(old).
+func TestOfflineOwnership_Place_SubscribesNewOwnerBeforeUnsubscribingOld(t *testing.T) {
+	reg := newFakeOfflineOwnerRegistry()
+	o := &OfflineOwnership{Registry: reg}
+
+	if err := o.Place("device-1", "telemetry/#", "edge-1"); err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+	reg.events = nil // only care about the move below
+
+	if err := o.Place("device-1", "telemetry/#", "edge-2"); err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+
+	want := []string{"subscribe:edge-2", "unsubscribe:edge-1"}
+	if len(reg.events) != len(want) {
+		t.Fatalf("expected events %v, got %v", want, reg.events)
+	}
+	for i, ev := range want {
+		if reg.events[i] != ev {
+			t.Fatalf("expected events %v, got %v", want, reg.events)
+		}
 	}
 }
 

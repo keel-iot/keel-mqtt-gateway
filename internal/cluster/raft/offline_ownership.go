@@ -44,16 +44,22 @@ func (o *OfflineOwnership) CurrentOwner(clientID, filter string) (string, bool) 
 }
 
 // Place registers newOwner as clientID's owner for filter, removing the
-// previous registration first if it differs. The Unsubscribe is
-// best-effort: a failure there is not fatal — a stale second registration
-// only means NodesFor briefly returns two entries, self-corrected on the
-// next Place (Reconciler tick) regardless.
+// previous registration only after the new one is in place. Subscribing
+// before unsubscribing means the handoff window ever risks a brief
+// duplicate (both old and new registered at once), never a gap with no
+// owner at all — duplicates are tolerable (QoS1 already allows them by
+// spec; QoS2 closes the gap via PublishID dedup, see OfflineDelivery),
+// but a missed enqueue is not.
 func (o *OfflineOwnership) Place(clientID, filter, newOwner string) error {
 	key := offlineOwnerKey(clientID, filter)
-	if old, ok := o.CurrentOwner(clientID, filter); ok && old != newOwner {
+	old, hadOwner := o.CurrentOwner(clientID, filter)
+	if err := o.Registry.Subscribe(key, newOwner); err != nil {
+		return err
+	}
+	if hadOwner && old != newOwner {
 		_ = o.Registry.Unsubscribe(key, old)
 	}
-	return o.Registry.Subscribe(key, newOwner)
+	return nil
 }
 
 // Clear removes clientID's offline-ownership registration for filter, if
