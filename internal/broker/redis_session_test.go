@@ -120,6 +120,43 @@ func TestOfflineInventory_NoClients_ReturnsEmptyNotError(t *testing.T) {
 	}
 }
 
+func TestOwnedOfflineSessions_ReturnsOnlyRequestedClients(t *testing.T) {
+	h, _ := newTestRedisSessionHook(t)
+
+	device1 := &mqtt.Client{ID: "device-1"}
+	device1.Properties.Clean = false
+	h.saveClient(device1)
+	h.OnSubscribed(device1, packets.Packet{Filters: packets.Subscriptions{{Filter: "telemetry/#"}}}, []byte{1})
+
+	device2 := &mqtt.Client{ID: "device-2"}
+	device2.Properties.Clean = false
+	h.saveClient(device2)
+	h.OnSubscribed(device2, packets.Packet{Filters: packets.Subscriptions{{Filter: "cmd/device-2"}}}, []byte{2})
+
+	owned, err := h.OwnedOfflineSessions([]string{"device-1"})
+	if err != nil {
+		t.Fatalf("OwnedOfflineSessions: %v", err)
+	}
+	if len(owned) != 1 {
+		t.Fatalf("expected exactly 1 owned session (device-2 not requested), got %d: %+v", len(owned), owned)
+	}
+	if owned[0].ClientID != "device-1" || len(owned[0].Subscriptions) != 1 || owned[0].Subscriptions[0].Filter != "telemetry/#" {
+		t.Fatalf("unexpected owned session: %+v", owned[0])
+	}
+}
+
+func TestOwnedOfflineSessions_EmptyInput_ReturnsEmptyNotNil(t *testing.T) {
+	h, _ := newTestRedisSessionHook(t)
+
+	owned, err := h.OwnedOfflineSessions(nil)
+	if err != nil {
+		t.Fatalf("OwnedOfflineSessions: %v", err)
+	}
+	if len(owned) != 0 {
+		t.Fatalf("expected no owned sessions, got %+v", owned)
+	}
+}
+
 func TestEnqueueOfflineInflight_ReadableViaInflightForClient(t *testing.T) {
 	h, ctx := newTestRedisSessionHook(t)
 

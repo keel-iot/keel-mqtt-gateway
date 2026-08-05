@@ -291,6 +291,23 @@ func (h *RedisSessionHook) OfflineInventory() ([]session.OfflineSession, error) 
 	return session.AllFromStorage(clients, subs), nil
 }
 
+// OwnedOfflineSessions returns the OfflineSession view for exactly
+// ownedClientIDs (see keelraft.Registry.OwnedClientIDs) — one targeted
+// SubscriptionsForClient lookup per owned client, never a fleet-wide
+// scan. Used on the inbound side of offline delivery, where the set of
+// candidates is already bounded to what this node owns.
+func (h *RedisSessionHook) OwnedOfflineSessions(ownedClientIDs []string) ([]session.OfflineSession, error) {
+	out := make([]session.OfflineSession, 0, len(ownedClientIDs))
+	for _, clientID := range ownedClientIDs {
+		subs, err := h.SubscriptionsForClient(clientID)
+		if err != nil {
+			return nil, fmt.Errorf("redis session: owned offline sessions for %s: %w", clientID, err)
+		}
+		out = append(out, session.FromStorage(clientID, subs))
+	}
+	return out, nil
+}
+
 // StoredInflightMessages returns all in-flight messages persisted in Redis.
 func (h *RedisSessionHook) StoredInflightMessages() ([]storage.Message, error) {
 	rows, err := h.router.Client().HGetAll(context.Background(), redisInflightHash).Result()
