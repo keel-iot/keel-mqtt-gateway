@@ -10,7 +10,7 @@ description: >-
 type: application
 version: 0.2.27
 appVersion: "0.2.27"
-home: https://github.com/keel-iot/keel-mqtt-gateway
+home: https://keel-iot.eu
 sources:
   - https://github.com/keel-iot/keel-mqtt-gateway
 keywords:
