@@ -63,7 +63,7 @@ func TestBackupAndRestoreRoundTrip(t *testing.T) {
 	require.True(t, didBootstrap)
 	awaitNodeLeader(t, orig, 5*time.Second)
 
-	_, err = orig.Registry.ClaimSession("device-under-backup", nodeID)
+	_, err = orig.Registry.ClaimSession("device-under-backup", nodeID, "")
 	require.NoError(t, err)
 
 	id, dir, err := orig.Snapshot()

@@ -20,6 +20,8 @@ type fakeACLRegistry struct {
 	bindings        map[string][]string
 	enabledRulesets map[string]bool
 	revoked         map[string]int64
+	sessions        map[string]string // clientID -> nodeID
+	sessionIdentity map[string]string // clientID -> identity
 }
 
 func newFakeACLRegistry() *fakeACLRegistry {
@@ -28,6 +30,8 @@ func newFakeACLRegistry() *fakeACLRegistry {
 		bindings:        make(map[string][]string),
 		enabledRulesets: make(map[string]bool),
 		revoked:         make(map[string]int64),
+		sessions:        make(map[string]string),
+		sessionIdentity: make(map[string]string),
 	}
 }
 
@@ -37,7 +41,11 @@ func (f *fakeACLRegistry) Unsubscribe(topic, nodeID string) error      { return 
 func (f *fakeACLRegistry) NodesFor(topic, localNodeID string) []string { return nil }
 func (f *fakeACLRegistry) OfflineNodesFor(topic string) []string       { return nil }
 func (f *fakeACLRegistry) OwnedClientIDs(nodeID string) []string       { return nil }
-func (f *fakeACLRegistry) ClaimSession(clientID, nodeID string) (string, error) {
+func (f *fakeACLRegistry) ClaimSession(clientID, nodeID, identity string) (string, error) {
+	f.sessions[clientID] = nodeID
+	if identity != "" {
+		f.sessionIdentity[clientID] = identity
+	}
 	return "", nil
 }
 func (f *fakeACLRegistry) ReleaseSession(clientID, nodeID string) error { return nil }
@@ -61,6 +69,19 @@ func (f *fakeACLRegistry) RevokedSnapshot() map[string]int64 {
 		out[k] = v
 	}
 	return out
+}
+func (f *fakeACLRegistry) ClientIDsForIdentity(identity string) []string {
+	var out []string
+	for clientID, id := range f.sessionIdentity {
+		if id == identity {
+			out = append(out, clientID)
+		}
+	}
+	return out
+}
+func (f *fakeACLRegistry) SessionOwner(clientID string) (string, bool) {
+	nodeID, ok := f.sessions[clientID]
+	return nodeID, ok
 }
 
 // ACLAdmin interface.

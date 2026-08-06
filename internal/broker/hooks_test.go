@@ -31,7 +31,7 @@ type fakeRegistry struct {
 	// claimFn overrides ClaimSession's behavior when set; nil means
 	// "claim succeeds, no previous owner" (the common case other tests
 	// in this file rely on).
-	claimFn func(clientID, nodeID string) (string, error)
+	claimFn func(clientID, nodeID, identity string) (string, error)
 
 	mu               sync.Mutex
 	releaseCalls     []releaseCall
@@ -70,9 +70,9 @@ func (f *fakeRegistry) Unsubscribe(topic, nodeID string) error {
 func (f *fakeRegistry) NodesFor(topic, localNodeID string) []string { return f.nodesFor[topic] }
 func (f *fakeRegistry) OfflineNodesFor(topic string) []string       { return f.offlineNodesFor[topic] }
 func (f *fakeRegistry) OwnedClientIDs(nodeID string) []string       { return f.ownedClientIDs[nodeID] }
-func (f *fakeRegistry) ClaimSession(clientID, nodeID string) (string, error) {
+func (f *fakeRegistry) ClaimSession(clientID, nodeID, identity string) (string, error) {
 	if f.claimFn != nil {
-		return f.claimFn(clientID, nodeID)
+		return f.claimFn(clientID, nodeID, identity)
 	}
 	return "", nil
 }
@@ -297,7 +297,7 @@ func TestClaimClusterSession_NoPreviousOwner(t *testing.T) {
 	h := newClusterTestHook(&fakeRegistry{}, fwd, "edge-1")
 	h.clients["device-1"] = &clientState{}
 
-	if !h.claimClusterSession("device-1", "tenant-1") {
+	if !h.claimClusterSession("device-1", "tenant-1", "") {
 		t.Fatalf("expected claim to succeed")
 	}
 	// Give any stray goroutine a moment, then assert nothing was evicted.
@@ -315,13 +315,13 @@ func TestClaimClusterSession_NoPreviousOwner(t *testing.T) {
 // client_id.
 func TestClaimClusterSession_EvictsPreviousOwnerOnDifferentNode(t *testing.T) {
 	fwd := &fakeForwarder{}
-	reg := &fakeRegistry{claimFn: func(clientID, nodeID string) (string, error) {
+	reg := &fakeRegistry{claimFn: func(clientID, nodeID, identity string) (string, error) {
 		return "edge-2", nil // "device-1" was previously owned by edge-2
 	}}
 	h := newClusterTestHook(reg, fwd, "edge-1")
 	h.clients["device-1"] = &clientState{}
 
-	if !h.claimClusterSession("device-1", "tenant-1") {
+	if !h.claimClusterSession("device-1", "tenant-1", "") {
 		t.Fatalf("expected claim to succeed")
 	}
 
@@ -337,13 +337,13 @@ func TestClaimClusterSession_EvictsPreviousOwnerOnDifferentNode(t *testing.T) {
 // disconnect on the same node).
 func TestClaimClusterSession_NoEvictWhenOwnerIsSelf(t *testing.T) {
 	fwd := &fakeForwarder{}
-	reg := &fakeRegistry{claimFn: func(clientID, nodeID string) (string, error) {
+	reg := &fakeRegistry{claimFn: func(clientID, nodeID, identity string) (string, error) {
 		return nodeID, nil
 	}}
 	h := newClusterTestHook(reg, fwd, "edge-1")
 	h.clients["device-1"] = &clientState{}
 
-	if !h.claimClusterSession("device-1", "tenant-1") {
+	if !h.claimClusterSession("device-1", "tenant-1", "") {
 		t.Fatalf("expected claim to succeed")
 	}
 	time.Sleep(5 * time.Millisecond)
@@ -359,14 +359,14 @@ func TestClaimClusterSession_NoEvictWhenOwnerIsSelf(t *testing.T) {
 // enforced cross-node exclusivity.
 func TestClaimClusterSession_RejectsConnectionOnError(t *testing.T) {
 	fwd := &fakeForwarder{}
-	reg := &fakeRegistry{claimFn: func(clientID, nodeID string) (string, error) {
+	reg := &fakeRegistry{claimFn: func(clientID, nodeID, identity string) (string, error) {
 		return "", context.DeadlineExceeded
 	}}
 	h := newClusterTestHook(reg, fwd, "edge-1")
 	h.clients["device-1"] = &clientState{}
 	h.tenantConns = map[string]int{"tenant-1": 1}
 
-	if h.claimClusterSession("device-1", "tenant-1") {
+	if h.claimClusterSession("device-1", "tenant-1", "") {
 		t.Fatalf("expected claim to be rejected")
 	}
 	if _, ok := h.clients["device-1"]; ok {
@@ -385,7 +385,7 @@ func TestClaimClusterSession_RejectsConnectionOnError(t *testing.T) {
 // (clusterRegistry nil) never blocks a connection on cluster wiring.
 func TestClaimClusterSession_StandaloneNoop(t *testing.T) {
 	h := newTestHook(nil)
-	if !h.claimClusterSession("device-1", "tenant-1") {
+	if !h.claimClusterSession("device-1", "tenant-1", "") {
 		t.Fatalf("expected standalone claim to be a no-op success")
 	}
 }

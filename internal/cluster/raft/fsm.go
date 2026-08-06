@@ -40,6 +40,13 @@ type state struct {
 	mu       sync.RWMutex
 	sessions map[string]string
 
+	// sessionIdentity maps clientID -> the cert-CN identity
+	// ("<deviceID>@<tenantID>") it claimed its session under, only present
+	// for cert-authenticated sessions (see OpClaimSession). Lets a later
+	// OpRevokeCertificate find which currently-owned session(s), if any,
+	// belong to the revoked identity — see clientIDsForIdentity.
+	sessionIdentity map[string]string
+
 	// ACL section — kept as a distinct sub-struct rather than flattened
 	// fields, so it's easy to see (and snapshot/restore) as one unit.
 	roles           map[string]acl.Role // role name -> role (rules)
@@ -63,6 +70,7 @@ type state struct {
 func newState() *state {
 	return &state{
 		sessions:        make(map[string]string),
+		sessionIdentity: make(map[string]string),
 		revoked:         make(map[string]int64),
 		roles:           make(map[string]acl.Role),
 		bindings:        make(map[string][]string),
@@ -105,6 +113,11 @@ func (f *FSM) Apply(log *hraft.Log) interface{} {
 			evicted = owner
 		}
 		f.state.sessions[cmd.ClientID] = cmd.NodeID
+		if cmd.Identity != "" {
+			f.state.sessionIdentity[cmd.ClientID] = cmd.Identity
+		} else {
+			delete(f.state.sessionIdentity, cmd.ClientID)
+		}
 		return applyResult{ok: true, evictedNode: evicted}
 
 	case OpReleaseSession:
@@ -113,6 +126,7 @@ func (f *FSM) Apply(log *hraft.Log) interface{} {
 		// cleanup) racing a newer ClaimSession.
 		if owner, exists := f.state.sessions[cmd.ClientID]; exists && owner == cmd.NodeID {
 			delete(f.state.sessions, cmd.ClientID)
+			delete(f.state.sessionIdentity, cmd.ClientID)
 		}
 		return applyResult{ok: true}
 
@@ -196,6 +210,7 @@ func (f *FSM) Snapshot() (hraft.FSMSnapshot, error) {
 
 	snap := &snapshot{
 		Sessions:        make(map[string]string, len(f.state.sessions)),
+		SessionIdentity: make(map[string]string, len(f.state.sessionIdentity)),
 		Roles:           make(map[string]acl.Role, len(f.state.roles)),
 		Bindings:        make(map[string][]string, len(f.state.bindings)),
 		EnabledRulesets: make(map[string]bool, len(f.state.enabledRulesets)),
@@ -204,6 +219,9 @@ func (f *FSM) Snapshot() (hraft.FSMSnapshot, error) {
 	}
 	for clientID, nodeID := range f.state.sessions {
 		snap.Sessions[clientID] = nodeID
+	}
+	for clientID, identity := range f.state.sessionIdentity {
+		snap.SessionIdentity[clientID] = identity
 	}
 	for name, role := range f.state.roles {
 		snap.Roles[name] = role
@@ -235,6 +253,11 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 
 	f.state.mu.Lock()
 	f.state.sessions = snap.Sessions
+	if snap.SessionIdentity != nil {
+		f.state.sessionIdentity = snap.SessionIdentity
+	} else {
+		f.state.sessionIdentity = make(map[string]string)
+	}
 	if snap.Roles != nil {
 		f.state.roles = snap.Roles
 	} else {
@@ -277,6 +300,24 @@ func (f *FSM) sessionsSnapshot() map[string]string {
 		sessions[k] = v
 	}
 	return sessions
+}
+
+// clientIDsForIdentity returns every currently-owned clientID that claimed
+// its session under identity — normally at most one, but a device
+// reconnecting under a different clientID before its old session expired
+// can briefly leave more than one. Linear scan: only called on the rare
+// revoke_certificate path, never on a hot path, so an index isn't worth
+// the extra bookkeeping.
+func (f *FSM) clientIDsForIdentity(identity string) []string {
+	f.state.mu.RLock()
+	defer f.state.mu.RUnlock()
+	var out []string
+	for clientID, id := range f.state.sessionIdentity {
+		if id == identity {
+			out = append(out, clientID)
+		}
+	}
+	return out
 }
 
 // currentRedisPrimary returns the nodeID currently designated primary for
@@ -391,6 +432,7 @@ func (f *FSM) revokedSnapshot() map[string]int64 {
 // snapshots and FSMSnapshot.Persist.
 type snapshot struct {
 	Sessions        map[string]string   `json:"sessions"`
+	SessionIdentity map[string]string   `json:"session_identity,omitempty"`
 	Roles           map[string]acl.Role `json:"roles"`
 	Bindings        map[string][]string `json:"bindings"`
 	EnabledRulesets map[string]bool     `json:"enabled_rulesets"`

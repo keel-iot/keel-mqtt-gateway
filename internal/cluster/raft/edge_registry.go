@@ -67,8 +67,8 @@ func (e *EdgeRegistry) TopicsForNode(nodeID string) []string {
 	return e.router.TopicsForNode(nodeID)
 }
 
-func (e *EdgeRegistry) ClaimSession(clientID, nodeID string) (string, error) {
-	return e.remote.ClaimSession(clientID, nodeID)
+func (e *EdgeRegistry) ClaimSession(clientID, nodeID, identity string) (string, error) {
+	return e.remote.ClaimSession(clientID, nodeID, identity)
 }
 
 func (e *EdgeRegistry) ReleaseSession(clientID, nodeID string) error {

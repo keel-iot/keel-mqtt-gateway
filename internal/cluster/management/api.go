@@ -524,7 +524,31 @@ func (a *API) handleRevocationWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.Log.Info("management: certificate revoked", "identity", identity, "serial", data.Serial)
+	a.evictRevokedSessions(identity, admin)
 	w.WriteHeader(http.StatusOK)
+}
+
+// evictRevokedSessions force-disconnects any currently-connected session
+// for identity, best-effort — otherwise a revoked device stays connected
+// (mochi-mqtt only re-checks auth on CONNECT) until it disconnects on its
+// own. Mirrors claimClusterSession's own best-effort Evict call: fired in
+// a goroutine, logged on failure, never blocks the webhook response on the
+// evicted node actually being reachable.
+func (a *API) evictRevokedSessions(identity string, admin keelraft.RevocationAdmin) {
+	if a.Evictor == nil {
+		return
+	}
+	for _, clientID := range admin.ClientIDsForIdentity(identity) {
+		nodeID, ok := admin.SessionOwner(clientID)
+		if !ok {
+			continue
+		}
+		go func(nodeID, clientID string) {
+			if err := a.Evictor.Evict(context.Background(), nodeID, clientID); err != nil {
+				a.Log.Warn("management: evict revoked session failed", "identity", identity, "client_id", clientID, "node_id", nodeID, "error", err)
+			}
+		}(nodeID, clientID)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

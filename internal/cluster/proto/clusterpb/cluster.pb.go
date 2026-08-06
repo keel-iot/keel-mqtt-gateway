@@ -300,9 +300,15 @@ func (x *NodesForResponse) GetNodeIds() []string {
 }
 
 type ClaimSessionRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ClientId      string                 `protobuf:"bytes,1,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
-	NodeId        string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	ClientId string                 `protobuf:"bytes,1,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	NodeId   string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	// identity is the cert-CN identity ("<deviceID>@<tenantID>") this session
+	// authenticated as, empty for JWT/password auth — revocation only applies
+	// to cert auth. Recorded alongside ownership so a later revocation event
+	// can find and evict the owning node/clientID (see raft's
+	// clientIDsForIdentity and the management API's revocation webhook).
+	Identity      string `protobuf:"bytes,3,opt,name=identity,proto3" json:"identity,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -347,6 +353,13 @@ func (x *ClaimSessionRequest) GetClientId() string {
 func (x *ClaimSessionRequest) GetNodeId() string {
 	if x != nil {
 		return x.NodeId
+	}
+	return ""
+}
+
+func (x *ClaimSessionRequest) GetIdentity() string {
+	if x != nil {
+		return x.Identity
 	}
 	return ""
 }
@@ -1949,10 +1962,11 @@ const file_internal_cluster_proto_cluster_proto_rawDesc = "" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\"\n" +
 	"\rlocal_node_id\x18\x02 \x01(\tR\vlocalNodeId\"-\n" +
 	"\x10NodesForResponse\x12\x19\n" +
-	"\bnode_ids\x18\x01 \x03(\tR\anodeIds\"K\n" +
+	"\bnode_ids\x18\x01 \x03(\tR\anodeIds\"g\n" +
 	"\x13ClaimSessionRequest\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\tR\bclientId\x12\x17\n" +
-	"\anode_id\x18\x02 \x01(\tR\x06nodeId\"N\n" +
+	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x1a\n" +
+	"\bidentity\x18\x03 \x01(\tR\bidentity\"N\n" +
 	"\x14ClaimSessionResponse\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12&\n" +
 	"\x0fevicted_node_id\x18\x02 \x01(\tR\revictedNodeId\"M\n" +

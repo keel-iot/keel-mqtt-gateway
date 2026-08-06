@@ -101,10 +101,10 @@ func (c *CoreRegistry) RoutesSnapshot() map[string][]string {
 	return c.router.Snapshot()
 }
 
-func (c *CoreRegistry) ClaimSession(clientID, nodeID string) (string, error) {
-	evicted, err := c.local.ClaimSession(clientID, nodeID)
+func (c *CoreRegistry) ClaimSession(clientID, nodeID, identity string) (string, error) {
+	evicted, err := c.local.ClaimSession(clientID, nodeID, identity)
 	if err != nil && IsNotLeader(err) {
-		return c.fallback.ClaimSession(clientID, nodeID)
+		return c.fallback.ClaimSession(clientID, nodeID, identity)
 	}
 	return evicted, err
 }
@@ -235,4 +235,15 @@ func (c *CoreRegistry) RevokeCertificate(identity, serial string) error {
 
 func (c *CoreRegistry) RevokedSnapshot() map[string]int64 {
 	return c.local.RevokedSnapshot()
+}
+
+// ClientIDsForIdentity and SessionOwner are pure FSM reads, same
+// no-leader-forwarding-needed rationale as EvaluateACL/IsRevoked.
+
+func (c *CoreRegistry) ClientIDsForIdentity(identity string) []string {
+	return c.local.ClientIDsForIdentity(identity)
+}
+
+func (c *CoreRegistry) SessionOwner(clientID string) (string, bool) {
+	return c.local.SessionOwner(clientID)
 }

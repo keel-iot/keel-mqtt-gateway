@@ -25,6 +25,12 @@ type DeviceInfo struct {
 	// FleetIDStr is pre-computed for topic routing.
 	// It is set to the fleet UUID string, or "nofleet" when fleet is not assigned.
 	FleetIDStr string
+	// Identity is the cert-CN identity ("<deviceID>@<tenantID>") this
+	// connection authenticated as. Only set by cert auth (authenticateCert)
+	// — revocation is a PKI-only concept, so JWT/password auth leaves this
+	// empty. Passed to raft.Registry.ClaimSession so a later certificate
+	// revocation can find and evict the session.
+	Identity string
 }
 
 // RedpandaTopic returns the fully qualified Redpanda topic for the given category

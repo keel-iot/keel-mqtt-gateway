@@ -76,7 +76,11 @@ type Command struct {
 	Principal   string        `json:"principal,omitempty"`    // create_binding, delete_binding
 	RulesetName string        `json:"ruleset_name,omitempty"` // enable_ruleset, disable_ruleset
 
-	// Device PKI revocation payload fields.
-	Identity string `json:"identity,omitempty"` // revoke_certificate — "<deviceID>@<tenantID>"
-	Serial   string `json:"serial,omitempty"`   // revoke_certificate — audit/reference only
+	// Identity is "<deviceID>@<tenantID>", matching the device cert's CN.
+	// Used by claim_session (optional — empty for JWT/password auth, only
+	// cert auth sets it, see FSM's sessionIdentity) to let a later
+	// revoke_certificate find and evict the session, and by
+	// revoke_certificate itself to record which identity was revoked.
+	Identity string `json:"identity,omitempty"`
+	Serial   string `json:"serial,omitempty"` // revoke_certificate — audit/reference only
 }

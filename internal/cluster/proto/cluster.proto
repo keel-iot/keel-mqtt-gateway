@@ -99,6 +99,12 @@ message NodesForResponse {
 message ClaimSessionRequest {
   string client_id = 1;
   string node_id = 2;
+  // identity is the cert-CN identity ("<deviceID>@<tenantID>") this session
+  // authenticated as, empty for JWT/password auth — revocation only applies
+  // to cert auth. Recorded alongside ownership so a later revocation event
+  // can find and evict the owning node/clientID (see raft's
+  // clientIDsForIdentity and the management API's revocation webhook).
+  string identity = 3;
 }
 message ClaimSessionResponse {
   bool ok = 1;

@@ -63,8 +63,12 @@ type Registry interface {
 	// always wins — see fsm.go's OpClaimSession). evictedFrom is the
 	// previous owner's node ID when it differs from nodeID, empty
 	// otherwise; the caller must tell that node to locally disconnect
-	// the client (see dataplane.Forwarder.Evict).
-	ClaimSession(clientID, nodeID string) (evictedFrom string, err error)
+	// the client (see dataplane.Forwarder.Evict). identity is the
+	// cert-CN identity ("<deviceID>@<tenantID>") this session
+	// authenticated as, empty for JWT/password auth (revocation only
+	// applies to cert auth) — recorded so a later revoked_certificate
+	// event can find and evict this session (see ClientIDsForIdentity).
+	ClaimSession(clientID, nodeID, identity string) (evictedFrom string, err error)
 	// ReleaseSession clears clientID's ownership, but only if nodeID is
 	// still the current owner — a release from a node that has already
 	// been superseded by a newer ClaimSession is a safe no-op.
@@ -120,6 +124,13 @@ type ACLAdmin interface {
 type RevocationAdmin interface {
 	RevokeCertificate(identity, serial string) error
 	RevokedSnapshot() map[string]int64
+	// ClientIDsForIdentity and SessionOwner are pure FSM reads (same
+	// no-leader-forwarding-needed rationale as EvaluateACL/IsRevoked)
+	// the revocation webhook handler chains together to find which
+	// node, if any, currently owns a just-revoked identity's session —
+	// see internal/cluster/management's handleRevocationWebhook.
+	ClientIDsForIdentity(identity string) []string
+	SessionOwner(clientID string) (nodeID string, ok bool)
 }
 
 // BatchUnsubscriber is an optional Registry extension for removing many
@@ -207,8 +218,8 @@ func (l *LocalRegistry) apply(cmd Command) (applyResult, error) {
 	return res, res.err
 }
 
-func (l *LocalRegistry) ClaimSession(clientID, nodeID string) (string, error) {
-	res, err := l.apply(Command{Op: OpClaimSession, ClientID: clientID, NodeID: nodeID})
+func (l *LocalRegistry) ClaimSession(clientID, nodeID, identity string) (string, error) {
+	res, err := l.apply(Command{Op: OpClaimSession, ClientID: clientID, NodeID: nodeID, Identity: identity})
 	if err != nil {
 		return "", err
 	}
@@ -338,6 +349,12 @@ func (l *LocalRegistry) RevokeCertificate(identity, serial string) error {
 // management API and RevocationCache's periodic refresh.
 func (l *LocalRegistry) RevokedSnapshot() map[string]int64 {
 	return l.fsm.revokedSnapshot()
+}
+
+// ClientIDsForIdentity exposes fsm.clientIDsForIdentity for the management
+// API's revocation webhook handler.
+func (l *LocalRegistry) ClientIDsForIdentity(identity string) []string {
+	return l.fsm.clientIDsForIdentity(identity)
 }
 
 // IsLeader reports whether the local raft node currently holds leadership.

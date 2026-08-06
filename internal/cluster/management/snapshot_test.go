@@ -41,7 +41,7 @@ func TestHandleSnapshot_ReturnsSnapshotDir(t *testing.T) {
 	require.NoError(t, err)
 	require.Eventually(t, node.IsLeader, 5*time.Second, 10*time.Millisecond)
 
-	_, err = node.Registry.ClaimSession("device-1", "mgmt-snapshot-test")
+	_, err = node.Registry.ClaimSession("device-1", "mgmt-snapshot-test", "")
 	require.NoError(t, err)
 
 	api := &API{RaftNode: node, Log: slog.Default()}

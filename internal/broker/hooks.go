@@ -216,7 +216,7 @@ func (h *keelHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) boo
 	h.tenantConns[tenantStr]++
 	h.mu.Unlock()
 
-	if !h.claimClusterSession(cl.ID, tenantStr) {
+	if !h.claimClusterSession(cl.ID, tenantStr, info.Identity) {
 		span.SetStatus(codes.Error, "claim session failed")
 		return false
 	}
@@ -362,12 +362,12 @@ func (h *keelHook) placeOfflineOwnership(cl *mqtt.Client) {
 // EvaluateACL's own transport-error handling.
 //
 // No-ops (returns true) when clusterRegistry is nil (standalone mode).
-func (h *keelHook) claimClusterSession(clientID, tenantStr string) bool {
+func (h *keelHook) claimClusterSession(clientID, tenantStr, identity string) bool {
 	if h.clusterRegistry == nil {
 		return true
 	}
 
-	evictedFrom, err := h.clusterRegistry.ClaimSession(clientID, h.clusterNodeID)
+	evictedFrom, err := h.clusterRegistry.ClaimSession(clientID, h.clusterNodeID, identity)
 	if err != nil {
 		h.mu.Lock()
 		delete(h.clients, clientID)
@@ -580,6 +580,7 @@ func (h *keelHook) authenticateCert(ctx context.Context, state tls.ConnectionSta
 		telemetry.AutoProvisioningTotal.WithLabelValues(tenantID, "skipped_exists").Inc()
 	}
 
+	info.Identity = deviceID + "@" + tenantID
 	return info, method, true
 }
 

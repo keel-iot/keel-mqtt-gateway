@@ -63,7 +63,7 @@ func (s *RPCServer) NodesFor(_ context.Context, req *pb.NodesForRequest) (*pb.No
 }
 
 func (s *RPCServer) ClaimSession(_ context.Context, req *pb.ClaimSessionRequest) (*pb.ClaimSessionResponse, error) {
-	evicted, err := s.registry.ClaimSession(req.GetClientId(), req.GetNodeId())
+	evicted, err := s.registry.ClaimSession(req.GetClientId(), req.GetNodeId(), req.GetIdentity())
 	if err != nil {
 		return nil, notLeaderStatus(err)
 	}

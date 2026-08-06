@@ -59,6 +59,29 @@ func TestFSMClaimSessionOverride(t *testing.T) {
 	}
 }
 
+func TestFSMClaimSessionIdentity(t *testing.T) {
+	f := NewFSM()
+
+	// No identity (JWT/password auth) — clientIDsForIdentity finds nothing.
+	apply(t, f, Command{Op: OpClaimSession, ClientID: "device-1", NodeID: "core-1"})
+	if got := f.clientIDsForIdentity("device-1@tenant-1"); len(got) != 0 {
+		t.Fatalf("expected no clientIDs for an identity-less claim, got %v", got)
+	}
+
+	// Cert auth carries an identity — findable by revoke_certificate.
+	apply(t, f, Command{Op: OpClaimSession, ClientID: "device-2", NodeID: "core-1", Identity: "device-2@tenant-1"})
+	got := f.clientIDsForIdentity("device-2@tenant-1")
+	if len(got) != 1 || got[0] != "device-2" {
+		t.Fatalf("expected [device-2], got %v", got)
+	}
+
+	// Release clears the identity index too, not just ownership.
+	apply(t, f, Command{Op: OpReleaseSession, ClientID: "device-2", NodeID: "core-1"})
+	if got := f.clientIDsForIdentity("device-2@tenant-1"); len(got) != 0 {
+		t.Fatalf("expected no clientIDs after release, got %v", got)
+	}
+}
+
 func TestFSMReleaseSession(t *testing.T) {
 	f := NewFSM()
 	apply(t, f, Command{Op: OpClaimSession, ClientID: "device-1", NodeID: "core-1"})

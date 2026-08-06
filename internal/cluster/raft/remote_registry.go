@@ -124,10 +124,10 @@ func (r *RemoteRegistry) NodesFor(topic, localNodeID string) []string {
 	return out
 }
 
-func (r *RemoteRegistry) ClaimSession(clientID, nodeID string) (string, error) {
+func (r *RemoteRegistry) ClaimSession(clientID, nodeID, identity string) (string, error) {
 	var evicted string
 	err := r.forEachPeer(func(c pb.RegistryClient, ctx context.Context) error {
-		resp, err := c.ClaimSession(ctx, &pb.ClaimSessionRequest{ClientId: clientID, NodeId: nodeID})
+		resp, err := c.ClaimSession(ctx, &pb.ClaimSessionRequest{ClientId: clientID, NodeId: nodeID, Identity: identity})
 		if err != nil {
 			return err
 		}
