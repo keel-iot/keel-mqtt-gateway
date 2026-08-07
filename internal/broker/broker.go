@@ -146,15 +146,27 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 		// (see cmd/server/main.go's gForwarder.Subscribe wiring).
 		InlineClient: true,
 	}
+	opts.Capabilities = mqtt.NewDefaultServerCapabilities()
 	if cfg.SessionExpiryInterval > 0 {
 		// Bounds how long mochi-mqtt keeps a persistent (clean_session=false)
 		// session's Client object — and therefore its offline QoS1/2 queue —
 		// alive after a disconnect with no reconnect. keelHook.OnClientExpired
 		// is called exactly when this elapses, which is where the matching
 		// ACL identity (h.clients) and cluster routing entry are torn down.
-		opts.Capabilities = mqtt.NewDefaultServerCapabilities()
 		opts.Capabilities.MaximumSessionExpiryInterval = uint32(cfg.SessionExpiryInterval.Seconds())
 	}
+	// Not conformance scaffolding — a real MQTT5 semantics fix. Without
+	// this, mochi-mqtt's buildAck echoes the original PUBLISH packet's
+	// Properties (including arbitrary User Properties) onto the
+	// PUBACK/PUBREC — never desired, spec-correct or not. Root-caused
+	// 2026-08-07 via internal/conformance's Eclipse Paho suite run (see
+	// docs/alternatives-and-future-work.md); mochi-mqtt itself documents
+	// this flag as "(paho - spec violation)" but the fix is unconditional
+	// on every deployment, not just the conformance harness — unlike
+	// ObscureNotAuthorized/KeepAliveHook (see internal/conformance),
+	// which change observable client-facing behavior and stay
+	// conformance-only until deliberately designed as product features.
+	opts.Capabilities.Compatibilities.NoInheritedPropertiesOnAck = true
 	server := mqtt.New(opts)
 
 	// Redis session hook must be registered BEFORE the keel hook so that
