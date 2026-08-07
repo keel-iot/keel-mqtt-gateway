@@ -38,6 +38,7 @@ import (
 	clusterstore "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/store"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/commander"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/config"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/conformance"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/connector"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/connector/pluginhost"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/db"
@@ -374,6 +375,7 @@ func runRestoreCLI(args []string) {
 // opt-in: leaving --role unset preserves today's single-node behaviour.
 type clusterFlags struct {
 	role            string
+	conformanceTest bool
 	nodeID          string
 	bootstrap       bool
 	raftBindAddr    string
@@ -479,6 +481,7 @@ func resolveOfflineDedupTTL(configured, reconcilerInterval time.Duration) time.D
 func parseClusterFlags() clusterFlags {
 	var f clusterFlags
 	flag.StringVar(&f.role, "role", "", `cluster role: "core" (raft+olric+mgmt-API only, no broker/HTTP/commander), "edge" (broker/HTTP/commander only, no raft/olric), "combined" (both — single-process all-in-one node, gossips as "core" to peers), or empty for standalone (no clustering, broker/HTTP/commander active)`)
+	flag.BoolVar(&f.conformanceTest, "conformance-test", false, "DANGEROUS, test-only: replace auth with an allow-all provider and disable ACL enforcement, for running the Eclipse Paho MQTT interoperability suite against this binary. Only available with role=\"\" (standalone) — refuses to start otherwise. NEVER set in production; not exposed by the Helm chart.")
 	flag.StringVar(&f.nodeID, "node-id", "", "stable cluster node ID (default: hostname)")
 	flag.BoolVar(&f.bootstrap, "bootstrap", false, "core only: form a brand-new single-node raft cluster on startup")
 	flag.StringVar(&f.raftBindAddr, "raft-bind", ":7000", "core only: raft TCP transport bind/advertise address")
@@ -598,6 +601,20 @@ func runServer() {
 	default: // "postgres" or empty
 		provider = auth.NewPostgresProvider(validator)
 		log.Info("auth: using postgres provider")
+	}
+
+	// --conformance-test overrides whatever AUTH_BACKEND selected above —
+	// see internal/conformance's package doc. ValidateRole returns an
+	// error (testable in isolation); only main turns it into os.Exit.
+	if cf.conformanceTest {
+		if err := conformance.ValidateRole(cf.role); err != nil {
+			log.Error("conformance mode misconfigured", "error", err)
+			os.Exit(1)
+		}
+		provider = conformance.NewAuthProvider()
+		for _, line := range conformance.Banner {
+			log.Warn(line)
+		}
 	}
 	// ── OpenTelemetry tracer ──────────────────────────────────────────────────
 	// tenantCache is not yet constructed at this point — InitTracer accepts nil
@@ -1206,6 +1223,29 @@ func runServer() {
 		if err != nil {
 			log.Error("create MQTT broker", "error", err)
 			os.Exit(1)
+		}
+
+		// Registered as EXTRA hooks / mutated Options on the already-built
+		// server, never a broker.Config field — internal/broker/hooks.go's
+		// ACL enforcement is never touched by conformance mode. See
+		// conformance.ACLHook's doc for why hook registration order here
+		// doesn't matter.
+		if cf.conformanceTest {
+			if err := mqttServer.AddHook(conformance.NewACLHook(), nil); err != nil {
+				log.Error("add conformance ACL hook", "error", err)
+				os.Exit(1)
+			}
+			if err := mqttServer.AddHook(conformance.NewKeepAliveHook(), nil); err != nil {
+				log.Error("add conformance keepalive hook", "error", err)
+				os.Exit(1)
+			}
+			// See conformance.ApplyCompatibilities's doc: ObscureNotAuthorized
+			// changes client-observable SUBACK behavior, so it stays
+			// conformance-only pending a deliberate config option — unlike
+			// NoInheritedPropertiesOnAck, which was promoted to a
+			// broker.New default for every deployment (internal/broker/broker.go)
+			// since it's a real MQTT5 fix, not a policy choice.
+			conformance.ApplyCompatibilities(mqttServer.Options.Capabilities)
 		}
 
 		// keel_gateway_edge_load_score: the real HPA custom metric (see

@@ -1015,3 +1015,36 @@ func TestForwardToClusterSubscribers_DeliversLocallyOwnedOfflineSession(t *testi
 		t.Fatalf("expected a non-zero PublishID on the forwarded message")
 	}
 }
+
+// TestProductionACL_Unchanged pins keelHook.OnACLCheck's production
+// behavior against paho.mqtt.testing-shaped topics — the same arbitrary
+// topics (see internal/conformance's ACLHook) that --conformance-test
+// mode allows, must still be denied here. internal/conformance is a
+// separate package that never imports or modifies this file; this test
+// is the regression guard that keeps that true.
+func TestProductionACL_Unchanged(t *testing.T) {
+	h := newTestHook(nil)
+	cl := &mqtt.Client{ID: "device-1"}
+	h.clients[cl.ID] = deviceState("device-1@11111111-1111-1111-1111-111111111111")
+
+	denied := []struct {
+		topic string
+		write bool
+	}{
+		{"TopicA", true},
+		{"TopicA/B", false},
+		{"#", false},
+		{"+/C", false},
+		{"test/nosubscribe", false},
+	}
+	for _, d := range denied {
+		if h.OnACLCheck(cl, d.topic, d.write) {
+			t.Errorf("expected production ACL to deny topic=%q write=%v, got allow", d.topic, d.write)
+		}
+	}
+
+	// Keel's own shapes must still work — this isn't a "deny everything" check.
+	if !h.OnACLCheck(cl, "telemetry", true) {
+		t.Fatal("expected production ACL to still allow a legacy keel-shaped publish topic")
+	}
+}
