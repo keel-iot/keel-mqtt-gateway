@@ -1016,6 +1016,7 @@ func runServer() {
 
 			// Offline session ownership reconciler, core-only. Nil when
 			// Redis session persistence is off — nothing to reconcile.
+			var inflightSample func() (int64, error)
 			if rdb != nil {
 				offlineSessionHook := broker.NewRedisSessionHook(rdb, log)
 				offlineOwnership := &keelraft.OfflineOwnership{Registry: clusterRegistry}
@@ -1036,7 +1037,27 @@ func runServer() {
 					Log:             log,
 				}
 				go offlineReconciler.Run(ctx)
+				inflightSample = func() (int64, error) { return offlineSessionHook.InflightCount(ctx) }
 			}
+
+			// telemetry.SessionsLive/RoutingEntries/InflightMessages —
+			// core-only gauges, sampled on the same cadence as the offline
+			// reconciler rather than a separate flag, since none of them
+			// need tighter freshness than that.
+			go telemetry.RunClusterStatsSampler(ctx,
+				func() int { return len(raftNode.Registry.SessionsSnapshot()) },
+				func() int {
+					// Same duck-typed pattern management.API already uses
+					// for RoutesSnapshot — clusterRegistry is always a
+					// *CoreRegistry in this isCoreRole branch.
+					if rp, ok := clusterRegistry.(interface {
+						RoutesSnapshot() map[string][]string
+					}); ok {
+						return len(rp.RoutesSnapshot())
+					}
+					return 0
+				},
+				inflightSample, cf.offlineSessionReconcilerInterval, log)
 		}
 	}
 

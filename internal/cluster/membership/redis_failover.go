@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
 // redisFailoverInterval mirrors reconcileInterval's rationale: periodic
@@ -345,6 +347,7 @@ func (m *Membership) failoverRedisPrimary(coreMembers []NodeMeta, deadPrimary st
 		m.log.Error("membership: raft designation of new redis primary failed", "node_id", candidate.NodeID, "error", err)
 		return
 	}
+	telemetry.StorageFailoversTotal.Inc()
 	m.muRedis.Lock()
 	delete(m.redisMissingSince, deadPrimary) // stale now — the map is only ever keyed by the CURRENT primary's nodeID
 	m.muRedis.Unlock()

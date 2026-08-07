@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	pb "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/proto/clusterpb"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
 const forwardTimeout = 3 * time.Second
@@ -121,7 +122,15 @@ func (f *GRPCForwarder) clientFor(addr string) (pb.DataplaneClient, error) {
 }
 
 // Forward sends msg to targetNodeID over gRPC.
-func (f *GRPCForwarder) Forward(ctx context.Context, targetNodeID string, msg *Message) error {
+func (f *GRPCForwarder) Forward(ctx context.Context, targetNodeID string, msg *Message) (err error) {
+	start := time.Now()
+	defer func() {
+		telemetry.ForwardLatency.Observe(time.Since(start).Seconds())
+		if err != nil {
+			telemetry.ForwardFailuresTotal.Inc()
+		}
+	}()
+
 	addr, ok := f.resolve(targetNodeID)
 	if !ok {
 		return fmt.Errorf("dataplane: unknown node %q", targetNodeID)

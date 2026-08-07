@@ -1,0 +1,113 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+{{/*
+Starting-point alert thresholds, not tuned against a specific fleet size
+— see docs/alternatives-and-future-work.md's "Roadmap industriale" section
+6 for the full metric catalogue this draws from. Expect to adjust "for"
+durations and thresholds once real alert-noise data exists for a given
+deployment.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "keel.fullname" . }}
+  labels:
+    {{- include "keel.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: keel-gateway.rules
+      rules:
+        - alert: KeelQosMessageLoss
+          expr: increase(keel_gateway_qos_dropped_total[5m]) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Real QoS1/2 message loss on {{`{{ $labels.instance }}`}}"
+            description: "keel_gateway_qos_dropped_total increased by {{`{{ $value }}`}} in the last 5m for qos={{`{{ $labels.qos }}`}} — an inflight delivery expired or was abandoned before completion. Not a delay, an actual dropped message."
+
+        - alert: KeelForwarderDropping
+          expr: increase(keel_gateway_forwarder_dropped_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Output connector dropping messages ({{`{{ $labels.connector }}`}})"
+            description: "keel_gateway_forwarder_dropped_total increased for connector={{`{{ $labels.connector }}`}}, reason={{`{{ $labels.reason }}`}} — the output buffer is full or the downstream connector keeps failing."
+
+        - alert: KeelClusterForwardFailures
+          expr: increase(keel_gateway_cluster_forward_failures_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Inter-node gRPC Forward failures"
+            description: "keel_gateway_cluster_forward_failures_total increased by {{`{{ $value }}`}} in the last 5m — a peer core/edge node may be unreachable or overloaded."
+
+        - alert: KeelRedisFailoverOccurred
+          expr: increase(keel_gateway_storage_failovers_total[15m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Redis primary failover just happened"
+            description: "keel_gateway_storage_failovers_total increased — the co-located Redis primary was missing beyond threshold and a replica was promoted. Investigate the previous primary."
+
+        - alert: KeelRoutingOrphanedNodes
+          expr: max_over_time(keel_gateway_cluster_routing_orphaned_nodes[10m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Routing table has entries for a node absent from gossip"
+            description: "node_id={{`{{ $labels.node_id }}`}} has stale routing entries beyond the heartbeat threshold — see the Olric non-graceful-crash gap in keel-design-doc.md."
+
+        - alert: KeelEdgeLoadSaturated
+          expr: keel_gateway_edge_load_score > 0.9
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Edge pod sustained near HPA saturation"
+            description: "keel_gateway_edge_load_score={{`{{ $value }}`}} on {{`{{ $labels.pod }}`}} for 10m+ — HPA may not be scaling out fast enough, or connections-per-pod limit is set too low."
+
+        - alert: KeelAuthFailureRateHigh
+          expr: |
+            sum(rate(keel_gateway_connections_total{result="auth_failed"}[5m]))
+              / clamp_min(sum(rate(keel_gateway_connections_total[5m])), 1e-9) > 0.2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High device auth failure rate"
+            description: "Over 20% of connection attempts failed auth over the last 5m, sustained 10m+ — could be a credential rollout issue or a probing/abuse pattern."
+
+        - alert: KeelRaftApplyP99High
+          expr: histogram_quantile(0.99, sum(rate(keel_gateway_raft_apply_duration_seconds_bucket[5m])) by (le, op)) > 2
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Raft apply p99 latency high (op={{`{{ $labels.op }}`}})"
+            description: "p99 raft.Apply latency exceeded 2s for 5m+ — the leader's single-writer log may be saturated (see the design doc's 1500-device reconnect-storm raft.Apply findings for context on expected order of magnitude)."
+
+        - alert: KeelMembershipFlapping
+          expr: increase(keel_gateway_cluster_membership_changes_total[10m]) > 6
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Cluster membership changing frequently"
+            description: "More than 6 join/leave events in 10m — could be pods crash-looping, or a gossip/network instability rather than a deliberate rollout."
+
+        - alert: KeelDataVolumeLimitExceededSpike
+          expr: increase(keel_gateway_data_volume_limit_exceeded_total[15m]) > 0
+          for: 0m
+          labels:
+            severity: info
+          annotations:
+            summary: "A tenant hit its daily data-volume quota"
+            description: "tenant_id={{`{{ $labels.tenant_id }}`}} had publishes rejected for exceeding max_bytes_per_day — informational unless unexpected for that tenant."
+{{- end }}

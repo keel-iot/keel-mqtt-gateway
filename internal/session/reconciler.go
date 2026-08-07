@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"math/rand"
 	"time"
+
+	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
 // defaultReconcilerInterval mirrors routing.Reconciler's own default
@@ -71,6 +73,11 @@ func jitter(d time.Duration) time.Duration {
 // (and tests) can trigger it deterministically instead of waiting for
 // Run's ticker.
 func (r *Reconciler) ReconcileOnce() {
+	start := time.Now()
+	defer func() {
+		telemetry.ReconciliationDuration.WithLabelValues("offline_session").Observe(time.Since(start).Seconds())
+	}()
+
 	liveEdges := r.LiveEdgeNodeIDs()
 	if len(liveEdges) == 0 {
 		r.logWarn("session: reconciler found no live edge nodes — skipping this pass")
@@ -82,6 +89,7 @@ func (r *Reconciler) ReconcileOnce() {
 		r.logWarn("session: reconciler inventory fetch failed", "error", err)
 		return
 	}
+	telemetry.SessionsOffline.Set(float64(len(sessions)))
 
 	moved := 0
 	for _, s := range sessions {

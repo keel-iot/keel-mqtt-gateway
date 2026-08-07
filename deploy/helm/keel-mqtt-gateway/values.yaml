@@ -249,6 +249,19 @@ metrics:
   prometheusAdapter:
     installConfigMap: false
     namespace: monitoring
+  # Requires the Prometheus Operator CRD (monitoring.coreos.com/v1
+  # PrometheusRule) — same precondition as serviceMonitor above.
+  prometheusRule:
+    enabled: false
+    additionalLabels: {}
+  # Requires a Grafana sidecar that discovers dashboards by label (the
+  # kube-prometheus-stack default: grafana_dashboard: "1") — this chart
+  # never installs Grafana itself.
+  grafanaDashboard:
+    enabled: false
+    namespace: "" # defaults to the release namespace
+    additionalLabels:
+      grafana_dashboard: "1"
 
 # Shared by core and edge (core-statefulset.yaml/edge-deployment.yaml).
 # Only the liveness probe is tunable here — readiness failing is meant to

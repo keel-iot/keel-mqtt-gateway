@@ -1,0 +1,117 @@
+{{- if .Values.metrics.grafanaDashboard.enabled }}
+{{/*
+Starter dashboard for the metrics defined in internal/telemetry — see
+docs/alternatives-and-future-work.md, "Roadmap industriale", point 6.
+Requires a Grafana sidecar that discovers dashboards by label (the
+kube-prometheus-stack default) — this chart never installs Grafana
+itself. The dashboard JSON's own legend-format placeholders are escaped
+below so Helm's rendering leaves them untouched for Grafana to expand.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "keel.fullname" . }}-grafana-dashboard
+  namespace: {{ .Values.metrics.grafanaDashboard.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "keel.labels" . | nindent 4 }}
+    {{- with .Values.metrics.grafanaDashboard.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  keel-mqtt-gateway.json: |
+    {
+      "title": "Keel MQTT Gateway",
+      "uid": "keel-mqtt-gateway",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "timezone": "browser",
+      "refresh": "30s",
+      "time": { "from": "now-6h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": {}
+          }
+        ]
+      },
+      "panels": [
+        { "id": 1, "title": "Active connections (by tenant)", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [ { "expr": "sum(keel_gateway_active_connections) by (tenant_id)", "legendFormat": "{{`{{tenant_id}}`}}" } ] },
+        { "id": 2, "title": "Connection attempts (rate, by result)", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [ { "expr": "sum(rate(keel_gateway_connections_total[5m])) by (result)", "legendFormat": "{{`{{result}}`}}" } ] },
+    
+        { "id": 3, "title": "Disconnects (rate, by reason)", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [ { "expr": "sum(rate(keel_gateway_disconnects_total[5m])) by (reason)", "legendFormat": "{{`{{reason}}`}}" } ] },
+        { "id": 4, "title": "Messages published (rate, by QoS)", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [ { "expr": "sum(rate(keel_gateway_messages_published_total[5m])) by (qos)", "legendFormat": "qos {{`{{qos}}`}}" } ] },
+    
+        { "id": 5, "title": "Messages forwarded (rate, by path/QoS)", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [ { "expr": "sum(rate(keel_gateway_messages_forwarded_total[5m])) by (path, qos)", "legendFormat": "{{`{{path}}`}} qos {{`{{qos}}`}}" } ] },
+        { "id": 6, "title": "QoS dropped / redeliveries / dedup (rate)", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "sum(rate(keel_gateway_qos_dropped_total[5m])) by (qos)", "legendFormat": "dropped qos {{`{{qos}}`}}" },
+            { "expr": "sum(rate(keel_gateway_redeliveries_total[5m])) by (qos)", "legendFormat": "redelivered qos {{`{{qos}}`}}" },
+            { "expr": "sum(rate(keel_gateway_deduplications_total[5m]))", "legendFormat": "deduplicated" }
+          ] },
+    
+        { "id": 7, "title": "Sessions live / offline", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "keel_gateway_sessions_live", "legendFormat": "live" },
+            { "expr": "keel_gateway_sessions_offline", "legendFormat": "offline" }
+          ] },
+        { "id": 8, "title": "Inflight messages (fleet-wide)", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [ { "expr": "keel_gateway_inflight_messages", "legendFormat": "inflight" } ] },
+    
+        { "id": 9, "title": "Cluster members", "type": "stat", "gridPos": { "h": 6, "w": 6, "x": 0, "y": 32 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [ { "expr": "keel_gateway_cluster_members" } ] },
+        { "id": 10, "title": "Redis failovers (total)", "type": "stat", "gridPos": { "h": 6, "w": 6, "x": 6, "y": 32 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [ { "expr": "keel_gateway_storage_failovers_total" } ] },
+        { "id": 11, "title": "Routing table entries", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [ { "expr": "keel_gateway_cluster_routing_entries", "legendFormat": "entries" } ] },
+    
+        { "id": 12, "title": "Inter-node gRPC forward latency (p50/p95/p99)", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "histogram_quantile(0.50, sum(rate(keel_gateway_cluster_forward_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p50" },
+            { "expr": "histogram_quantile(0.95, sum(rate(keel_gateway_cluster_forward_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p95" },
+            { "expr": "histogram_quantile(0.99, sum(rate(keel_gateway_cluster_forward_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p99" }
+          ] },
+        { "id": 13, "title": "Cluster forward failures (rate)", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [ { "expr": "sum(rate(keel_gateway_cluster_forward_failures_total[5m]))", "legendFormat": "failures/s" } ] },
+    
+        { "id": 14, "title": "Reconciliation duration p95 (by reconciler)", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 48 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [ { "expr": "histogram_quantile(0.95, sum(rate(keel_gateway_reconciliation_duration_seconds_bucket[5m])) by (le, reconciler))", "legendFormat": "{{`{{reconciler}}`}}" } ] },
+        { "id": 15, "title": "Raft apply duration p99 (by op)", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 48 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [ { "expr": "histogram_quantile(0.99, sum(rate(keel_gateway_raft_apply_duration_seconds_bucket[5m])) by (le, op))", "legendFormat": "{{`{{op}}`}}" } ] },
+    
+        { "id": 16, "title": "Edge load score / connections / CPU fraction", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 56 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            { "expr": "keel_gateway_edge_load_score", "legendFormat": "{{`{{pod}}`}} load score" },
+            { "expr": "keel_gateway_edge_load_connections_fraction", "legendFormat": "{{`{{pod}}`}} conn fraction" },
+            { "expr": "keel_gateway_edge_load_cpu_fraction", "legendFormat": "{{`{{pod}}`}} cpu fraction" }
+          ] },
+        { "id": 17, "title": "Membership changes (rate, by type)", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 56 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [ { "expr": "sum(rate(keel_gateway_cluster_membership_changes_total[5m])) by (type)", "legendFormat": "{{`{{type}}`}}" } ] }
+      ]
+    }
+{{- end }}

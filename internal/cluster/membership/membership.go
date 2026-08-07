@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/memberlist"
 
 	keelraft "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/raft"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
 // Config configures a Membership instance.
@@ -464,7 +465,10 @@ func (e *eventDelegate) NotifyJoin(n *memberlist.Node) {
 	}
 	e.m.mu.Lock()
 	e.m.members[meta.NodeID] = meta
+	count := len(e.m.members)
 	e.m.mu.Unlock()
+	telemetry.ClusterMembers.Set(float64(count))
+	telemetry.MembershipChangesTotal.WithLabelValues("join").Inc()
 	e.m.log.Info("membership: node joined", "node_id", meta.NodeID, "role", meta.Role)
 
 	e.maybeAddVoter(meta)
@@ -478,7 +482,10 @@ func (e *eventDelegate) NotifyLeave(n *memberlist.Node) {
 	}
 	e.m.mu.Lock()
 	delete(e.m.members, nodeID)
+	count := len(e.m.members)
 	e.m.mu.Unlock()
+	telemetry.ClusterMembers.Set(float64(count))
+	telemetry.MembershipChangesTotal.WithLabelValues("leave").Inc()
 	e.m.log.Info("membership: node left", "node_id", nodeID)
 }
 

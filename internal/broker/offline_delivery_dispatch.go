@@ -3,11 +3,13 @@ package broker
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/keel-iot/keel-mqtt-gateway/internal/session"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
 // offlineDeliveryRegistry is the narrow slice of keelraft.Registry
@@ -61,9 +63,14 @@ func DeliverOffline(ctx context.Context, registry offlineDeliveryRegistry, store
 				return err
 			}
 			if !first {
+				telemetry.DeduplicationsTotal.Inc()
 				return nil // already delivered for this publish event elsewhere
 			}
-			return store.EnqueueOfflineInflight(ctx, clientID, packetID, msg)
+			if err := store.EnqueueOfflineInflight(ctx, clientID, packetID, msg); err != nil {
+				return err
+			}
+			telemetry.MessagesForwarded.WithLabelValues(strconv.Itoa(int(qos)), "offline").Inc()
+			return nil
 		},
 		Log: log,
 	}

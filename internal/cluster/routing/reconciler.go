@@ -7,6 +7,8 @@ import (
 	"time"
 
 	mochimqtt "github.com/mochi-mqtt/server/v2"
+
+	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
 // defaultReconcilerInterval is how often Reconciler checks whether this
@@ -110,6 +112,11 @@ func jitter(d time.Duration) time.Duration {
 }
 
 func (r *Reconciler) reconcileOnce() {
+	start := time.Now()
+	defer func() {
+		telemetry.ReconciliationDuration.WithLabelValues("routing").Observe(time.Since(start).Seconds())
+	}()
+
 	local := LocalSubscriptions(r.Server)
 	if len(local) == 0 {
 		return

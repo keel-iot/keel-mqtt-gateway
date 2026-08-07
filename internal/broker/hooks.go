@@ -809,6 +809,14 @@ func (h *keelHook) OnDisconnect(cl *mqtt.Client, _ error, expire bool) {
 
 	if ok {
 		telemetry.ActiveConnections.WithLabelValues(state.info.TenantID.String()).Dec()
+		disconnectReason := "normal"
+		switch {
+		case evicted:
+			disconnectReason = "evicted"
+		case expire:
+			disconnectReason = "expired"
+		}
+		telemetry.DisconnectsTotal.WithLabelValues(state.info.TenantID.String(), disconnectReason).Inc()
 		h.forwardConnectionEvent(state.info, "offline")
 		if cleanup {
 			h.unsubscribeClusterFilters(cl)
@@ -1035,13 +1043,16 @@ func (h *keelHook) forwardToClusterSubscribers(ctx context.Context, info *auth.D
 		QoS:          pk.FixedHeader.Qos,
 		PublishID:    publishID,
 	}
+	qosStr := strconv.Itoa(int(pk.FixedHeader.Qos))
 	for _, nodeID := range nodes {
 		if nodeID == h.clusterNodeID {
 			continue // handled directly above, no self-forward
 		}
 		if err := h.clusterFwd.Forward(ctx, nodeID, msg); err != nil {
 			h.log.Error("cluster: forward publish failed", "target_node", nodeID, "topic", pk.TopicName, "error", err)
+			continue
 		}
+		telemetry.MessagesForwarded.WithLabelValues(qosStr, "cluster").Inc()
 	}
 }
 

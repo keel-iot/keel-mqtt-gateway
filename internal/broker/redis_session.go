@@ -196,7 +196,10 @@ func (h *RedisSessionHook) OnUnsubscribed(cl *mqtt.Client, pk packets.Packet) {
 }
 
 // OnQosPublish persists an in-flight QoS≥1 message.
-func (h *RedisSessionHook) OnQosPublish(cl *mqtt.Client, pk packets.Packet, sent int64, _ int) {
+func (h *RedisSessionHook) OnQosPublish(cl *mqtt.Client, pk packets.Packet, sent int64, resends int) {
+	if resends > 0 {
+		telemetry.RedeliveriesTotal.WithLabelValues(strconv.Itoa(int(pk.FixedHeader.Qos))).Inc()
+	}
 	props := pk.Properties.Copy(false)
 	in := &storage.Message{
 		ID:          inflightFieldKey(cl, pk),
@@ -343,6 +346,14 @@ func (h *RedisSessionHook) MarkDelivered(ctx context.Context, publishID uuid.UUI
 		return false, fmt.Errorf("redis session: mark delivered: %w", err)
 	}
 	return ok, nil
+}
+
+// InflightCount returns the number of QoS1/2 inflight messages currently
+// persisted in Redis (live + offline-queued, same hash — see package doc's
+// key schema) — for telemetry.RunClusterStatsSampler, an O(1) HLEN rather
+// than StoredInflightMessages' full HGetAll+unmarshal.
+func (h *RedisSessionHook) InflightCount(ctx context.Context) (int64, error) {
+	return h.router.Client().HLen(ctx, redisInflightHash).Result()
 }
 
 // StoredInflightMessages returns all in-flight messages persisted in Redis.
