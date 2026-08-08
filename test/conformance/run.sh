@@ -36,6 +36,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ── Self-test the report runner's own semantics first ───────────────────────
+# No network, no Postgres, no broker needed — a broken report runner must
+# never be trusted to produce a conformance result, so this fails fast
+# before any real infrastructure gets started.
+log "self-test: report runner classification semantics"
+python3 test/conformance/test_run_report.py -v || fail "report runner self-test failed — refusing to trust conformance results"
+
 # ── Fetch the suite at a pinned commit ──────────────────────────────────────
 if [[ ! -d "$CACHE_DIR" ]]; then
   log "cloning paho.mqtt.testing @ $PAHO_PIN"
@@ -81,6 +88,9 @@ done
 grep -q "MQTT CONFORMANCE MODE ENABLED" "$SERVER_LOG" || fail "conformance banner missing from startup log — refusing to trust auth/ACL are actually bypassed"
 
 # ── Run both suites ──────────────────────────────────────────────────────────
+ARTIFACTS_DIR="test/conformance/artifacts"
+mkdir -p "$ARTIFACTS_DIR"
+
 EXIT=0
 for spec in "client_test:mqtt_3_1_1" "client_test5:mqtt_5"; do
   module="${spec%%:*}"
@@ -95,11 +105,34 @@ for spec in "client_test:mqtt_3_1_1" "client_test5:mqtt_5"; do
         --suite-dir "$CACHE_DIR/interoperability" \
         --module "$module" \
         --host localhost --port "$MQTT_PORT" \
-        --name "$name" 2> >(tee "/tmp/keel-conformance-$module.log" >&2); then
+        --name "$name" \
+        --json-out "$ARTIFACTS_DIR/$name.json" \
+        2> >(tee "/tmp/keel-conformance-$module.log" >&2); then
     status=$?
     [[ "$status" -eq 124 ]] && log "$module TIMED OUT after 180s — see /tmp/keel-conformance-$module.log"
     EXIT=1
   fi
 done
+
+# ── Generate the human-readable report from the JSON artifacts ─────────────
+# Four-valued result, never a plain pass/fail: a known, investigated
+# harness issue (see test/conformance/evidence/*.md) is reported as its
+# own column, distinct from both a real broker failure and a pass —
+# collapsing it into either would misrepresent the result.
+python3 - "$ARTIFACTS_DIR" > "$ARTIFACTS_DIR/report.md" <<'PYEOF'
+import json, sys, glob, os
+
+artifacts_dir = sys.argv[1]
+print("# MQTT conformance report\n")
+print("| Protocol | Passed | Failed (broker) | Harness issue |")
+print("|---|---|---|---|")
+for path in sorted(glob.glob(os.path.join(artifacts_dir, "*.json"))):
+    with open(path) as f:
+        data = json.load(f)
+    for name, r in data.items():
+        print(f"| {name} | {r['passed']} | {r['failed']} | {r['harness']} |")
+        for issue in r.get("harness_issues", []):
+            print(f"\n> `{name}`/`{issue['test']}` classified HARNESS — see `test/conformance/{issue['evidence']}`.")
+PYEOF
 
 exit $EXIT
