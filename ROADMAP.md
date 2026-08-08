@@ -42,11 +42,12 @@ against the current codebase 2026-08-08, not assumed:
       (plain + TLS). Not a design limitation, just unwired. Likely the
       single highest-leverage item in this list: some evaluators'
       browser-based tooling or firewall posture requires WS/WSS outright.
+      Tracked: [keel-iot/keel-mqtt-gateway#5](https://github.com/keel-iot/keel-mqtt-gateway/issues/5)
 - [ ] **Proxy Protocol — confirmed gap.** No dependency, no listener
       wrapper. Needed to sit behind an enterprise L4 LB/proxy that
       preserves real client IPs (`github.com/pires/go-proxyproto` or
       equivalent would be the natural fit alongside the existing TCP
-      listener).
+      listener). Tracked: [keel-iot/keel-mqtt-gateway#6](https://github.com/keel-iot/keel-mqtt-gateway/issues/6)
 - [~] MQTT bridging (broker-to-broker) — README's architecture table
       lists "MQTT bridge" under Integration, but this session's work
       only confirms Kafka/HTTP `OutputConnector`s exist; true MQTT-to-MQTT

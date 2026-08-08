@@ -75,8 +75,8 @@ distinction.
 |---|---|---|
 | TCP (plain) | PASS | `internal/broker/broker.go`'s `listeners.NewTCP` |
 | TLS / mTLS | PASS | `internal/broker/broker.go`, `CertReloader`, X.509 CN auth path |
-| WebSocket / WSS | **GAP, confirmed 2026-08-08** | `mochi-mqtt` (vendored dependency) ships a websocket listener already; `internal/broker/broker.go` never wires it. Not a design limitation — just unwired. |
-| Proxy Protocol | **GAP, confirmed 2026-08-08** | No dependency, no listener wrapper. Needed behind an L4 LB/proxy that preserves real client IPs. |
+| WebSocket / WSS | **GAP, confirmed 2026-08-08** | `mochi-mqtt` (vendored dependency) ships a websocket listener already; `internal/broker/broker.go` never wires it. Not a design limitation — just unwired. Tracked: [keel-iot/keel-mqtt-gateway#5](https://github.com/keel-iot/keel-mqtt-gateway/issues/5) |
+| Proxy Protocol | **GAP, confirmed 2026-08-08** | No dependency, no listener wrapper. Needed behind an L4 LB/proxy that preserves real client IPs. Tracked: [keel-iot/keel-mqtt-gateway#6](https://github.com/keel-iot/keel-mqtt-gateway/issues/6) |
 
 ## Not yet in this matrix
 
