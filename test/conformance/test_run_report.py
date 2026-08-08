@@ -140,5 +140,21 @@ class ClassifyAndExitCodeTests(unittest.TestCase):
         self.assertNotEqual(run_report.exit_code_for(failed), 0)
 
 
+class UnresolvedFlakeIsNeverHarnessTests(unittest.TestCase):
+    """KNOWN_UNRESOLVED_FLAKES is an internal triage note only — it must
+    never let classify()/exit_code_for() treat a flaky-but-unproven
+    failure as anything other than a real failure. If someone later
+    "helpfully" merges this dict into KNOWN_HARNESS_ISSUES, this test
+    catches it."""
+
+    def test_flaky_entry_not_in_harness_map_stays_failed(self):
+        self.assertNotIn("test_session_expiry", run_report.KNOWN_HARNESS_ISSUES)
+
+        failed, harness = run_report.classify({"test_session_expiry"})
+        self.assertEqual(failed, ["test_session_expiry"])
+        self.assertEqual(harness, [])
+        self.assertNotEqual(run_report.exit_code_for(failed), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -47,6 +47,19 @@ KNOWN_HARNESS_ISSUES = {
     "test_flow_control2": "evidence/test_flow_control2.md",
 }
 
+# Test name -> tracking issue, for a failure seen but not yet reproducible
+# enough to classify at all — NOT a fifth public result state. The
+# report's JSON/exit code treat these exactly like any other unlisted
+# failure (real FAIL, non-zero exit); this dict only adds a visible
+# stderr note pointing at the tracking issue, so triage doesn't have to
+# rediscover "oh yeah, that one sometimes happens" from scratch. Move an
+# entry OUT of here (to KNOWN_HARNESS_ISSUES with real evidence, or just
+# delete it once fixed) as soon as it's actually understood — this is a
+# waiting room, not a permanent home.
+KNOWN_UNRESOLVED_FLAKES = {
+    "test_session_expiry": "https://github.com/keel-iot/keel-mqtt-gateway/issues/3",
+}
+
 # Sections an evidence document must contain, verbatim, to back a HARNESS
 # classification — mirrors test/conformance/evidence/test_flow_control2.md's
 # structure. A machine-checkable proxy for CONTRIBUTING.md's full
@@ -137,6 +150,16 @@ def main():
     failing_names = {test._testMethodName for test, _ in result.failures + result.errors}
     failed, harness = classify(failing_names)
     passed = result.testsRun - len(failing_names)
+
+    for name in failed:
+        issue = KNOWN_UNRESOLVED_FLAKES.get(name)
+        if issue:
+            print(
+                f"NOTE: {name} failed — tracked as UNRESOLVED/FLAKY, see {issue}. "
+                "Still counted as a real FAIL below; this is an internal triage "
+                "note, not a fifth public result state.",
+                file=sys.stderr,
+            )
 
     report = {
         args.name: {
