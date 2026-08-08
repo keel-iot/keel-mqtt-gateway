@@ -278,6 +278,22 @@ For production-like deployments (Core / Edge split, TLS, Redis failover), see:
 
 ---
 
+## MQTT Conformance
+
+Keel currently passes all 10 MQTT 3.1.1 [Eclipse Paho](https://github.com/eclipse-paho/paho.mqtt.testing)
+conformance tests and 26 of 27 MQTT 5 tests. The remaining MQTT 5 case
+was independently investigated at packet level — Keel writes the
+required DISCONNECT (reason 0x93) before an orderly TCP close; the
+result is classified as a client-side ordering issue in the test
+harness itself, not a Keel protocol violation. Full methodology,
+evidence, and the machine-readable report: [`test/conformance/README.md`](test/conformance/README.md).
+
+We don't claim "fully MQTT compliant" — that phrase doesn't mean much
+without the matrix behind it. The conformance suite runs against the
+real released binary, black-box, with Keel's own auth/ACL policy
+isolated out (see `--conformance-test`) so what's being measured is the
+protocol engine, not our own configuration choices.
+
 ## Status & Roadmap
 
 Keel is currently production-ready for its core feature set.
@@ -291,6 +307,7 @@ Keel is currently production-ready for its core feature set.
 - Output plugin isolation: a slow/failing Kafka-Redpanda producer can no longer block MQTT delivery (fixed 2026-07-31)
 - StatefulSet rolling update (Olric cold-start sequencing) — `/readyz` (TLS, Redis, raft leader, local Olric reachability, present since v0.2.3) has been through several real rolling updates on GKE (v0.2.0 → v0.2.5) with no issues observed
 - HPA edge load metric end-to-end on GKE: `prometheus-adapter` (VictoriaMetrics-backed) registering `custom.metrics.k8s.io`, HPA reading real `keel_edge_load_score` values (`ScalingActive: True`, `ValidMetricFound`) — confirmed on a real GKE cluster 2026-08-03
+- Eclipse Paho MQTT conformance: 10/10 on MQTT 3.1.1, 26/27 on MQTT 5 (the one remaining case is a documented client-side harness issue, not a Keel gap — see [MQTT Conformance](#mqtt-conformance) above)
 
 **Roadmap / Known Gaps:**
 - Auth/ACL staged plugin interface (JWT/OAuth/other providers today require code changes, not a plugin) — deliberately deferred

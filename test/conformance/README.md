@@ -29,43 +29,70 @@ touching any production code path:
 imported by, or modified for, this mode — see
 `TestProductionACL_Unchanged` in `internal/broker/hooks_test.go`.
 
+**Conformance harness compatibility must never alter production
+protocol semantics** — see `CONTRIBUTING.md`'s "Protocol regression
+suite" section for that principle stated in full, and the four-valued
+result classification (`PASS`/`FAIL`/`HARNESS`/`N/A`) used below and by
+`run_report.py`.
+
 ## Running it
 
 ```
 ./test/conformance/run.sh
 ```
 
-Clones `paho.mqtt.testing` at a pinned commit into `.cache/` (gitignored,
+First runs `test_run_report.py` — a self-test of the report runner's own
+classification semantics (no network/broker needed) — and aborts before
+touching any real infrastructure if it fails. Then clones
+`paho.mqtt.testing` at a pinned commit into `.cache/` (gitignored,
 not vendored — separate project, separate license), starts a throwaway
 Postgres container (required unconditionally by `internal/db.Migrate`,
 same as any other run) and a `keel-server --conformance-test` instance,
-then runs both suites and prints one JSON line per suite:
+then runs both suites and writes:
 
-```json
-{"mqtt_3_1_1": {"passed": 10, "failed": 0}}
-{"mqtt_5": {"passed": N, "failed": M}}
-```
+- `artifacts/mqtt_3_1_1.json`, `artifacts/mqtt_5.json` — machine-readable,
+  one per suite, distinguishing real broker failures from known harness
+  issues:
+  ```json
+  {"mqtt_5": {"passed": 26, "failed": 0, "harness": 1,
+              "failed_tests": [],
+              "harness_issues": [{"test": "test_flow_control2",
+                                   "evidence": "evidence/test_flow_control2.md"}]}}
+  ```
+- `artifacts/report.md` — the same data as a human-readable table.
 
-Exits non-zero if either suite has a failure. Override ports via
-`KEEL_CONFORMANCE_{PG,MQTT,HTTP,METRICS}_PORT` if the defaults collide
-with something already running locally.
+`artifacts/` is generated on every run (gitignored, a CI artifact, not a
+source file) — the investigation backing each `harness` entry is
+committed separately under `evidence/`, since that doesn't go stale the
+way a raw pass/fail count does.
 
-## Results (2026-08-07, after root-causing the MQTT5 gaps)
+Exit code is non-zero only for a genuine (`failed`) broker regression —
+a known, investigated harness issue does not fail the run, but is never
+silently invisible either: it has its own count and its own evidence
+file. Override ports via `KEEL_CONFORMANCE_{PG,MQTT,HTTP,METRICS}_PORT`
+if the defaults collide with something already running locally.
 
-**MQTT 3.1.1: 10/10 passed** — including `test_subscribe_failure`
-(confirms the conformance ACL's `test/nosubscribe` semantics end to end)
-and `test_zero_length_clientid`.
+## Results (last full run: 2026-08-07)
 
-**MQTT5: 26/27 passed, 1 failed.** First run was 17/24 (7 failures + a
-hang that prevented 3 more tests from ever running); all but one were
-root-caused to two missing mochi-mqtt upstream compatibility flags plus
-one gap in this harness itself.
+| Protocol | Passed | Failed (broker) | Harness issue |
+|---|---|---|---|
+| MQTT 3.1.1 | 10 | 0 | 0 |
+| MQTT 5 | 26 | 0 | 1 |
 
-**Important distinction, decided deliberately (2026-08-07), not implicit:**
-these fixes split into a real product fix and conformance-only test
-scaffolding — 26/27 does **not** mean every policy choice the Paho suite
-exercises was adopted in production, only that the protocol engine was
-validated black-box with Keel's own application policy neutralized.
+**MQTT 3.1.1: 10/10 PASS** — including `test_subscribe_failure` (confirms
+the conformance ACL's `test/nosubscribe` semantics end to end) and
+`test_zero_length_clientid`.
+
+**MQTT 5: 26 PASS, 1 HARNESS, 0 broker failures.** First run was 17/24
+plus a hang (7 failures, 3 tests never reached); all but one were
+root-caused the same day to two missing mochi-mqtt upstream compatibility
+flags, one missing hook, and one bug in this harness's own runner — not
+seven independent protocol defects.
+
+**Important distinction, decided deliberately, not implicit:** this
+result does **not** mean every policy choice the Paho suite exercises
+was adopted in production, only that the protocol engine was validated
+black-box with Keel's own application policy neutralized.
 
 - **Production correctness fix — `NoInheritedPropertiesOnAck`**
   (`internal/broker/broker.go`, unconditional for every deployment):
@@ -90,42 +117,57 @@ validated black-box with Keel's own application policy neutralized.
   implicitly. If wanted in production, it belongs behind an explicit
   config option (e.g. `security.obscureAuthorizationErrors`, default
   `false`), as a separate, deliberate change — not bundled into this one.
-- **Conformance-only — `test_server_keep_alive`**: `conformance.KeepAliveHook`
-  (an `OnConnect` hook mirroring mochi-mqtt's own
-  `examples/paho.testing/main.go` reference implementation) is test
-  scaffolding, not a real keep-alive feature — it only fires for the
-  exact magic values the suite asserts (`Keepalive=120, Clean=true` →
-  `ServerKeepAlive=60`), not a general policy. A real feature (e.g.
-  `mqtt.keepAlive.maxSeconds`, capping and advertising the actual server
-  maximum for any client-requested value, across MQTT5/3.1.1, keepalive=0
-  handling, and metrics) is tracked as a **separate roadmap item**, not
-  implied by this one passing test.
+- **Fixed as a real feature — `test_server_keep_alive`**: `internal/broker.MaxKeepAliveHook`
+  is a general, production, opt-in feature (`MAX_KEEPALIVE` env var /
+  `maxKeepAlive` Helm value) — MQTT5-only by design (MQTT 3.1.1 has no
+  Server Keep Alive property to inform the client, so it's left
+  completely untouched; see the hook's doc for the full reasoning).
+  `internal/conformance.KeepAliveHook` still exists separately as
+  conformance-only scaffolding (the exact `Keepalive==120,Clean==true →
+  60` magic-number match the suite asserts) — not to be confused with
+  the real feature.
 - **Fixed — `test_shared_subscriptions`**: not a keel/mochi issue at
   all — a gap in `run_report.py` itself, which didn't set the
   module-level `topic_prefix` global that `client_test5.py`'s own
   `__main__` block sets (`"client_test5/"`) before its shared-subscriptions
   test references it. Fixed in the wrapper, no broker change needed.
-- **Remaining — `test_flow_control2`** (ERROR: `BrokenPipeError` on
-  `self.socket.send(self.pubrel.pack())`): the test floods 65,536 QoS2
-  publishes with no interleaved reads, expecting the server to disconnect
-  once receive-maximum is exceeded (reason code 147/0x93). The disconnect
-  itself is plausibly correct MQTT5 behavior — the exception fires in the
-  *test client's* own retry path after the socket is already closed, not
-  in an assertion about broker behavior. Not confirmed with a packet
-  capture. Deliberately not touched: **no broker change without evidence
-  Keel violates the protocol** — a fix aimed at silencing this symptom
-  could make the disconnect behavior less correct, not more. Next
-  investigative step (not done yet): capture the exact last
-  broker→client packets, confirm whether Keel actually sends a DISCONNECT
-  0x93 before closing the TCP connection, check determinism across
-  repeated runs, and compare the same scenario against another MQTT5
-  broker (Mosquitto/EMQX) as a reference.
 
-Local regression tests (no Paho suite dependency) pinning these fixes,
-each verified to actually fail when its fix is reverted:
-`internal/broker/broker_test.go` (`NoInheritedPropertiesOnAck`),
-`internal/conformance/compat_test.go` (`ObscureNotAuthorized`), and
-`internal/conformance/keepalive_test.go`.
+### Known harness deviations
 
-See `docs/alternatives-and-future-work.md`'s roadmap for how this feeds
-into the open-points list.
+**`test_flow_control2` — Result: `HARNESS`.** Full investigation:
+[`evidence/test_flow_control2.md`](evidence/test_flow_control2.md).
+
+Summary: the test expects a DISCONNECT (reason 0x93, Receive Maximum
+exceeded) before the connection closes. Packet capture confirms Keel
+writes DISCONNECT 0x93 synchronously, then closes cleanly (FIN, never an
+RST it initiates). An independent Go client that reads every packet
+strictly in order reproduces exactly the expected sequence — 1024
+PUBREC, DISCONNECT 0x93, EOF — with zero errors. The Paho client's own
+receive loop instead answers every PUBREC with an immediate PUBREL
+write regardless of a pending disconnect, and one of those late writes
+lands on a socket the server already closed — the resulting
+`BrokenPipeError` happens in the *client's* PUBREC-handling code, never
+while processing the DISCONNECT itself. No broker change was made: there
+is no evidence of a Keel protocol violation, and "fixing" this would mean
+changing correct behavior to accommodate a client-side ordering bug.
+
+Local regression tests (no Paho suite dependency required) pinning
+these results, each verified to actually fail when its corresponding
+fix is reverted:
+
+- `internal/broker/broker_test.go` — `TestNew_NoInheritedPropertiesOnAckAlwaysEnabled`
+- `internal/broker/flow_control_test.go` — `TestFlowControl_ReceiveMaximumExceeded_DisconnectsWithReasonBeforeClose`
+  (the Go reproduction behind the `test_flow_control2` HARNESS
+  classification, kept permanently), `TestMaxKeepAlive_EndToEnd_ConnackServerKeepAliveProperty`
+- `internal/broker/max_keepalive_test.go` — `TestMaxKeepAliveHook_*`
+  (boundary matrix + MQTT 3.1.1 untouched guarantee)
+- `internal/config/config_test.go` — `MAX_KEEPALIVE` validation
+  (malformed, negative, wire-format boundary at exactly 65535s)
+- `internal/conformance/compat_test.go` — `ObscureNotAuthorized`
+- `internal/conformance/keepalive_test.go` — the conformance-only
+  `KeepAliveHook` scaffolding
+
+See `CONTRIBUTING.md`'s "Protocol regression suite" section for the full
+inventory and the production-vs-conformance-only split, and
+`docs/alternatives-and-future-work.md`'s roadmap for how this feeds into
+the broader open-points list.
