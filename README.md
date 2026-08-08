@@ -319,6 +319,9 @@ Keel is currently production-ready for its core feature set.
 
 See:
 - `CONTRIBUTING.md`
+- `FEATURE_MATRIX.md` — feature-by-feature verification status (MQTT
+  3.1.1/5 today; cluster, chaos, and performance scenarios to follow the
+  same evidence-based format)
 
 ---
 

@@ -167,7 +167,8 @@ fix is reverted:
 - `internal/conformance/keepalive_test.go` — the conformance-only
   `KeepAliveHook` scaffolding
 
-See `CONTRIBUTING.md`'s "Protocol regression suite" section for the full
-inventory and the production-vs-conformance-only split, and
-`docs/alternatives-and-future-work.md`'s roadmap for how this feeds into
+See `../../FEATURE_MATRIX.md` for the feature-by-feature status this
+suite feeds into, `CONTRIBUTING.md`'s "Protocol regression suite"
+section for the full inventory and the production-vs-conformance-only
+split, and `docs/alternatives-and-future-work.md`'s roadmap for how this feeds into
 the broader open-points list.
