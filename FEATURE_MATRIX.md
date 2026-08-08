@@ -69,6 +69,15 @@ distinction.
 | User Properties | `test_user_properties` | PASS |
 | Request/Response (Response Topic + Correlation Data) | `test_request_response` | PASS |
 
+## Transport (not MQTT protocol per se, but part of Phase 1's "deal breaker" gaps — see `ROADMAP.md`)
+
+| Feature | Status | Notes |
+|---|---|---|
+| TCP (plain) | PASS | `internal/broker/broker.go`'s `listeners.NewTCP` |
+| TLS / mTLS | PASS | `internal/broker/broker.go`, `CertReloader`, X.509 CN auth path |
+| WebSocket / WSS | **GAP, confirmed 2026-08-08** | `mochi-mqtt` (vendored dependency) ships a websocket listener already; `internal/broker/broker.go` never wires it. Not a design limitation — just unwired. |
+| Proxy Protocol | **GAP, confirmed 2026-08-08** | No dependency, no listener wrapper. Needed behind an L4 LB/proxy that preserves real client IPs. |
+
 ## Not yet in this matrix
 
 Deliberately absent rather than guessed at — these need either a Paho

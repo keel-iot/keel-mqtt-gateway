@@ -17,6 +17,40 @@ A few tests in `internal/broker` require `TEST_DATABASE_URL` (a real
 Postgres) and are skipped otherwise — see `internal/db/migrate_test.go`'s
 doc for how to point one at the docker-compose Postgres.
 
+## Definition of Done for a new protocol feature
+
+See `ROADMAP.md` for the full phased plan this belongs to. For any new
+MQTT protocol feature, all of the following before it's done — not just
+"it compiles":
+
+```
+Implementation
+  → Unit test
+  → Integration/protocol test
+  → Regression test
+  → FEATURE_MATRIX.md row (real test reference, not a placeholder)
+  → Docs/config update
+  → Metric/log, only if operationally meaningful (never a decorative metric)
+```
+
+Minimum test coverage per feature — not exhaustive for every feature,
+but the default to deviate from deliberately, not by omission:
+
+- a below-limit / normal case;
+- a boundary case exactly at the limit;
+- an above-limit case, with the correct MQTT reason code;
+- the MQTT 3.1.1 vs. MQTT 5 split, wherever the spec actually differs
+  (never uniform behavior imposed for its own sake — see
+  `MaxKeepAlive`'s MQTT5-only design for the precedent);
+- the disabled/unconfigured case, proving backward compatibility;
+- mutation verification (revert the fix, confirm the test fails, restore
+  it) for any test backing a public claim — see the section below.
+
+**No `PASS`/`SUPPORTED` row in `FEATURE_MATRIX.md` without a
+referenceable test.** A matrix entry that can't be traced to a real,
+greppable test name is a brochure claim, not evidence — exactly the
+failure mode this whole methodology exists to prevent.
+
 ## Protocol regression suite
 
 Every real MQTT protocol behavior discovered wrong or missing via an
