@@ -117,6 +117,14 @@ type Config struct {
 	// deployments — multi-tenant setups must keep every username
 	// tenant-qualified instead of relying on this fallback.
 	DefaultTenantID string
+
+	// MaxKeepAlive caps the MQTT5 Keep Alive interval a client may
+	// request — see MaxKeepAliveHook's doc for the full semantics
+	// (MQTT5-only, deliberately; zero treated as "exceeds the maximum").
+	// Zero (default) disables the cap entirely: no hook is even
+	// registered, so behaviour is byte-for-byte identical to before this
+	// field existed.
+	MaxKeepAlive time.Duration
 }
 
 // parseClientAuth maps a TLSClientAuth config string to a tls.ClientAuthType.
@@ -218,6 +226,20 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 	}
 	if err := server.AddHook(hook, nil); err != nil {
 		return nil, nil, fmt.Errorf("add keel hook: %w", err)
+	}
+
+	// Only registered when actually configured — zero behaviour change
+	// for every deployment that doesn't set MaxKeepAlive (matches the
+	// same "absent means untouched" posture as every other optional
+	// Config field here).
+	if cfg.MaxKeepAlive > 0 {
+		maxSeconds := cfg.MaxKeepAlive.Seconds()
+		if maxSeconds > 65535 {
+			maxSeconds = 65535 // config.Load already rejects this; defensive floor for any other caller
+		}
+		if err := server.AddHook(NewMaxKeepAliveHook(uint16(maxSeconds)), nil); err != nil {
+			return nil, nil, fmt.Errorf("add max keepalive hook: %w", err)
+		}
 	}
 
 	// Plain-text MQTT listener (required)

@@ -87,6 +87,16 @@ type Config struct {
 	// — see internal/broker.New and keelHook.OnClientExpired. Defaults to 24h.
 	SessionExpiryInterval time.Duration
 
+	// MaxKeepAlive caps the MQTT Keep Alive interval a client may request.
+	// Zero (default) disables the cap entirely — no behaviour change from
+	// before this field existed. Only enforced for MQTT5 connections (see
+	// internal/broker.MaxKeepAliveHook's doc for why MQTT 3.1.1 is
+	// deliberately left untouched: it has no protocol mechanism to inform
+	// the client of a server-side override, so silently enforcing a
+	// shorter timeout there would risk disconnecting already-working
+	// 3.1.1 devices with no way for them to know why).
+	MaxKeepAlive time.Duration
+
 	// RedisAddr is the address of the Redis server used for session persistence
 	// and data-volume rate limiting.  Empty string disables Redis entirely.
 	RedisAddr string
@@ -252,6 +262,28 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// MaxKeepAlive gets real validation (unlike the silently-ignored-on-error
+	// durations above) because it has a hard MQTT wire-format ceiling: Keep
+	// Alive is a uint16 of seconds (max 65535s, ~18.2h). A value that
+	// doesn't fit isn't a matter of taste, it's a value the protocol
+	// literally cannot represent — silently ignoring or truncating it could
+	// mean a config intended to raise the cap actually enforces a much
+	// smaller one.
+	var maxKeepAlive time.Duration
+	if v := os.Getenv("MAX_KEEPALIVE"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid MAX_KEEPALIVE %q: %w", v, err)
+		}
+		if d < 0 {
+			return nil, fmt.Errorf("invalid MAX_KEEPALIVE %q: must not be negative", v)
+		}
+		if d.Seconds() > 65535 {
+			return nil, fmt.Errorf("invalid MAX_KEEPALIVE %q: exceeds MQTT's 65535s (uint16 seconds) limit", v)
+		}
+		maxKeepAlive = d
+	}
+
 	var outputConnectorPlugins []string
 	if v := os.Getenv("OUTPUT_CONNECTOR_PLUGINS"); v != "" {
 		for _, p := range strings.Split(v, ",") {
@@ -281,6 +313,7 @@ func Load() (*Config, error) {
 		DeviceCACacheTTL:          deviceCACacheTTL,
 		CredentialCacheTTL:        credCacheTTL,
 		SessionExpiryInterval:     sessionExpiryInterval,
+		MaxKeepAlive:              maxKeepAlive,
 		RedisAddr:                 os.Getenv("REDIS_ADDR"),
 		RedisPassword:             os.Getenv("REDIS_PASSWORD"),
 		RedisConnectRetryInterval: redisConnectRetryInterval,

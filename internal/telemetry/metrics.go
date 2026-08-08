@@ -198,4 +198,16 @@ var (
 		Name:      "storage_failovers_total",
 		Help:      "Completed Redis primary→replica failover promotions.",
 	})
+
+	// MaxKeepAliveOverridesTotal counts MQTT5 CONNECTs whose requested Keep
+	// Alive was overridden by MaxKeepAliveHook (internal/broker) — useful
+	// for an operator to see whether a configured MAX_KEEPALIVE is actually
+	// being hit, and by how many connections, before/after tuning it.
+	// Zero for every deployment that doesn't set MAX_KEEPALIVE at all (the
+	// hook isn't even registered in that case).
+	MaxKeepAliveOverridesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "keel_gateway",
+		Name:      "max_keepalive_overrides_total",
+		Help:      "MQTT5 CONNECTs whose requested Keep Alive exceeded (or was zero, i.e. unlimited) the configured MAX_KEEPALIVE and was overridden.",
+	})
 )

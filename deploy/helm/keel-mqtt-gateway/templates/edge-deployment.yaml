@@ -147,6 +147,10 @@ spec:
             {{- end }}
             - name: SESSION_EXPIRY_INTERVAL
               value: {{ .Values.sessionExpiryInterval | quote }}
+            {{- if .Values.maxKeepAlive }}
+            - name: MAX_KEEPALIVE
+              value: {{ .Values.maxKeepAlive | quote }}
+            {{- end }}
             - name: TENANT_CACHE_TTL
               value: {{ .Values.tenantCacheTTL | quote }}
             - name: JWKS_CACHE_TTL

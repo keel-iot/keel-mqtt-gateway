@@ -1237,6 +1237,7 @@ func runServer() {
 			ClusterNodeID:         cf.nodeID,
 			OutputConnectors:      outputConns,
 			SessionExpiryInterval: cfg.SessionExpiryInterval,
+			MaxKeepAlive:          cfg.MaxKeepAlive,
 			LiveStats:             liveStats,
 			LiveEdgeNodeIDs:       liveEdgeNodeIDsFn,
 			OfflineDedupTTL:       offlineDedupTTL,

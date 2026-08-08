@@ -282,6 +282,11 @@ livenessProbe:
 logLevel: info
 otlpEndpoint: "" # empty disables tracing
 sessionExpiryInterval: 24h
+# Caps the MQTT5 Keep Alive interval a client may request (CONNACK's
+# Server Keep Alive property) — MQTT 3.1.1 is deliberately unaffected,
+# see internal/broker.MaxKeepAliveHook's doc. Empty (default) disables
+# the cap entirely — no behaviour change from before this existed.
+maxKeepAlive: ""
 tenantCacheTTL: 5m
 jwksCacheTTL: 5m
 autoProvisioningUrl: ""
