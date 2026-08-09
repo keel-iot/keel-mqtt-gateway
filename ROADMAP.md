@@ -54,13 +54,13 @@ against the current codebase 2026-08-08, not assumed:
       `TestProxyProtocol_TCP_UntrustedSourceRejected`. Opt-in via Helm
       `proxyProtocol.enabled`/`proxyProtocol.trustedCidrs`, disabled by
       default. Closed: [keel-iot/keel-mqtt-gateway#6](https://github.com/keel-iot/keel-mqtt-gateway/issues/6)
-- [~] MQTT bridging (broker-to-broker) — README's architecture table
-      lists "MQTT bridge" under Integration, but this session's work
-      only confirms Kafka/HTTP `OutputConnector`s exist; true MQTT-to-MQTT
-      bridging is **not yet verified** one way or the other — needs a
-      direct code check before this row can be trusted, not an assumption
-      from README prose (the same discipline that caught the WebSocket
-      gap applies here too).
+- [SUSPENDED] MQTT bridging (broker-to-broker) — README previously claimed
+      an "MQTT Bridge" under Integration; code has no such thing, only
+      Kafka/HTTP `OutputConnector`s (confirmed 2026-08-09). The false claim
+      is removed from README. Not promoted to a Phase 1 gap: no concrete
+      customer/PoC requirement for it exists yet, unlike WebSocket/WSS,
+      Proxy Protocol, and rate limiting. Revisit if a real case emerges —
+      does not block production readiness in the meantime.
 
 ### MQTT feature completeness
 Tracked directly in `FEATURE_MATRIX.md`, not duplicated here — that file
@@ -77,10 +77,18 @@ coverage, enhanced authentication (AUTH packet / SASL-style challenge).
 - [x] Credential rotation (JWKS cache, device CA cache)
 - [x] Certificate revocation with active eviction of already-connected
       sessions (see `keel-cert-manager` integration)
-- [ ] Rate limiting / connection limiting — `MaxConnections` per tenant
-      exists (`TenantGatewayConfig.MaxConnections`); a general
-      connect-rate or publish-rate limiter does not yet — **not yet
-      verified**, needs a direct check before claiming either way.
+- [ ] **Publish-rate and connect-attempt rate limiting — confirmed gap.**
+      `MaxConnections` per tenant exists (`TenantGatewayConfig.MaxConnections`,
+      concurrent connections only). No connect-rate or publish-rate limiter
+      exists anywhere in the codebase (confirmed 2026-08-09) — a single
+      client/tenant can flood the broker or hammer it with reconnects with
+      no protection beyond the connection-count ceiling. Deliberately not
+      one global limiter: connection concurrency, connect-attempt rate, and
+      publish rate are independent axes; subscription rate deferred unless
+      a real requirement emerges. Local-to-Edge by design, not
+      cluster-coordinated — a security/operational protection, not a
+      billing-grade global quota, so no Raft/Redis coordination on the
+      publish hot path. Tracked: [keel-iot/keel-mqtt-gateway#8](https://github.com/keel-iot/keel-mqtt-gateway/issues/8)
 - [~] Audit/telemetry for "why was this client rejected" — `ConnectionsTotal{result}`
       exists per-tenant; a per-client structured audit trail (the
       `security-guide`/"audit structured" idea from
@@ -108,8 +116,10 @@ coverage, enhanced authentication (AUTH packet / SASL-style challenge).
 
 **Rule of thumb carried into triage**: if the gap blocks a realistic
 PoC, it goes first. If it only closes a feature-parity table against
-EMQX, it goes later. WebSocket/WSS and Proxy Protocol are the two
-confirmed, concrete items from this pass.
+EMQX, it goes later. WebSocket/WSS, Proxy Protocol, and publish/connect
+rate limiting are the three confirmed, concrete gaps from this pass.
+MQTT bridging was a false README claim (removed), not promoted to a
+Phase 1 gap — no concrete requirement for it exists yet.
 
 ## Phase 2 — Feature correctness: every claim has a test
 

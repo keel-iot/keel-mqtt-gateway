@@ -78,6 +78,14 @@ distinction.
 | WebSocket / WSS | PASS | `internal/broker/broker.go`'s `MQTTWSPort`/`MQTTWSSPort`, sharing TLS cert/reload with the TLS-TCP listener. `TestWebSocket_EndToEnd_ConnectPublishSubscribe` (real CONNECT/SUBSCRIBE/server-push over a live WebSocket, production ACL enforced), `TestNew_WSSRequiresTLSCertDir` (config validation). Closed: [keel-iot/keel-mqtt-gateway#5](https://github.com/keel-iot/keel-mqtt-gateway/issues/5) |
 | Proxy Protocol | PASS | `internal/broker/proxyproto_listener.go` (v1/v2 via `github.com/pires/go-proxyproto`), applied to the plain and TLS TCP listeners; requires an explicit trusted-CIDR allowlist, untrusted senders rejected outright. `TestProxyProtocol_TCP_TrustedSourceRealIP`, `TestProxyProtocol_TCP_UntrustedSourceRejected`, `TestNew_ProxyProtocolRequiresTrustedCIDRs`, `TestNew_ProxyProtocolInvalidCIDR`. Closed: [keel-iot/keel-mqtt-gateway#6](https://github.com/keel-iot/keel-mqtt-gateway/issues/6) |
 
+## Security (part of Phase 1's "deal breaker" gaps — see `ROADMAP.md`)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Connection concurrency limit | PASS | `TenantGatewayConfig.MaxConnections`, enforced in `internal/broker/hooks.go`'s `OnConnectAuthenticate` |
+| Publish-rate limiting | **GAP, confirmed 2026-08-09** | No token-bucket/sliding-window limiter on publish rate anywhere in the codebase — only the connection-count ceiling above. Tracked: [keel-iot/keel-mqtt-gateway#8](https://github.com/keel-iot/keel-mqtt-gateway/issues/8) |
+| Connect-attempt rate limiting | **GAP, confirmed 2026-08-09** | Same absence for connect attempts/sec (reconnect storm / brute-force protection). Tracked: [keel-iot/keel-mqtt-gateway#8](https://github.com/keel-iot/keel-mqtt-gateway/issues/8) |
+
 ## Not yet in this matrix
 
 Deliberately absent rather than guessed at — these need either a Paho

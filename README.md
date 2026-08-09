@@ -29,7 +29,6 @@ Instead of making every node equal, Keel separates the cluster into:
 - **Zero-Loss QoS 1/2:** Co-located Redis (primary+replica) with automatic Raft-driven failover
 - **Kubernetes-first:** StatefulSet for Core, Deployment + HPA for Edge
 - **Output plugin architecture:** Publish → Transform → Forward runs out-of-process (`hashicorp/go-plugin`/gRPC sidecar), fully isolated from MQTT delivery
-- **Bridging:** Kafka / Redpanda / HTTP bridge out-of-the-box
 - **Observability:** Prometheus metrics + OpenTelemetry tracing, tenant-aware sampling
 - **Single binary:** (`--role=edge`, `core`, `combined`)
 - **Apache 2.0 License** (No BSL, no SSPL)
@@ -70,7 +69,6 @@ subgraph Integration
     Kafka
     Redpanda
     HTTP
-    MQTTBridge["MQTT Bridge"]
 end
 
 Client --> Broker
@@ -80,7 +78,6 @@ FSM --> Redis
 Broker --> Kafka
 Broker --> Redpanda
 Broker --> HTTP
-Broker --> MQTTBridge
 
 class Broker edge
 class Memberlist,Raft,FSM control
@@ -117,7 +114,7 @@ Keel separates responsibilities into independent layers to avoid bottlenecks on 
 | Control Plane | Cluster metadata (Session Ownership, Redis Primary) | Raft + Memberlist |
 | Data Plane | Routing table, cache, pub/sub | Olric |
 | Persistence | QoS persistence, offline queue, retained | Redis |
-| Integration | Kafka, HTTP, MQTT bridge | Internal |
+| Integration | Kafka, HTTP | Internal |
 
 ### Data Ownership
 
