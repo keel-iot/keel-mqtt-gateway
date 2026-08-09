@@ -24,6 +24,11 @@ type Config struct {
 	MQTTWSPort  int
 	MQTTWSSPort int
 
+	// ProxyProtocol/ProxyProtocolTrustedCIDRs — see broker.Config's doc.
+	// TrustedCIDRs is comma-separated in its env var (PROXY_PROTOCOL_TRUSTED_CIDRS).
+	ProxyProtocol             bool
+	ProxyProtocolTrustedCIDRs []string
+
 	// HTTP adapter port (Hono-compatible REST endpoints)
 	HTTPPort int
 
@@ -201,6 +206,16 @@ func Load() (*Config, error) {
 		mqttWSSPort = p
 	}
 
+	proxyProtocol := os.Getenv("PROXY_PROTOCOL") == "true"
+	var proxyProtocolTrustedCIDRs []string
+	if v := os.Getenv("PROXY_PROTOCOL_TRUSTED_CIDRS"); v != "" {
+		for _, c := range strings.Split(v, ",") {
+			if c = strings.TrimSpace(c); c != "" {
+				proxyProtocolTrustedCIDRs = append(proxyProtocolTrustedCIDRs, c)
+			}
+		}
+	}
+
 	httpPort := 8085
 	if v := os.Getenv("HTTP_PORT"); v != "" {
 		p, err := strconv.Atoi(v)
@@ -322,6 +337,8 @@ func Load() (*Config, error) {
 		MQTTPort:                  mqttPort,
 		MQTTTLSPort:               mqttTLSPort,
 		MQTTWSPort:                mqttWSPort,
+		ProxyProtocol:             proxyProtocol,
+		ProxyProtocolTrustedCIDRs: proxyProtocolTrustedCIDRs,
 		MQTTWSSPort:               mqttWSSPort,
 		HTTPPort:                  httpPort,
 		DatabaseURL:               dbURL,

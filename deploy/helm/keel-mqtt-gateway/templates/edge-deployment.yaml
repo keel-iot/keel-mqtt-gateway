@@ -181,6 +181,12 @@ spec:
             - name: MQTT_WSS_PORT
               value: {{ .Values.edge.service.mqttWssPort | quote }}
             {{- end }}
+            {{- if .Values.proxyProtocol.enabled }}
+            - name: PROXY_PROTOCOL
+              value: "true"
+            - name: PROXY_PROTOCOL_TRUSTED_CIDRS
+              value: {{ join "," .Values.proxyProtocol.trustedCidrs | quote }}
+            {{- end }}
             - name: HTTP_PORT
               value: "8085"
             {{- if .Values.redpanda.enabled }}

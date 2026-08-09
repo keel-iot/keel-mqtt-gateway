@@ -43,11 +43,17 @@ against the current codebase 2026-08-08, not assumed:
       production ACL enforced) and `TestNew_WSSRequiresTLSCertDir`. Opt-in
       via Helm `ws.enabled`/`tls.enabled`, disabled by default.
       Closed: [keel-iot/keel-mqtt-gateway#5](https://github.com/keel-iot/keel-mqtt-gateway/issues/5)
-- [ ] **Proxy Protocol — confirmed gap.** No dependency, no listener
-      wrapper. Needed to sit behind an enterprise L4 LB/proxy that
-      preserves real client IPs (`github.com/pires/go-proxyproto` or
-      equivalent would be the natural fit alongside the existing TCP
-      listener). Tracked: [keel-iot/keel-mqtt-gateway#6](https://github.com/keel-iot/keel-mqtt-gateway/issues/6)
+- [x] **Proxy Protocol — closed.** `internal/broker/proxyproto_listener.go`
+      wraps the plain and TLS TCP listeners with PROXY protocol v1/v2
+      parsing (`github.com/pires/go-proxyproto`). Requires an explicit
+      trusted-CIDR allowlist — connections from outside it are rejected
+      outright, never silently trusted or silently downgraded, since a
+      PROXY header is otherwise an unauthenticated claim about the
+      sender's own address. Covered by
+      `TestProxyProtocol_TCP_TrustedSourceRealIP` and
+      `TestProxyProtocol_TCP_UntrustedSourceRejected`. Opt-in via Helm
+      `proxyProtocol.enabled`/`proxyProtocol.trustedCidrs`, disabled by
+      default. Closed: [keel-iot/keel-mqtt-gateway#6](https://github.com/keel-iot/keel-mqtt-gateway/issues/6)
 - [~] MQTT bridging (broker-to-broker) — README's architecture table
       lists "MQTT bridge" under Integration, but this session's work
       only confirms Kafka/HTTP `OutputConnector`s exist; true MQTT-to-MQTT

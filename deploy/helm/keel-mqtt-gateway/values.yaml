@@ -247,6 +247,17 @@ tls:
 ws:
   enabled: false
 
+# ── PROXY protocol (real client IP behind an L4 LB/proxy) ────────────────
+# Applies only to the plain and TLS TCP listeners (mqtt/mqtt-tls) — same
+# ports, no new ones. Once enabled, trustedCidrs is required: a PROXY
+# header is an unauthenticated claim about the sender's own address, so
+# connections from outside every listed CIDR are rejected outright rather
+# than silently trusted or silently ignored. See internal/broker.Config's
+# ProxyProtocol/ProxyProtocolTrustedCIDRs doc.
+proxyProtocol:
+  enabled: false
+  trustedCidrs: [] # e.g. ["10.0.0.0/8"] — your LB's egress range
+
 # ── Observability ─────────────────────────────────────────────────────────
 metrics:
   port: 9090

@@ -76,7 +76,7 @@ distinction.
 | TCP (plain) | PASS | `internal/broker/broker.go`'s `listeners.NewTCP` |
 | TLS / mTLS | PASS | `internal/broker/broker.go`, `CertReloader`, X.509 CN auth path |
 | WebSocket / WSS | PASS | `internal/broker/broker.go`'s `MQTTWSPort`/`MQTTWSSPort`, sharing TLS cert/reload with the TLS-TCP listener. `TestWebSocket_EndToEnd_ConnectPublishSubscribe` (real CONNECT/SUBSCRIBE/server-push over a live WebSocket, production ACL enforced), `TestNew_WSSRequiresTLSCertDir` (config validation). Closed: [keel-iot/keel-mqtt-gateway#5](https://github.com/keel-iot/keel-mqtt-gateway/issues/5) |
-| Proxy Protocol | **GAP, confirmed 2026-08-08** | No dependency, no listener wrapper. Needed behind an L4 LB/proxy that preserves real client IPs. Tracked: [keel-iot/keel-mqtt-gateway#6](https://github.com/keel-iot/keel-mqtt-gateway/issues/6) |
+| Proxy Protocol | PASS | `internal/broker/proxyproto_listener.go` (v1/v2 via `github.com/pires/go-proxyproto`), applied to the plain and TLS TCP listeners; requires an explicit trusted-CIDR allowlist, untrusted senders rejected outright. `TestProxyProtocol_TCP_TrustedSourceRealIP`, `TestProxyProtocol_TCP_UntrustedSourceRejected`, `TestNew_ProxyProtocolRequiresTrustedCIDRs`, `TestNew_ProxyProtocolInvalidCIDR`. Closed: [keel-iot/keel-mqtt-gateway#6](https://github.com/keel-iot/keel-mqtt-gateway/issues/6) |
 
 ## Not yet in this matrix
 

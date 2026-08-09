@@ -17,6 +17,7 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/listeners"
+	"github.com/pires/go-proxyproto"
 )
 
 // Config holds broker-specific settings extracted from the global config.
@@ -33,6 +34,27 @@ type Config struct {
 	// second TLS story to maintain.
 	MQTTWSPort  int
 	MQTTWSSPort int
+
+	// ProxyProtocol enables PROXY protocol v1/v2 parsing (github.com/pires/
+	// go-proxyproto) on the plain TCP and TLS TCP listeners, for
+	// deployments sitting Keel behind an L4 load balancer/proxy that needs
+	// to preserve the real client IP. Once parsed, RemoteAddr() on the
+	// resulting connection reports the client's address instead of the
+	// LB's — everything downstream (audit logs, cl.Net.Remote) picks it up
+	// for free, no separate plumbing. Does not apply to the WS/WSS
+	// listeners (mochi-mqtt's websocket listener has no equivalent hook to
+	// wrap). False by default: zero behaviour change for every deployment
+	// not behind a PROXY-protocol-speaking LB.
+	ProxyProtocol bool
+
+	// ProxyProtocolTrustedCIDRs restricts which upstream peers are allowed
+	// to send a PROXY header at all — required whenever ProxyProtocol is
+	// true. A PROXY header is otherwise just an unauthenticated claim about
+	// the sender's own address; without a trusted-source allowlist, any
+	// client that can reach the port could spoof its IP. Connections from
+	// outside every listed CIDR are rejected outright, never silently
+	// trusted or silently downgraded to the raw address.
+	ProxyProtocolTrustedCIDRs []string
 
 	// TLSCertDir points at a directory containing tls.crt/tls.key (the
 	// standard Kubernetes Secret volume layout). Required when MQTTTLSPort
@@ -252,11 +274,34 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 		}
 	}
 
+	// PROXY protocol connection policy, shared by the plain TCP and TLS
+	// listeners below. Built once and validated up front — an empty
+	// TrustedCIDRs list is a misconfiguration, not something to silently
+	// fall back from, since the alternative (trust everyone, or trust no
+	// one) is exactly the spoofing/no-op failure mode PROXY protocol
+	// exists to avoid.
+	var connPolicy proxyproto.ConnPolicyFunc
+	if cfg.ProxyProtocol {
+		if len(cfg.ProxyProtocolTrustedCIDRs) == 0 {
+			return nil, nil, fmt.Errorf("ProxyProtocol enabled but ProxyProtocolTrustedCIDRs is empty")
+		}
+		var err error
+		connPolicy, err = proxyproto.TrustProxyHeaderFromRanges(cfg.ProxyProtocolTrustedCIDRs)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parse ProxyProtocolTrustedCIDRs: %w", err)
+		}
+	}
+
 	// Plain-text MQTT listener (required)
-	tcpListener := listeners.NewTCP(listeners.Config{
-		ID:      "tcp",
-		Address: fmt.Sprintf(":%d", cfg.MQTTPort),
-	})
+	var tcpListener listeners.Listener
+	if cfg.ProxyProtocol {
+		tcpListener = newProxyProtoListener("tcp", fmt.Sprintf(":%d", cfg.MQTTPort), nil, connPolicy)
+	} else {
+		tcpListener = listeners.NewTCP(listeners.Config{
+			ID:      "tcp",
+			Address: fmt.Sprintf(":%d", cfg.MQTTPort),
+		})
+	}
 	if err := server.AddListener(tcpListener); err != nil {
 		return nil, nil, fmt.Errorf("add TCP listener on :%d: %w", cfg.MQTTPort, err)
 	}
@@ -290,11 +335,16 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 
 	// TLS MQTT listener (optional — skipped when MQTTTLSPort is 0).
 	if cfg.MQTTTLSPort > 0 {
-		tlsListener := listeners.NewTCP(listeners.Config{
-			ID:        "tls",
-			Address:   fmt.Sprintf(":%d", cfg.MQTTTLSPort),
-			TLSConfig: tlsConfig,
-		})
+		var tlsListener listeners.Listener
+		if cfg.ProxyProtocol {
+			tlsListener = newProxyProtoListener("tls", fmt.Sprintf(":%d", cfg.MQTTTLSPort), tlsConfig, connPolicy)
+		} else {
+			tlsListener = listeners.NewTCP(listeners.Config{
+				ID:        "tls",
+				Address:   fmt.Sprintf(":%d", cfg.MQTTTLSPort),
+				TLSConfig: tlsConfig,
+			})
+		}
 		if err := server.AddListener(tlsListener); err != nil {
 			return nil, nil, fmt.Errorf("add TLS listener on :%d: %w", cfg.MQTTTLSPort, err)
 		}
