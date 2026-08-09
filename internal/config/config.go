@@ -17,6 +17,13 @@ type Config struct {
 	// env-based config — kept out of this struct.
 	MQTTTLSPort int
 
+	// MQTT WebSocket listeners (0 = disabled, independently of each
+	// other and of MQTTPort/MQTTTLSPort). MQTTWSSPort shares
+	// TLSCertDir/TLSClientAuth with MQTTTLSPort — see
+	// broker.Config.MQTTWSSPort's doc.
+	MQTTWSPort  int
+	MQTTWSSPort int
+
 	// HTTP adapter port (Hono-compatible REST endpoints)
 	HTTPPort int
 
@@ -176,6 +183,24 @@ func Load() (*Config, error) {
 		mqttTLSPort = p
 	}
 
+	mqttWSPort := 0
+	if v := os.Getenv("MQTT_WS_PORT"); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid MQTT_WS_PORT: %w", err)
+		}
+		mqttWSPort = p
+	}
+
+	mqttWSSPort := 0
+	if v := os.Getenv("MQTT_WSS_PORT"); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid MQTT_WSS_PORT: %w", err)
+		}
+		mqttWSSPort = p
+	}
+
 	httpPort := 8085
 	if v := os.Getenv("HTTP_PORT"); v != "" {
 		p, err := strconv.Atoi(v)
@@ -296,6 +321,8 @@ func Load() (*Config, error) {
 	return &Config{
 		MQTTPort:                  mqttPort,
 		MQTTTLSPort:               mqttTLSPort,
+		MQTTWSPort:                mqttWSPort,
+		MQTTWSSPort:               mqttWSSPort,
 		HTTPPort:                  httpPort,
 		DatabaseURL:               dbURL,
 		RedpandaBrokers:           brokers,

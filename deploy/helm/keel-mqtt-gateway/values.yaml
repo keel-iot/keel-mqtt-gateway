@@ -192,6 +192,8 @@ edge:
     annotations: {}
     mqttPort: 1883
     mqttTlsPort: 8883
+    mqttWsPort: 8083 # only exposed when ws.enabled
+    mqttWssPort: 8084 # only exposed when tls.enabled — shares the TLS cert with mqtt-tls
     httpPort: 8085
     # loadBalancerIP / externalTrafficPolicy left to the provider defaults
     # unless set here.
@@ -236,6 +238,14 @@ tls:
     dnsNames: []
     secretName: "" # defaults to <fullname>-edge-tls
   existingSecret: "" # a pre-existing tls.crt/tls.key Secret (e.g. from an external ACME client)
+
+# ── WebSocket (MQTT-over-WS, "mqtt" subprotocol) ─────────────────────────
+# Plain WS only — the secure variant (WSS) piggybacks on tls.enabled above
+# instead of a separate toggle: it shares the exact same certificate and
+# CertReloader, never a second TLS story. See internal/broker.Config's
+# MQTTWSPort/MQTTWSSPort doc.
+ws:
+  enabled: false
 
 # ── Observability ─────────────────────────────────────────────────────────
 metrics:

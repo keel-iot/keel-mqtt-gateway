@@ -35,14 +35,14 @@ against the current codebase 2026-08-08, not assumed:
 ### Protocol / transport
 - [x] MQTT 3.1.1 and MQTT 5
 - [x] TLS / mTLS (`internal/broker`'s `CertReloader`, X.509 CN auth)
-- [ ] **WebSocket / WSS — confirmed gap.** `mochi-mqtt` (the vendored
-      dependency) already ships a websocket listener
-      (`listeners.NewWebsocket`, `websocket.go` in the module) — Keel's
-      `internal/broker/broker.go` only ever wires `listeners.NewTCP`
-      (plain + TLS). Not a design limitation, just unwired. Likely the
-      single highest-leverage item in this list: some evaluators'
-      browser-based tooling or firewall posture requires WS/WSS outright.
-      Tracked: [keel-iot/keel-mqtt-gateway#5](https://github.com/keel-iot/keel-mqtt-gateway/issues/5)
+- [x] **WebSocket / WSS — closed.** `internal/broker/broker.go` now wires
+      `listeners.NewWebsocket` for both `MQTTWSPort` (plain WS) and
+      `MQTTWSSPort` (WSS, sharing the TLS-TCP listener's cert/reload
+      config). Covered by `TestWebSocket_EndToEnd_ConnectPublishSubscribe`
+      (real CONNECT/SUBSCRIBE/server-push over a live WebSocket connection,
+      production ACL enforced) and `TestNew_WSSRequiresTLSCertDir`. Opt-in
+      via Helm `ws.enabled`/`tls.enabled`, disabled by default.
+      Closed: [keel-iot/keel-mqtt-gateway#5](https://github.com/keel-iot/keel-mqtt-gateway/issues/5)
 - [ ] **Proxy Protocol — confirmed gap.** No dependency, no listener
       wrapper. Needed to sit behind an enterprise L4 LB/proxy that
       preserves real client IPs (`github.com/pires/go-proxyproto` or

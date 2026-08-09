@@ -1224,6 +1224,8 @@ func runServer() {
 		mqttServer, certReloader, err = broker.New(broker.Config{
 			MQTTPort:              cfg.MQTTPort,
 			MQTTTLSPort:           cfg.MQTTTLSPort,
+			MQTTWSPort:            cfg.MQTTWSPort,
+			MQTTWSSPort:           cfg.MQTTWSSPort,
 			TLSCertDir:            cf.tlsCertDir,
 			TLSClientAuth:         cf.tlsClientAuth,
 			TenantConfigCache:     tenantCache,

@@ -20,22 +20,30 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/db"
 )
 
+// allowAllTestDeviceID is fixed (not a fresh uuid.New() per call) so
+// tests can predict ACL-relevant topic shapes ahead of time — e.g.
+// isAllowedPublish's non-write branch only allows subscribing to
+// "command/<deviceID>", which websocket_test.go needs to know in
+// advance to construct that topic string.
+var allowAllTestDeviceID = uuid.MustParse("00000000-0000-0000-0000-0000000000a1")
+
 // allowAllAuthProvider accepts any credential with a fixed identity — this
-// test cares about MQTT5 flow-control/DISCONNECT wire behavior, not auth
-// policy, so authentication itself is deliberately trivial. Distinct from
+// test cares about MQTT5 wire behavior, not auth policy, so
+// authentication itself is deliberately trivial. Distinct from
 // internal/conformance's AuthProvider on purpose: internal/broker's own
 // tests must not depend on the conformance package (see
 // docs/alternatives-and-future-work.md's "conformance-only vs production"
 // split — this test protects PRODUCTION protocol behavior). Shared with
-// max_keepalive_integration_test.go in this same package.
+// max_keepalive_integration_test.go and websocket_test.go in this same
+// package.
 type allowAllAuthProvider struct{}
 
 func (allowAllAuthProvider) ValidatePassword(context.Context, string, string) (*auth.DeviceInfo, error) {
-	return &auth.DeviceInfo{ID: uuid.New(), TenantID: uuid.New(), TenantSlug: "flow-control-test"}, nil
+	return &auth.DeviceInfo{ID: allowAllTestDeviceID, TenantID: uuid.New(), TenantSlug: "flow-control-test"}, nil
 }
 
 func (allowAllAuthProvider) LookupByCN(context.Context, string, string) (*auth.DeviceInfo, error) {
-	return &auth.DeviceInfo{ID: uuid.New(), TenantID: uuid.New(), TenantSlug: "flow-control-test"}, nil
+	return &auth.DeviceInfo{ID: allowAllTestDeviceID, TenantID: uuid.New(), TenantSlug: "flow-control-test"}, nil
 }
 
 func (allowAllAuthProvider) UpdateLastSeen(context.Context, uuid.UUID) {}
@@ -71,6 +79,10 @@ func readRawPacket(r *bufio.Reader) (packets.Packet, error) {
 	switch pk.FixedHeader.Type {
 	case packets.Connack:
 		err = pk.ConnackDecode(buf)
+	case packets.Suback:
+		err = pk.SubackDecode(buf)
+	case packets.Publish:
+		err = pk.PublishDecode(buf)
 	case packets.Puback:
 		err = pk.PubackDecode(buf)
 	case packets.Pubrec:

@@ -22,6 +22,16 @@ spec:
       port: {{ .Values.edge.service.mqttTlsPort }}
       targetPort: mqtt-tls
     {{- end }}
+    {{- if .Values.ws.enabled }}
+    - name: mqtt-ws
+      port: {{ .Values.edge.service.mqttWsPort }}
+      targetPort: mqtt-ws
+    {{- end }}
+    {{- if .Values.tls.enabled }}
+    - name: mqtt-wss
+      port: {{ .Values.edge.service.mqttWssPort }}
+      targetPort: mqtt-wss
+    {{- end }}
     - name: http
       port: {{ .Values.edge.service.httpPort }}
       targetPort: http

@@ -86,6 +86,14 @@ spec:
             - name: mqtt-tls
               containerPort: 8883
             {{- end }}
+            {{- if .Values.ws.enabled }}
+            - name: mqtt-ws
+              containerPort: {{ .Values.edge.service.mqttWsPort }}
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: mqtt-wss
+              containerPort: {{ .Values.edge.service.mqttWssPort }}
+            {{- end }}
             - name: http
               containerPort: 8085
             - name: gossip-tcp
@@ -164,6 +172,14 @@ spec:
             {{- if .Values.tls.enabled }}
             - name: MQTT_TLS_PORT
               value: "8883"
+            {{- end }}
+            {{- if .Values.ws.enabled }}
+            - name: MQTT_WS_PORT
+              value: {{ .Values.edge.service.mqttWsPort | quote }}
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: MQTT_WSS_PORT
+              value: {{ .Values.edge.service.mqttWssPort | quote }}
             {{- end }}
             - name: HTTP_PORT
               value: "8085"

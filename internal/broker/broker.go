@@ -24,11 +24,21 @@ type Config struct {
 	MQTTPort    int
 	MQTTTLSPort int
 
+	// MQTTWSPort and MQTTWSSPort add a WebSocket (RFC 6455, "mqtt"
+	// subprotocol) listener alongside the raw TCP one(s) — same auth/ACL
+	// hooks, same everything except framing. Zero disables each
+	// independently; neither depends on the other or on MQTTPort/
+	// MQTTTLSPort being set. MQTTWSSPort shares TLSCertDir/TLSClientAuth
+	// with MQTTTLSPort — one certificate, one reload mechanism, not a
+	// second TLS story to maintain.
+	MQTTWSPort  int
+	MQTTWSSPort int
+
 	// TLSCertDir points at a directory containing tls.crt/tls.key (the
 	// standard Kubernetes Secret volume layout). Required when MQTTTLSPort
-	// is set. The pair is watched and reloaded automatically — see
-	// CertReloader — so rotating the mounted Secret takes effect without a
-	// restart.
+	// or MQTTWSSPort is set. The pair is watched and reloaded automatically
+	// — see CertReloader — so rotating the mounted Secret takes effect
+	// without a restart.
 	TLSCertDir string
 
 	// TLSClientAuth selects tls.Config.ClientAuth: "none" (no client cert
@@ -251,14 +261,17 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 		return nil, nil, fmt.Errorf("add TCP listener on :%d: %w", cfg.MQTTPort, err)
 	}
 
-	// TLS MQTT listener (optional — skipped when MQTTTLSPort is 0). The
-	// certificate is served via CertReloader.GetCertificate rather than a
-	// static tls.Config.Certificates so it can be rotated (K8s Secret
-	// update, cert-manager renewal, ...) without a process restart.
+	// TLS setup (cert reloader + tls.Config) is shared by the TLS TCP
+	// listener and the WSS listener below — one certificate, one reload
+	// mechanism, needed whenever either is configured. The certificate is
+	// served via CertReloader.GetCertificate rather than a static
+	// tls.Config.Certificates so it can be rotated (K8s Secret update,
+	// cert-manager renewal, ...) without a process restart.
 	var reloader *CertReloader
-	if cfg.MQTTTLSPort > 0 {
+	var tlsConfig *tls.Config
+	if cfg.MQTTTLSPort > 0 || cfg.MQTTWSSPort > 0 {
 		if cfg.TLSCertDir == "" {
-			return nil, nil, fmt.Errorf("MQTTTLSPort set but TLSCertDir is empty")
+			return nil, nil, fmt.Errorf("MQTTTLSPort or MQTTWSSPort set but TLSCertDir is empty")
 		}
 		clientAuth, err := parseClientAuth(cfg.TLSClientAuth)
 		if err != nil {
@@ -268,19 +281,53 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 		if err != nil {
 			return nil, nil, fmt.Errorf("create tls cert reloader: %w", err)
 		}
+		tlsConfig = &tls.Config{
+			GetCertificate: reloader.GetCertificate,
+			ClientAuth:     clientAuth,
+			MinVersion:     tls.VersionTLS12,
+		}
+	}
+
+	// TLS MQTT listener (optional — skipped when MQTTTLSPort is 0).
+	if cfg.MQTTTLSPort > 0 {
 		tlsListener := listeners.NewTCP(listeners.Config{
-			ID:      "tls",
-			Address: fmt.Sprintf(":%d", cfg.MQTTTLSPort),
-			TLSConfig: &tls.Config{
-				GetCertificate: reloader.GetCertificate,
-				ClientAuth:     clientAuth,
-				MinVersion:     tls.VersionTLS12,
-			},
+			ID:        "tls",
+			Address:   fmt.Sprintf(":%d", cfg.MQTTTLSPort),
+			TLSConfig: tlsConfig,
 		})
 		if err := server.AddListener(tlsListener); err != nil {
 			return nil, nil, fmt.Errorf("add TLS listener on :%d: %w", cfg.MQTTTLSPort, err)
 		}
 		log.Info("mqtt-gateway: TLS listener configured", "port", cfg.MQTTTLSPort, "cert_dir", cfg.TLSCertDir, "client_auth", cfg.TLSClientAuth)
+	}
+
+	// WebSocket listener (optional — skipped when MQTTWSPort is 0). Same
+	// auth/ACL hooks as every other listener: mochi-mqtt establishes
+	// connections identically regardless of transport, so there's no
+	// separate policy path to keep in sync.
+	if cfg.MQTTWSPort > 0 {
+		wsListener := listeners.NewWebsocket(listeners.Config{
+			ID:      "ws",
+			Address: fmt.Sprintf(":%d", cfg.MQTTWSPort),
+		})
+		if err := server.AddListener(wsListener); err != nil {
+			return nil, nil, fmt.Errorf("add WebSocket listener on :%d: %w", cfg.MQTTWSPort, err)
+		}
+		log.Info("mqtt-gateway: WebSocket listener configured", "port", cfg.MQTTWSPort)
+	}
+
+	// WebSocket-over-TLS listener (optional — skipped when MQTTWSSPort is
+	// 0). Shares tlsConfig with the TLS TCP listener above.
+	if cfg.MQTTWSSPort > 0 {
+		wssListener := listeners.NewWebsocket(listeners.Config{
+			ID:        "wss",
+			Address:   fmt.Sprintf(":%d", cfg.MQTTWSSPort),
+			TLSConfig: tlsConfig,
+		})
+		if err := server.AddListener(wssListener); err != nil {
+			return nil, nil, fmt.Errorf("add WSS listener on :%d: %w", cfg.MQTTWSSPort, err)
+		}
+		log.Info("mqtt-gateway: WSS listener configured", "port", cfg.MQTTWSSPort, "cert_dir", cfg.TLSCertDir, "client_auth", cfg.TLSClientAuth)
 	}
 
 	return server, reloader, nil
