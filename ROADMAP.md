@@ -28,6 +28,27 @@ real test is a brochure, not evidence.
 
 ## Phase 1 — Business readiness: close the functional no-gos
 
+**Status: FROZEN, 2026-08-10.** Baseline commit
+`88bd2ac406402f0fe748224f941adcb98438338d`, tagged
+`phase1-business-readiness-baseline`. All three evidence-confirmed
+Phase 1 gaps (WebSocket/WSS, Proxy Protocol, connect/publish rate
+limiting) are implemented, tested, and merged. Full verification gate
+(gofmt, `go build`/`go vet`/`go test ./...`, `-race` on concurrency-
+sensitive packages, MQTT 3.1.1 + MQTT5 conformance) passed clean at
+the baseline commit — MQTT 3.1.1: 10/10 PASS; MQTT5: 26 PASS / 0 FAIL /
+1 HARNESS (the pre-existing, evidence-backed `test_flow_control2`
+case, unchanged from the original baseline).
+
+**Explicitly deferred, not completed** — do not read any of these as
+resolved by this freeze:
+- MQTT bridging — suspended (§ below), no concrete requirement yet.
+- QUIC — later roadmap, not Phase 1 (see `docs/upstream/mochi-mqtt.md` §10).
+- Documented upgrade path (schema/state versioning across releases) — not yet written.
+- `test_session_expiry` — still `UNRESOLVED`/`FLAKY`, [keel-iot/keel-mqtt-gateway#3](https://github.com/keel-iot/keel-mqtt-gateway/issues/3) stays open, public result stays FAIL.
+- Enhanced authentication (AUTH packet / SASL-style challenge), 3.1.1 will-message conformance coverage — not yet verified either way.
+- Per-client structured audit trail — partial (`ConnectionsTotal{result}` exists, no per-client trail).
+- No high-cardinality Prometheus label guarantee on the new rate limiters — verified by source read only (`RateLimitedTotal`'s single `type` label, literal call-site values), no dedicated automated test exists for this specific property.
+
 Not feature parity with EMQX — the specific gaps whose absence makes an
 evaluator say "interesting, but we can't even pilot this." Verified
 against the current codebase 2026-08-08, not assumed:

@@ -19,6 +19,12 @@ Baseline" milestone (2026-08-08) — see the pinned issue/milestone for
 what "baseline" means here: future regressions are measured against
 this table, not against a moving target.
 
+**Phase 1 ("Business Readiness") froze on top of this baseline on
+2026-08-10, commit `88bd2ac406402f0fe748224f941adcb98438338d`, tag
+`phase1-business-readiness-baseline`** — see `ROADMAP.md`'s Phase 1
+section for the full completion/deferred-items record. The rows below
+already reflect that frozen state.
+
 ## MQTT protocol — core
 
 | Feature | MQTT 3.1.1 | MQTT 5 | Test reference | Status |
