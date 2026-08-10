@@ -10,28 +10,23 @@ numbering, and has been corrected throughout this document. The
 repository's existing phase structure is the source of truth and is
 not being renamed or renumbered to match that mistake.
 
-**Status: `Phase 3 specification prepared — execution not started`.**
-No Phase 3 test has been implemented or executed. Do not read this
-document as "Phase 3 done" or "Phase 3 started" — preparing a
-specification in advance is allowed and explicitly does not count as
-starting or completing Phase 3.
+**Status: `Phase 3 specification ready — execution unblocked`.**
+No Phase 3 test has been implemented or executed yet. Do not read this
+as "Phase 3 started" — Phase 2 ("Feature Correctness," milestone #3)
+completed 2026-08-10 (baseline commit
+`24df14063efa3cf04c268d0e9671ee676125d4a6`, tag
+`phase2-feature-correctness-baseline`), which removes the dependency
+that previously blocked Phase 3 execution, but implementing the first
+scenario below is a separate, not-yet-started task.
 
-**Dependency: Phase 3 execution requires Phase 2 ("Feature
-Correctness," milestone #3) completion first.** Phase 2's job is
-different from the Paho conformance suite: it's "does every MQTT
-capability Keel claims to support have a production-relevant test,"
-systematically closing gaps in `FEATURE_MATRIX.md` (QoS 0/1/2,
-retained, will/will-delay, persistent sessions, session expiry, shared
-subscriptions, topic alias, receive maximum, maximum packet size,
-subscription identifiers, request/response, server keep-alive,
-WebSocket/WSS, ...) — SUPPORTED → concrete test → verified production
-behavior → regression coverage, for each. Testing "does a persistent
-session survive Edge loss" (Phase 3) before establishing "does a
-persistent session work correctly under normal conditions at all"
-(Phase 2) would build Phase 3 scenarios on an unverified foundation.
-This document is prepared ahead of that dependency being satisfied —
-which is fine — but Phase 3 *execution* does not begin until Phase 2 is
-closed.
+Phase 2's job was different from the Paho conformance suite: "does
+every MQTT capability Keel claims to support have a production-relevant
+test," systematically closing gaps in `FEATURE_MATRIX.md` — SUPPORTED →
+concrete test → verified production behavior → regression coverage, for
+each. Testing "does a persistent session survive Edge loss" (Phase 3)
+before establishing "does a persistent session work correctly under
+normal conditions at all" (Phase 2) would have built Phase 3 scenarios
+on an unverified foundation; that risk is now closed.
 
 Phase 3 question: *are the distributed correctness properties Keel
 claims actually true under deterministic cluster transitions and

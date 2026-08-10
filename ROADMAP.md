@@ -154,6 +154,46 @@ Phase 1 gap — no concrete requirement for it exists yet.
 
 ## Phase 2 — Feature correctness: every claim has a test
 
+**Status: COMPLETE, 2026-08-10.** Baseline commit
+`24df14063efa3cf04c268d0e9671ee676125d4a6`, tag
+`phase2-feature-correctness-baseline`. Full audit of `FEATURE_MATRIX.md`
+against production code — every claimed MQTT/transport capability now
+has a real, referenced, production-relevant test. Verification gate:
+gofmt clean, `go build`/`go vet` clean, **`go test ./...` — zero
+failures across every package**, `-race` clean on concurrency-sensitive
+packages, MQTT 3.1.1 10/10, MQTT5 26 PASS/0 FAIL/1 HARNESS (unchanged
+`test_flow_control2` case).
+
+Real gaps found and fixed during the audit, not just discovered and
+left open:
+- **MQTT 3.1.1 Will coverage** — Paho's own `will_message_test` never
+  actually ran (not `test_`-prefixed, `unittest`'s default discovery
+  skipped it). Closed with two direct, mutation-tested Go tests.
+- **Session-expiry Redis cleanup (standalone)** — neither expiry path
+  cleaned up subscription/inflight Redis state, only the client
+  record; the periodic-sweep path didn't touch Redis at all.
+  `RedisSessionHook` had zero `ClusterRegistry` dependency, confirming
+  this was genuinely Phase 2 scope, not Phase 3. Fixed, mutation-tested.
+- **Rate-limit metric cardinality** — a deliberate design property
+  (no ip/tenant/client_id label) had no test pinning it. Added one.
+- **`TestMigrate` (#17)** — confirmed a stale test fixture, not a
+  migration defect, before fixing it.
+
+**Explicitly deferred, not resolved by this freeze:**
+- `test_session_expiry` (#3) — investigated deterministically
+  (mochi-mqtt's 1s sweep granularity reviewed from source, 20/20 clean
+  reproduction attempts against a fresh build; no defect found, but a
+  clean run doesn't erase the original failure). Stays
+  UNRESOLVED/FLAKY, public result stays FAIL, issue stays open — its
+  `FEATURE_MATRIX.md` claim is already qualified, not an unsupported
+  PASS, so it doesn't block this freeze.
+- Enhanced authentication (AUTH packet/SASL), Will Delay boundary
+  behavior beyond the single Paho scenario, Clean Start/Session
+  Present matrix beyond `test_session_expiry` — correctly absent from
+  `FEATURE_MATRIX.md`, not silently claimed.
+- The cluster-only packet-ID-counter half of the session-expiry Redis
+  gap above — stays Phase 3 (`docs/testing/CLUSTER_CORRECTNESS_MATRIX.md`).
+
 **Definition of Done for any new protocol feature** (see `CONTRIBUTING.md`'s
 "Definition of Done" section for the enforced version of this):
 
@@ -166,19 +206,6 @@ Implementation
   → Docs/config update
   → Metric/log, only if operationally meaningful
 ```
-
-**Carried in from Phase 3 spec prep (`docs/testing/CLUSTER_CORRECTNESS_MATRIX.md`),
-scoped to Phase 2 because they reproduce with zero clustering:**
-- `RedisSessionHook`'s `keel:gw:SUB`/`keel:gw:IFM` keys are never
-  cleaned up on `SessionExpiryInterval` expiry — verified from source
-  to have zero dependency on `ClusterRegistry`, reproducible in a
-  single-node, Redis-enabled deployment.
-- No test exists yet asserting the rate limiters' `RateLimitedTotal`
-  metric never grows unbounded label cardinality (`internal/broker/hooks.go`'s
-  literal `"connect"`/`"publish"` call sites) — a deliberate design
-  property from the rate-limiting work that was never itself frozen by
-  a test.
-Both belong in the Phase 2 `FEATURE_MATRIX.md` audit, not Phase 3.
 
 Minimum bar per feature, not just "it compiles": a below-limit case, an
 at-limit boundary case, an above-limit case with the correct reason
@@ -220,15 +247,15 @@ Output: a **Cluster Correctness Matrix**, same evidence discipline as
 invariants aren't the same axis as MQTT protocol conformance and
 shouldn't be flattened into one table).
 
-**Status: `Phase 3 specification prepared — execution not started`.**
+**Status: `Phase 3 specification ready — execution unblocked`.**
 `docs/testing/CLUSTER_CORRECTNESS_MATRIX.md` (2026-08-10) is that
 document — source-verified architecture summary, accepted/rejected
 invariants, deterministic scenarios mapped to existing/missing tests,
 and several real correctness risks found by source review alone (not
-yet reproduced by a running test). Preparing this ahead of time is
-fine and doesn't count as starting Phase 3. **Execution requires Phase
-2 completion first** (below) — the Feature Correctness milestone must
-close before any Phase 3 scenario gets implemented.
+yet reproduced by a running test). Phase 2 (below) completed
+2026-08-10, which removes the dependency that previously blocked
+execution — implementing the first scenario is still a separate,
+not-yet-started task, not something this freeze itself does.
 
 ## Phase 4 — Failure correctness (chaos)
 
