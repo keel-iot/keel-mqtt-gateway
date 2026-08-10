@@ -26,7 +26,7 @@ Instead of making every node equal, Keel separates the cluster into:
 - **MQTT 3.1.1 / MQTT 5** support
 - **Core/Edge Architecture:** Strongly consistent control plane (Raft) + eventually consistent data plane (Olric)
 - **Auth:** per-tenant password, mTLS (X.509 CN + trusted CA pool), and JWT/JWKS (any OIDC-compliant IdP) — credential storage backends (postgres/file) are a fixed set today, no staged plugin interface yet. Two companion device-side agents cover the two real-world tiers: [`keel-cert-manager`](../keel-cert-manager) (Clavex Device PKI, full certificate rotation + revocation) and [`keel-jwt-agent`](../keel-jwt-agent) (generic OAuth2 client-credentials, no real revocation beyond token TTL)
-- **Zero-Loss QoS 1/2:** Co-located Redis (primary+replica) with automatic Raft-driven failover
+- **QoS 1/2 persistence:** Co-located Redis (primary+replica) with automatic Raft-driven primary failover; inflight state persists across the accepting Edge's death and is recovered on the client's next reconnect (any Edge) — real end-to-end cluster-failover recovery isn't validated by an executed test yet (tracked: [keel-iot/keel-mqtt-gateway#14](https://github.com/keel-iot/keel-mqtt-gateway/issues/14)), and a cluster-forwarded publish to an already-partitioned live subscriber has no retry today (same issue) — not the unconditional zero-loss guarantee this used to claim
 - **Kubernetes-first:** StatefulSet for Core, Deployment + HPA for Edge
 - **Output plugin architecture:** Publish → Transform → Forward runs out-of-process (`hashicorp/go-plugin`/gRPC sidecar), fully isolated from MQTT delivery
 - **Observability:** Prometheus metrics + OpenTelemetry tracing, tenant-aware sampling

@@ -238,10 +238,12 @@ scenario(s).
   true behavior, not as a target to defend. *(Verified gap, kept as an
   invariant about actual behavior so a regression — e.g. someone adding
   a silent double-delivery — can also be caught.)*
-- **D3.** Session expiry does not fully clean up Redis-side state
-  (subscriptions/inflight/packet-ID counter keys are orphaned).
-  *(Verified gap — documented as current behavior, not silently
-  "fixed" by weakening this into a false positive elsewhere.)*
+- **D3 — cluster-only remainder.** Session expiry does not clean up
+  the Redis packet-ID counter key. *(Verified gap. Its sibling —
+  subscription/inflight key orphaning, which reproduces with zero
+  clustering — has been reclassified to Phase 2/`FEATURE_MATRIX.md`,
+  see §4 risk #4; this line is deliberately narrowed to the part that
+  actually requires cluster topology to exist.)*
 
 **E. Core/quorum safety**
 - **E1.** Losing a single follower (with 3 cores) does not interrupt
@@ -287,7 +289,7 @@ scenario(s).
 | "Raft elects a leader" | Rejected as an invariant to test | Bad invariant by the task's own example — it's a hashicorp/raft library property, not a Keel product claim. What Keel-specific correctness properties *depend* on leader election are A1/A2/E2 above; those are tested instead. |
 | "Olric contains the route" | Rejected as an invariant to test | Same reasoning — implementation detail. C1 (the product-level "a subscription eventually becomes routable") is the real invariant. |
 | "Restoring quorum allows progress without violating previous committed decisions" | Modified → E3 | No Keel code implements automatic quorum-loss detection/recovery at all — there is nothing "automatic" to test. The real, honest invariant is about the *manual* `RecoverCluster` procedure, and about hashicorp/raft's own guarantee (never contradict a previously-committed log entry) — which is a library property, not something to write a Keel-specific test claiming credit for. |
-| "Zero-loss QoS1/2" (implied by README's "Zero-Loss QoS 1/2" bullet) | Rejected as stated, replaced by D1/D2 | Verified false as an unconditional claim: cluster-forwarded live delivery has a real, uncontested message-loss path on forward failure (D2). The true, narrower invariant that *is* verified is D1 (Redis-persisted inflight survives the *accepting* Edge's death) — cluster fan-out to *other* subscribers is a separate, weaker guarantee. This is flagged for `README.md` follow-up outside this task's scope (Part C only allows factual doc corrections already in scope; this one needs its own decision, not smuggled into this freeze). |
+| "Zero-loss QoS1/2" (README previously claimed "Zero-Loss QoS 1/2" unconditionally) | Rejected as stated, replaced by D1/D2 | Verified false as an unconditional claim: cluster-forwarded live delivery has a real, uncontested message-loss path on forward failure (D2). The true, narrower invariant that *is* verified is D1 (Redis-persisted inflight survives the *accepting* Edge's death) — cluster fan-out to *other* subscribers is a separate, weaker guarantee. **`README.md` corrected 2026-08-10** to state the narrower, actually-verified claim and link this gap directly, rather than waiting for Phase 3 execution — a known false public claim doesn't need to wait for the phase that discovered it. |
 | "Dead nodes eventually disappear from routing decisions" | Split into C4 | True for core nodes, false for edge nodes. Stating it as one invariant would hide the asymmetry. |
 | "No duplicate forwarding beyond what MQTT/QoS semantics allow" (task's own Part G candidate) | Modified → G2 | Mostly true, but the unparseable-`PublishID` exception is real and deliberate — the invariant must name the exception, not pretend it's absolute. |
 | "Packet ID continuity is preserved as required" (task's own Part D candidate) | **Rejected outright** | Verified false: no code reconciles mochi-mqtt's live in-memory packet-ID counter with the Redis-global offline counter on reconnect-to-a-different-node. This is a real, open correctness risk (§5), not weakened into a passing invariant. |
@@ -300,22 +302,44 @@ to hide a discovered bug by softening the invariant around it.
 
 1. **Packet ID collision risk across reconnect-to-a-different-node
    with queued offline messages** (§1, Data plane; rejected candidate
-   in §3). No test exists. Recommend a tracking issue (§6) — this is a
-   real correctness bug candidate, not merely a gap in coverage.
+   in §3). **Scope check performed**: `DeliverOffline`'s own doc
+   comment states it "no-ops when registry or store is nil (standalone
+   mode...)" — verified from source, the Redis `PKID` counter this risk
+   depends on is only ever written when `ClusterRegistry` is non-nil.
+   It cannot manifest in a true single-node, non-clustered deployment
+   at all, but it also does **not** require any node failure — a
+   perfectly healthy cluster with ordinary reconnect-to-any-Edge
+   traffic is enough. Stays **Phase 3** (already named explicitly in
+   `ROADMAP.md`'s pre-existing Phase 3 scope, "Packet ID continuity" —
+   this review confirms that scoping was correct, not just inherited).
+   No test exists yet. Tracked: issue #14.
 2. **Cluster-forwarded live delivery has no retry on a partitioned/dead
    target node** — silent, permanent loss for that one delivery
-   attempt (D2). Whether this is acceptable depends on product intent
-   (README currently claims "Zero-Loss QoS 1/2" without this caveat) —
-   a product decision, not something to quietly fix mid-way through a
-   correctness-testing task.
+   attempt (D2). Requires cluster forwarding to exist at all — **Phase
+   3**. `README.md`'s unconditional "Zero-Loss QoS 1/2" claim built on
+   top of this has already been corrected (2026-08-10) to state the
+   narrower, actually-verified guarantee rather than waiting for Phase 3
+   execution to fix a known-false public claim. Tracked: issue #14.
 3. **Dead edge nodes' stale routing entries are never purged** (C4).
-   Low urgency alone, but combined with #2 above, a dead edge can keep
-   silently absorbing (and losing) forwarded messages indefinitely
-   until an unrelated write happens to overwrite that specific route.
+   Requires a multi-node cluster to exist — **Phase 3**. Low urgency
+   alone, but combined with #2 above, a dead edge can keep silently
+   absorbing (and losing) forwarded messages indefinitely until an
+   unrelated write happens to overwrite that specific route.
 4. **`SessionExpiryInterval` leaves Redis-side session state orphaned**
-   (D3) — a storage-growth concern first, but also means a
-   long-since-expired ClientID's old packet-ID counter is still live in
-   Redis, compounding risk #1 if that ID space is ever reused.
+   (D3) — **splits by scope, verified from source, not one risk**:
+   - `keel:gw:SUB` (subscriptions) and `keel:gw:IFM` (inflight) keys are
+     written by `RedisSessionHook`, which has **zero dependency on
+     `ClusterRegistry`** (grepped: no reference to it anywhere in
+     `internal/broker/redis_session.go`) — installed whenever
+     `cfg.RedisClient` is configured, including a genuinely standalone,
+     single-node deployment using Redis only for restart-survival. This
+     part of the gap is real with **zero clustering involved** — a
+     single-node MQTT/session-correctness bug, **Phase 2 scope**, not
+     Phase 3. It belongs in `FEATURE_MATRIX.md`'s audit, not this
+     document.
+   - `keel:gw:PKID:<clientID>` orphaning is cluster-only (same gating as
+     risk #1) — stays **Phase 3**, and compounds risk #1 if that packet
+     ID space is ever reused after expiry.
 
 None of these are fixed as part of this task. Each becomes its own
 tracked issue (§6) with the invariant/test status left `FAIL` or

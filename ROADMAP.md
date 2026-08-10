@@ -37,7 +37,11 @@ limiting) are implemented, tested, and merged. Full verification gate
 sensitive packages, MQTT 3.1.1 + MQTT5 conformance) passed clean at
 the baseline commit — MQTT 3.1.1: 10/10 PASS; MQTT5: 26 PASS / 0 FAIL /
 1 HARNESS (the pre-existing, evidence-backed `test_flow_control2`
-case, unchanged from the original baseline).
+case, unchanged from the original baseline). `go test ./...` is
+reported as clean **except** one pre-existing, unrelated failure —
+`internal/db`'s `TestMigrate` (stale hardcoded migration count,
+predates all Phase 1 work, [keel-iot/keel-mqtt-gateway#17](https://github.com/keel-iot/keel-mqtt-gateway/issues/17))
+— stated explicitly rather than silently reported as "all tests green."
 
 **Explicitly deferred, not completed** — do not read any of these as
 resolved by this freeze:
@@ -162,6 +166,19 @@ Implementation
   → Docs/config update
   → Metric/log, only if operationally meaningful
 ```
+
+**Carried in from Phase 3 spec prep (`docs/testing/CLUSTER_CORRECTNESS_MATRIX.md`),
+scoped to Phase 2 because they reproduce with zero clustering:**
+- `RedisSessionHook`'s `keel:gw:SUB`/`keel:gw:IFM` keys are never
+  cleaned up on `SessionExpiryInterval` expiry — verified from source
+  to have zero dependency on `ClusterRegistry`, reproducible in a
+  single-node, Redis-enabled deployment.
+- No test exists yet asserting the rate limiters' `RateLimitedTotal`
+  metric never grows unbounded label cardinality (`internal/broker/hooks.go`'s
+  literal `"connect"`/`"publish"` call sites) — a deliberate design
+  property from the rate-limiting work that was never itself frozen by
+  a test.
+Both belong in the Phase 2 `FEATURE_MATRIX.md` audit, not Phase 3.
 
 Minimum bar per feature, not just "it compiles": a below-limit case, an
 at-limit boundary case, an above-limit case with the correct reason
