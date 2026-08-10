@@ -81,6 +81,7 @@ func (h *RedisSessionHook) Provides(b byte) bool {
 		byte(mqtt.OnQosPublish),
 		byte(mqtt.OnQosComplete),
 		byte(mqtt.OnQosDropped),
+		byte(mqtt.OnClientExpired),
 	}, []byte{b})
 }
 
@@ -154,9 +155,60 @@ func (h *RedisSessionHook) OnDisconnect(cl *mqtt.Client, _ error, expire bool) {
 	if cl.StopCause() == packets.ErrSessionTakenOver {
 		return
 	}
-	if err := h.router.Client().HDel(context.Background(), redisClientHash, cl.ID).Err(); err != nil {
-		h.log.Error("redis session: hdel client", "error", err, "id", cl.ID)
+	h.deleteSessionState(context.Background(), cl.ID)
+}
+
+// OnClientExpired is mochi-mqtt's callback for a persistent
+// (clean_session=false) session's delayed expiry — the periodic sweep
+// in Server.clearExpiredClients, distinct from OnDisconnect's expire
+// path above (which only fires immediately for a session that was never
+// meant to persist at all: clean session, or MQTT5 SessionExpiryInterval
+// 0). Before this existed, RedisSessionHook didn't advertise this hook
+// at all (see Provides), so a persistent session's Redis-side state —
+// client record, subscriptions, in-flight messages — was never cleaned
+// up on real expiry, only on the narrower immediate-expiry path, and
+// even that path only cleared the client record, not subscriptions or
+// in-flight state. Reproducible with zero clustering: this hook has no
+// ClusterRegistry dependency anywhere in this file.
+func (h *RedisSessionHook) OnClientExpired(cl *mqtt.Client) {
+	h.deleteSessionState(context.Background(), cl.ID)
+}
+
+// deleteSessionState removes every Redis key this hook wrote for
+// clientID: the client record, every subscription, and every in-flight
+// message — the full set an expired session's Redis footprint should
+// leave behind is none of it.
+func (h *RedisSessionHook) deleteSessionState(ctx context.Context, clientID string) {
+	if err := h.router.Client().HDel(ctx, redisClientHash, clientID).Err(); err != nil {
+		h.log.Error("redis session: hdel client", "error", err, "id", clientID)
 	}
+	subFields, err := h.hscanAll(ctx, redisSubHash, clientID+":*")
+	if err != nil {
+		h.log.Error("redis session: hscan subscriptions for cleanup", "error", err, "id", clientID)
+	} else if len(subFields) > 0 {
+		if err := h.router.Client().HDel(ctx, redisSubHash, evenIndexed(subFields)...).Err(); err != nil {
+			h.log.Error("redis session: hdel subscriptions", "error", err, "id", clientID)
+		}
+	}
+	inflightFields, err := h.hscanAll(ctx, redisInflightHash, clientID+":*")
+	if err != nil {
+		h.log.Error("redis session: hscan inflight for cleanup", "error", err, "id", clientID)
+	} else if len(inflightFields) > 0 {
+		if err := h.router.Client().HDel(ctx, redisInflightHash, evenIndexed(inflightFields)...).Err(); err != nil {
+			h.log.Error("redis session: hdel inflight", "error", err, "id", clientID)
+		}
+	}
+}
+
+// evenIndexed extracts the field names from hscanAll's alternating
+// field/value slice (index 0, 2, 4... are field names; odd indices are
+// values) — HDel only wants the field names.
+func evenIndexed(fieldVals []string) []string {
+	out := make([]string, 0, len(fieldVals)/2+1)
+	for i := 0; i < len(fieldVals); i += 2 {
+		out = append(out, fieldVals[i])
+	}
+	return out
 }
 
 // OnSubscribed persists one or more new subscriptions.
