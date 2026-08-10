@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -61,11 +62,47 @@ func TestMigrate(t *testing.T) {
 		t.Fatal("expected devices.tenant_gateway_config.jwks_url to exist after migration")
 	}
 
+	var clavexCAURLExists bool
+	err = pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'devices'
+			  AND table_name = 'tenant_gateway_config'
+			  AND column_name = 'clavex_ca_url'
+		)`).Scan(&clavexCAURLExists)
+	if err != nil {
+		t.Fatalf("check clavex_ca_url column: %v", err)
+	}
+	if !clavexCAURLExists {
+		t.Fatal("expected devices.tenant_gateway_config.clavex_ca_url to exist after migration")
+	}
+
+	// Asserted against the actual embedded migration count (Migrate reads
+	// migrations/*.sql via fs.ReadDir) rather than a hardcoded number, so
+	// this can't go stale the next time a migration file is added.
+	entries, err := migrationEntries(t)
+	if err != nil {
+		t.Fatalf("read embedded migrations: %v", err)
+	}
+
 	var migrationCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM devices.schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if migrationCount != 2 {
-		t.Fatalf("expected 2 recorded migrations, got %d", migrationCount)
+	if migrationCount != len(entries) {
+		t.Fatalf("expected %d recorded migrations (one per embedded migration file), got %d", len(entries), migrationCount)
 	}
+}
+
+// migrationEntries counts the actual embedded migration files, so
+// TestMigrate's own expectation tracks internal/db/migrations/*.sql
+// instead of a number that silently goes stale when a migration is added
+// (see keel-iot/keel-mqtt-gateway#17).
+func migrationEntries(t *testing.T) ([]string, error) {
+	t.Helper()
+	matches, err := filepath.Glob("migrations/*.sql")
+	if err != nil {
+		return nil, err
+	}
+	return matches, nil
 }
