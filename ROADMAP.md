@@ -203,6 +203,16 @@ Output: a **Cluster Correctness Matrix**, same evidence discipline as
 invariants aren't the same axis as MQTT protocol conformance and
 shouldn't be flattened into one table).
 
+**Status: `Phase 3 specification prepared — execution not started`.**
+`docs/testing/CLUSTER_CORRECTNESS_MATRIX.md` (2026-08-10) is that
+document — source-verified architecture summary, accepted/rejected
+invariants, deterministic scenarios mapped to existing/missing tests,
+and several real correctness risks found by source review alone (not
+yet reproduced by a running test). Preparing this ahead of time is
+fine and doesn't count as starting Phase 3. **Execution requires Phase
+2 completion first** (below) — the Feature Correctness milestone must
+close before any Phase 3 scenario gets implemented.
+
 ## Phase 4 — Failure correctness (chaos)
 
 Only meaningful once Phase 3 has stated the invariants — chaos testing
