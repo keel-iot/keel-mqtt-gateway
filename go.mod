@@ -104,3 +104,8 @@ require (
 )
 
 replace github.com/keel/pkg => ./vendor-pkg
+
+// KEEL PATCH — see thirdparty/mochi-mqtt-server/PATCH.md. Temporary,
+// removed once a released upstream version contains the QoS2
+// PUBACK/PUBREC fix.
+replace github.com/mochi-mqtt/server/v2 => ./thirdparty/mochi-mqtt-server
