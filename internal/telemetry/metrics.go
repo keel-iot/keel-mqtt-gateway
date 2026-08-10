@@ -26,6 +26,18 @@ var (
 		Help:      "Total MQTT connection attempts.",
 	}, []string{"tenant_id", "result"})
 
+	// RateLimitedTotal counts events rejected by the connect-attempt or
+	// publish rate limiters (internal/broker/ratelimit.go). Deliberately
+	// no ip/client_id/tenant_id label — the limiter keys on those, but a
+	// Prometheus label of unbounded cardinality is exactly the failure
+	// mode the limiter itself exists to prevent.
+	// type: "connect" | "publish"
+	RateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "keel_gateway",
+		Name:      "rate_limited_total",
+		Help:      "Total events rejected by the connect-attempt or publish rate limiters.",
+	}, []string{"type"})
+
 	// MessagesPublished counts messages published by devices.
 	// qos: "0" | "1" | "2"
 	MessagesPublished = promauto.NewCounterVec(prometheus.CounterOpts{

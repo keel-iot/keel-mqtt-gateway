@@ -112,6 +112,22 @@ type keelHook struct {
 	// original fail-closed behaviour (empty tenantID, rejected at the
 	// tenant-config lookup).
 	defaultTenantID string
+
+	// connectLimiter/publishLimiter throttle CONNECT attempts (keyed by
+	// source IP) and PUBLISH (keyed by tenant ID) — see
+	// internal/broker/ratelimit.go and broker.Config's doc. Nil disables
+	// each independently; allow() on a nil *keyedRateLimiter always
+	// returns true.
+	connectLimiter *keyedRateLimiter
+	publishLimiter *keyedRateLimiter
+}
+
+// Stop releases the rate limiters' background sweep goroutines. Called by
+// mochi-mqtt on server.Close() (see the Hook interface's Stop() error).
+func (h *keelHook) Stop() error {
+	h.connectLimiter.close()
+	h.publishLimiter.close()
+	return nil
 }
 
 // sessionStore is satisfied by *RedisSessionHook; narrowed for testability —
@@ -179,6 +195,18 @@ func (h *keelHook) Init(_ any) error {
 // OnConnectAuthenticate handles CONNECT packets.
 // Auth precedence: X.509 cert → JWT → password token.
 func (h *keelHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) bool {
+	// Checked before authenticate() runs, deliberately: a connect-rate
+	// limit that only counted already-authenticated attempts would do
+	// nothing against a brute-force credential-guessing flood, which is
+	// one of the two things this limiter exists for (the other is a
+	// plain reconnect storm). See broker.Config.ConnectRateLimitPerSec's
+	// doc for why the CONNACK reason below is ErrBadUsernameOrPassword,
+	// not something more specific to "rate limited".
+	if !h.connectLimiter.allow(remoteIP(cl.Net.Remote)) {
+		telemetry.RateLimitedTotal.WithLabelValues("connect").Inc()
+		return false
+	}
+
 	ctx, span := telemetry.Tracer().Start(context.Background(), "keel-gateway.authenticate",
 		oteltrace.WithAttributes(
 			attribute.String("mqtt.client_id", cl.ID),
@@ -727,11 +755,35 @@ func (h *keelHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet
 		return pk, nil
 	}
 	info := state.info
+	tenantStr := info.TenantID.String()
+
+	// tenantStr == uuid.Nil.String() only for the hardcoded test-consumer
+	// singleton identity (see testConsumerDeviceInfo — it never sets
+	// TenantID), not for any real multi-tenant device. Deliberately
+	// unlimited rather than silently bucketed into a shared/global key:
+	// there's exactly one such client, rate-limiting it serves no real
+	// security purpose, and a shared key would be an accident of the
+	// zero value, not an intentional policy.
+	if tenantStr != uuid.Nil.String() && !h.publishLimiter.allow(tenantStr) {
+		telemetry.RateLimitedTotal.WithLabelValues("publish").Inc()
+		// MQTT5 QoS1/2 gets a real PUBACK/PUBREC reason (0x97, Quota
+		// Exceeded) — mochi-mqtt's processPublish propagates a
+		// packets.Code error from this hook straight into the ack for
+		// exactly this case. QoS0 and MQTT 3.1.1 have no per-packet ack
+		// reason mechanism for either, so the message is silently
+		// dropped instead (ErrRejectPacket short-circuits with no ack,
+		// no disconnect) — same "only override what the protocol lets
+		// the client learn about" posture as MaxKeepAliveHook.
+		if cl.Properties.ProtocolVersion == 5 && pk.FixedHeader.Qos > 0 {
+			return pk, packets.ErrQuotaExceeded
+		}
+		return pk, packets.ErrRejectPacket
+	}
 
 	ctx, span := telemetry.Tracer().Start(context.Background(), "keel-gateway.publish",
 		oteltrace.WithAttributes(
 			attribute.String("device.id", info.ID.String()),
-			attribute.String("tenant.id", info.TenantID.String()),
+			attribute.String("tenant.id", tenantStr),
 			attribute.String("mqtt.topic", pk.TopicName),
 			attribute.Int("mqtt.qos", int(pk.FixedHeader.Qos)),
 			attribute.Int("payload.bytes", len(pk.Payload)),
@@ -745,7 +797,6 @@ func (h *keelHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet
 	// (the Redpanda/plugin-facing side effects), never real MQTT subscriber
 	// delivery above — a noisy tenant over quota still gets normal MQTT
 	// service, it just stops feeding downstream systems until the next day.
-	tenantStr := info.TenantID.String()
 	if h.withinDataVolumeLimit(ctx, tenantStr, len(pk.Payload)) {
 		h.forwardToOutputConnector(ctx, info, pk)
 	}

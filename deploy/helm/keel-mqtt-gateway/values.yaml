@@ -258,6 +258,23 @@ proxyProtocol:
   enabled: false
   trustedCidrs: [] # e.g. ["10.0.0.0/8"] — your LB's egress range
 
+# ── Rate limiting (connect-attempt and publish) ──────────────────────────
+# Two independent limiters, both disabled by default. Each pair below is
+# validated as a unit: either both zero (disabled) or both positive —
+# see internal/config.parseRateLimitPair's doc for why a mix isn't
+# allowed. connectRateLimit is keyed by source IP (the real client IP
+# when behind a trusted PROXY-protocol LB, see proxyProtocol above);
+# publishRateLimit is keyed by tenant. See internal/broker.Config's doc
+# on ConnectRateLimitPerSec/PublishRateLimitPerSec for the full
+# semantics, including why the connect limiter's CONNACK reason isn't
+# specifically "rate limited" (a mochi-mqtt API limitation).
+connectRateLimit:
+  perSec: 0
+  burst: 0
+publishRateLimit:
+  perSec: 0
+  burst: 0
+
 # ── Observability ─────────────────────────────────────────────────────────
 metrics:
   port: 9090

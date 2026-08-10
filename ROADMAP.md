@@ -77,18 +77,24 @@ coverage, enhanced authentication (AUTH packet / SASL-style challenge).
 - [x] Credential rotation (JWKS cache, device CA cache)
 - [x] Certificate revocation with active eviction of already-connected
       sessions (see `keel-cert-manager` integration)
-- [ ] **Publish-rate and connect-attempt rate limiting — confirmed gap.**
-      `MaxConnections` per tenant exists (`TenantGatewayConfig.MaxConnections`,
-      concurrent connections only). No connect-rate or publish-rate limiter
-      exists anywhere in the codebase (confirmed 2026-08-09) — a single
-      client/tenant can flood the broker or hammer it with reconnects with
-      no protection beyond the connection-count ceiling. Deliberately not
-      one global limiter: connection concurrency, connect-attempt rate, and
-      publish rate are independent axes; subscription rate deferred unless
-      a real requirement emerges. Local-to-Edge by design, not
+- [x] **Publish-rate and connect-attempt rate limiting — closed.**
+      `internal/broker/ratelimit.go`'s `keyedRateLimiter`: connect attempts
+      keyed by source IP (checked before `authenticate()`, so brute-force
+      attempts are throttled regardless of credential validity — benefits
+      from the Proxy Protocol work above for the real client IP behind a
+      trusted LB); publishes keyed by tenant, with MQTT5 QoS1/2 getting a
+      real PUBACK/PUBREC reason 0x97 and QoS0/MQTT3.1.1 silently dropped
+      (no protocol mechanism for either). Deliberately three independent
+      axes, not one global limiter (connection concurrency = existing
+      `MaxConnections`; subscription rate deferred unless a real
+      requirement emerges). Per-key buckets carry a TTL + periodic sweep
+      to bound memory under IP/tenant churn. Local-to-Edge by design, not
       cluster-coordinated — a security/operational protection, not a
-      billing-grade global quota, so no Raft/Redis coordination on the
-      publish hot path. Tracked: [keel-iot/keel-mqtt-gateway#8](https://github.com/keel-iot/keel-mqtt-gateway/issues/8)
+      billing-grade global quota, so no Raft/Redis on the publish hot
+      path. Uncovered and fixed a real upstream `mochi-mqtt` wire-protocol
+      bug along the way (QoS2 PUBACK instead of PUBREC — see
+      `FEATURE_MATRIX.md`'s Security section for the full account).
+      Closed: [keel-iot/keel-mqtt-gateway#8](https://github.com/keel-iot/keel-mqtt-gateway/issues/8)
 - [~] Audit/telemetry for "why was this client rejected" — `ConnectionsTotal{result}`
       exists per-tenant; a per-client structured audit trail (the
       `security-guide`/"audit structured" idea from

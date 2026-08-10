@@ -109,6 +109,18 @@ type Config struct {
 	// 3.1.1 devices with no way for them to know why).
 	MaxKeepAlive time.Duration
 
+	// ConnectRateLimitPerSec/ConnectRateLimitBurst and
+	// PublishRateLimitPerSec/PublishRateLimitBurst — see
+	// broker.Config's doc on each pair. Each pair must be either both
+	// zero (disabled, default) or both positive; Load rejects any other
+	// combination rather than let golang.org/x/time/rate's own zero-value
+	// semantics (Limit(0) allows nothing at all, burst 0 blocks everything
+	// except an Inf limit) leak into what "0" means in Keel's own config.
+	ConnectRateLimitPerSec float64
+	ConnectRateLimitBurst  int
+	PublishRateLimitPerSec float64
+	PublishRateLimitBurst  int
+
 	// RedisAddr is the address of the Redis server used for session persistence
 	// and data-volume rate limiting.  Empty string disables Redis entirely.
 	RedisAddr string
@@ -324,6 +336,17 @@ func Load() (*Config, error) {
 		maxKeepAlive = d
 	}
 
+	connectRateLimitPerSec, connectRateLimitBurst, err := parseRateLimitPair(
+		"CONNECT_RATE_LIMIT_PER_SEC", "CONNECT_RATE_LIMIT_BURST")
+	if err != nil {
+		return nil, err
+	}
+	publishRateLimitPerSec, publishRateLimitBurst, err := parseRateLimitPair(
+		"PUBLISH_RATE_LIMIT_PER_SEC", "PUBLISH_RATE_LIMIT_BURST")
+	if err != nil {
+		return nil, err
+	}
+
 	var outputConnectorPlugins []string
 	if v := os.Getenv("OUTPUT_CONNECTOR_PLUGINS"); v != "" {
 		for _, p := range strings.Split(v, ",") {
@@ -371,5 +394,47 @@ func Load() (*Config, error) {
 		KafkaHonoSASLPass:         os.Getenv("KAFKA_HONO_SASL_PASS"),
 		KafkaHonoTopicPrefix:      os.Getenv("KAFKA_HONO_TOPIC_PREFIX"),
 		OutputConnectorPlugins:    outputConnectorPlugins,
+		ConnectRateLimitPerSec:    connectRateLimitPerSec,
+		ConnectRateLimitBurst:     connectRateLimitBurst,
+		PublishRateLimitPerSec:    publishRateLimitPerSec,
+		PublishRateLimitBurst:     publishRateLimitBurst,
 	}, nil
+}
+
+// parseRateLimitPair reads a "<per-sec float>"/"<burst int>" env var pair
+// and enforces that the pair is either both zero (disabled) or both
+// positive — never a mix. A mix would silently fall into
+// golang.org/x/time/rate's own zero-value semantics (Limit(0) allows
+// nothing, burst 0 with a positive limit still blocks everything except
+// an Inf limit), which isn't what "disabled" or "enabled" should mean in
+// Keel's own config surface.
+func parseRateLimitPair(perSecEnv, burstEnv string) (perSec float64, burst int, err error) {
+	perSecStr := os.Getenv(perSecEnv)
+	burstStr := os.Getenv(burstEnv)
+
+	if perSecStr != "" {
+		perSec, err = strconv.ParseFloat(perSecStr, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid %s %q: %w", perSecEnv, perSecStr, err)
+		}
+	}
+	if burstStr != "" {
+		burst, err = strconv.Atoi(burstStr)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid %s %q: %w", burstEnv, burstStr, err)
+		}
+	}
+
+	if perSec < 0 {
+		return 0, 0, fmt.Errorf("invalid %s %q: must not be negative", perSecEnv, perSecStr)
+	}
+	if burst < 0 {
+		return 0, 0, fmt.Errorf("invalid %s %q: must not be negative", burstEnv, burstStr)
+	}
+	if (perSec == 0) != (burst == 0) {
+		return 0, 0, fmt.Errorf("%s and %s must either both be zero (disabled) or both positive, got %s=%q %s=%q",
+			perSecEnv, burstEnv, perSecEnv, perSecStr, burstEnv, burstStr)
+	}
+
+	return perSec, burst, nil
 }

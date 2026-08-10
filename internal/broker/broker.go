@@ -157,6 +157,31 @@ type Config struct {
 	// registered, so behaviour is byte-for-byte identical to before this
 	// field existed.
 	MaxKeepAlive time.Duration
+
+	// ConnectRateLimitPerSec/ConnectRateLimitBurst throttle CONNECT
+	// attempts per source IP (cl.Net.Remote's host — the real client IP
+	// when behind a trusted PROXY-protocol-speaking LB, see
+	// ProxyProtocolTrustedCIDRs above). Checked before authenticate() runs,
+	// so brute-force attempts are throttled regardless of credential
+	// validity. Rejected the same way an over-MaxConnections attempt
+	// already is: false from OnConnectAuthenticate, which mochi-mqtt
+	// always answers with CONNACK reason ErrBadUsernameOrPassword — there
+	// is no "rate limited" CONNACK reason available through this hook (a
+	// mochi-mqtt API limitation, not a Keel design choice). Both zero
+	// (default) disables the limiter entirely; config.Load rejects any
+	// other zero/nonzero combination of the pair.
+	ConnectRateLimitPerSec float64
+	ConnectRateLimitBurst  int
+
+	// PublishRateLimitPerSec/PublishRateLimitBurst throttle PUBLISH per
+	// tenant. MQTT5 QoS1/2 gets a real PUBACK/PUBREC reason 0x97 (Quota
+	// Exceeded); QoS0 and MQTT 3.1.1 (no per-packet ack reason mechanism
+	// for either) get the message silently dropped instead — the same
+	// "only override what the protocol lets the client learn about"
+	// posture as MaxKeepAliveHook. Same zero/nonzero pairing rule as the
+	// connect limiter above.
+	PublishRateLimitPerSec float64
+	PublishRateLimitBurst  int
 }
 
 // parseClientAuth maps a TLSClientAuth config string to a tls.ClientAuthType.
@@ -224,6 +249,18 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 		log.Info("mqtt-gateway: Redis-backed retained messages enabled")
 	}
 
+	// Only constructed when actually configured — zero behaviour change
+	// for every deployment that doesn't set either pair, same "absent
+	// means untouched" posture as MaxKeepAlive above. config.Load already
+	// validated each pair is either both-zero or both-positive.
+	var connectLimiter, publishLimiter *keyedRateLimiter
+	if cfg.ConnectRateLimitPerSec > 0 {
+		connectLimiter = newKeyedRateLimiter(cfg.ConnectRateLimitPerSec, cfg.ConnectRateLimitBurst, rateLimiterTTL, rateLimiterSweepInterval)
+	}
+	if cfg.PublishRateLimitPerSec > 0 {
+		publishLimiter = newKeyedRateLimiter(cfg.PublishRateLimitPerSec, cfg.PublishRateLimitBurst, rateLimiterTTL, rateLimiterSweepInterval)
+	}
+
 	hook := &keelHook{
 		provider:         provider,
 		tenantCache:      cfg.TenantConfigCache,
@@ -242,6 +279,8 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 		defaultTenantID:  cfg.DefaultTenantID,
 		liveEdgeNodeIDs:  cfg.LiveEdgeNodeIDs,
 		offlineDedupTTL:  cfg.OfflineDedupTTL,
+		connectLimiter:   connectLimiter,
+		publishLimiter:   publishLimiter,
 	}
 	// Typed nil guard: an interface value holding a nil *RedisSessionHook is
 	// itself non-nil, which would defeat OnSessionEstablish's `h.sessionStore
