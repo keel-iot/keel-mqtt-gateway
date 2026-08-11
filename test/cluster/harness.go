@@ -299,6 +299,25 @@ func (h *Harness) MQTTAddr(i int) string {
 	return host + ":" + mapped.Port()
 }
 
+// ManagementAddr returns the host-reachable "host:port" for core index i
+// (0-based)'s management API — for a real HTTP client running on the
+// test host to query real, per-process cluster state (e.g. GET
+// /api/cluster/nodes's is_leader field), never a value assumed from
+// harness construction order.
+func (h *Harness) ManagementAddr(i int) string {
+	h.t.Helper()
+	ctx := context.Background()
+	mapped, err := h.Cores[i].Container.MappedPort(ctx, "8090/tcp")
+	if err != nil {
+		h.t.Fatalf("mapped management port for %s: %v", h.Cores[i].ID, err)
+	}
+	host, err := h.Cores[i].Container.Host(ctx)
+	if err != nil {
+		h.t.Fatalf("host for %s: %v", h.Cores[i].ID, err)
+	}
+	return host + ":" + mapped.Port()
+}
+
 // KillEdge stops (not gracefully — Terminate kills the container
 // outright, no DISCONNECT, no drain) the given edge — deterministic,
 // named-target process control for the node-loss scenarios, never a
