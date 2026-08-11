@@ -442,16 +442,16 @@ the Dockerfile's `go mod download` ordering bug (missing
 fixed independently of any test harness — a real, currently-broken
 build until this fix.
 
-One matching-semantics gap was also found, not yet fixed or filed:
+One matching-semantics gap was also found and filed as **issue #19**
+(child of #12, Phase 3 milestone, non-blocking for #10):
 `internal/cluster/routing.Router`'s Olric-backed subscription matching
-did not match a bare parent-level topic (e.g. `"telemetry"`) against a
+does not match a bare parent-level topic (e.g. `"telemetry"`) against a
 `"#"` filter the way mochi-mqtt's own local, single-node matching does
 — a cross-node delivery miss for a topic shape `isAllowedPublish`
 otherwise permits. Worked around in `TestMultiNodeHappyPath` by
 publishing a Hono-shaped sub-path instead (same convention
-`cross_node_test.go` already uses); left open as a candidate issue
-pending confirmation this is worth fixing rather than accepted
-behavior.
+`cross_node_test.go` already uses). Not fixed here — tracked in #19
+for when the routing/data-plane rung of the ladder is reached.
 
 Goal: a developer runs `go test -tags cluster ./test/cluster/...` and
 gets a real, multi-process Keel cluster up, exercises one deterministic
