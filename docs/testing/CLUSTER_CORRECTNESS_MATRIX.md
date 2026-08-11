@@ -335,6 +335,28 @@ to hide a discovered bug by softening the invariant around it.
    - `keel:gw:PKID:<clientID>` orphaning is cluster-only (same gating as
      risk #1) — stays **Phase 3**, and compounds risk #1 if that packet
      ID space is ever reused after expiry.
+5. **Concurrent per-Core `session.Reconciler` computation against
+   possibly-diverging gossip views (B1/B2/B3)** — **risk hypothesis,
+   not a FAIL**. Verified from source: `session.Reconciler` runs
+   unconditionally on every Core (no `raft.IsLeader()` gate, unlike
+   `redisFailoverLoop`'s single-arbiter pattern), each independently
+   computing `Owner(clientID, liveEdges)` from its own gossip-derived
+   `liveEdges` view and writing the result into the same shared
+   Olric-backed store (`OfflineOwnership.Place`). If two Cores'
+   gossip-derived membership views diverge even briefly (e.g. right
+   after an Edge death, before gossip converges everywhere), they could
+   independently compute different owners and race to write both into
+   the same key. **Investigated, not reproduced**: the management API
+   (`GET /api/cluster/routes`/`/api/cluster/sessions`) only exposes the
+   post-write, Olric-replicated *result* — reading it from three
+   different Core processes would observe the same shared value three
+   times, not three independent computations, so it cannot prove or
+   disprove agreement between the Reconcilers themselves without adding
+   test-only instrumentation to production code, which was deliberately
+   not done. Deferred to Phase 3's Session/QoS recovery rung: proof, if
+   any, will come from an end-to-end MQTT-level scenario (offline
+   publish → reconnect through a different Edge → correct, single
+   delivery) rather than an artificial ownership-agreement probe.
 
 None of these are fixed as part of this task. Each becomes its own
 tracked issue (§6) with the invariant/test status left `FAIL` or
@@ -373,7 +395,7 @@ where none exists — no test is invented here, only specified.
 | Scenario | Invariant(s) | Current test | Missing test |
 |---|---|---|---|
 | Start 3 Core nodes, confirm single leader, quorum-gated writes succeed | E1, E2 | none | **Missing** — needs Testcontainers harness (§7) |
-| Kill a follower, confirm writes still commit | E1 | none | **Missing** |
+| Kill a follower, confirm writes still commit | E1 | **`test/cluster/core_follower_death_test.go`'s `TestCoreFollowerDeath_ClusterStaysOperational`** (build-tag `cluster`, real 3-Core/2-Edge cluster, follower identified via a real `GET /api/cluster/nodes` read — never assumed from bootstrap order) — PASS, 3/3 clean runs. Verified: a brand-new CONNECT's ownership arbitration (real `raft.Apply`) still commits with 2/3 cores live; already-flowing cross-node MQTT traffic is undisturbed; an already-live session is not evicted by a Core-only event. Leader identity before/after is diagnostic only, never asserted. | — |
 | Kill the leader, confirm a new leader is elected and writes resume | (library property, not Keel-specific — low priority) | none | Optional — confirms configuration, not Keel code |
 | Lose quorum (kill 2 of 3), confirm writes fail closed, no split-brain commit | E2 | none | **Missing** |
 | Restore quorum via `RecoverCluster`, confirm no committed decision is contradicted | E3 | `internal/cluster/raft/backup_restore_test.go`'s `TestRecoverCluster_RequiresVoters` and `TestBackupAndRestoreRoundTrip` cover input validation and the backup/restore data round-trip, but **not** the actual "recover after real quorum loss, confirm no committed decision contradicted" property | **Missing** — this is the real, honest version of the "restore quorum" scenario; existing tests are adjacent, not equivalent |
@@ -386,7 +408,7 @@ where none exists — no test is invented here, only specified.
 | Scenario | Invariant(s) | Current test | Missing test |
 |---|---|---|---|
 | Simultaneous duplicate-ClientID CONNECT on two Edges, confirm exactly one committed owner and the loser gets evicted (eventually, via keepalive if the Evict RPC is dropped) | A1, A2, A3 | none | **Missing** — this is the single highest-value Phase 3 test given how strongly A1/A2 are already verified at the code level; a live test would catch a regression in the raft-Apply ordering itself |
-| Owner Edge dies while session is live, client reconnects to a different Edge | A1, D1 | none | **Missing** |
+| Owner Edge dies while session is live, client reconnects to a different Edge | A1, D1 | **`test/cluster/ownership_reconnect_test.go`'s `TestOwnerEdgeDies_ReconnectSucceedsOnAnotherEdge`** — PASS, 3/3 clean runs. **Verified:** owner-loss is detected (reconnect claim succeeds without waiting on dead-node detection); reconnect on a surviving Edge succeeds promptly; single-live-owner invariant preserved (functional post-reconnect session, real publish/deliver round trip). **Not verified by this scenario** (same reuse principle as the Core-follower-death row above — one scenario proves several invariants, not every consequence of an Edge dying): offline queued delivery, stale-route cleanup on the dead Edge, QoS inflight recovery — those belong to the routing/QoS sections below, not duplicated here. | — |
 | Stale (evicted) owner's connection attempts to continue publishing after losing ownership | A3 | none | **Missing** — specifically exercises the "no retry, keepalive-only" backstop |
 | Core leader changes mid-CONNECT arbitration (kill leader between the local `Apply` attempt and its retry) | A2, E2 | none | **Missing** — timing-sensitive, needs deterministic control over when leadership changes, not a race |
 
