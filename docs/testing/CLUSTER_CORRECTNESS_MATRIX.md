@@ -396,7 +396,8 @@ where none exists — no test is invented here, only specified.
 |---|---|---|---|
 | Start 3 Core nodes, confirm single leader, quorum-gated writes succeed | E1, E2 | none | **Missing** — needs Testcontainers harness (§7) |
 | Kill a follower, confirm writes still commit | E1 | **`test/cluster/core_follower_death_test.go`'s `TestCoreFollowerDeath_ClusterStaysOperational`** (build-tag `cluster`, real 3-Core/2-Edge cluster, follower identified via a real `GET /api/cluster/nodes` read — never assumed from bootstrap order) — PASS, 3/3 clean runs. Verified: a brand-new CONNECT's ownership arbitration (real `raft.Apply`) still commits with 2/3 cores live; already-flowing cross-node MQTT traffic is undisturbed; an already-live session is not evicted by a Core-only event. Leader identity before/after is diagnostic only, never asserted. | — |
-| Kill the leader, confirm a new leader is elected and writes resume | (library property, not Keel-specific — low priority) | none | Optional — confirms configuration, not Keel code |
+| Kill the leader, confirm a new leader is elected and writes resume | (library property, not Keel-specific — low priority) | **`test/cluster/core_leader_death_test.go`'s `TestCoreLeaderDeath_NewLeaderElectedAndProgressRestored`** — PASS, 3/3 clean runs. Verified: new leader elected among survivors; quorum still admits new decisions (fresh CONNECT arbitration); pre-existing live session undisturbed; cross-node publish keeps working; both survivors' own raft FSM copies agree on pre-existing session ownership (genuinely per-node-replicated, unlike the Olric-backed offline-ownership case in §4 risk #5). Election window/old-vs-new leader/term recorded as diagnostic evidence only, never asserted. **Notable finding, not required by this row but worth recording where it was found**: a background heartbeat publish running through the kill showed real MQTT data-plane traffic delivered *during* the ~2.1-2.2s leaderless window itself (10-11 of 15-16 heartbeats each run) — the control plane having no leader did not stall already-flowing traffic. | — |
+| Kill the leader, then restart it (same container, on-disk raft state intact), confirm it recovers and reconverges — role need not return to leader | (§1 rejoin, leader-side) | **`test/cluster/core_leader_rejoin_test.go`'s `TestCoreLeaderRejoin_ConvergesAfterRestart`** — PASS, 3/3 clean runs. Verified: real observable convergence (management API back up, leader agreement with a never-stopped core), still a raft voter, no committed session ownership lost across the crash-and-rejoin round trip, cross-node MQTT traffic still correct post-convergence. Found and fixed a real harness bug while building this test: `core-1` was configured with itself as its own `--gossip-peers`, breaking its own rejoin after a restart (see harness.go's commit); real deployment gives core-1 the other cores as peers instead. | — |
 | Lose quorum (kill 2 of 3), confirm writes fail closed, no split-brain commit | E2 | none | **Missing** |
 | Restore quorum via `RecoverCluster`, confirm no committed decision is contradicted | E3 | `internal/cluster/raft/backup_restore_test.go`'s `TestRecoverCluster_RequiresVoters` and `TestBackupAndRestoreRoundTrip` cover input validation and the backup/restore data round-trip, but **not** the actual "recover after real quorum loss, confirm no committed decision contradicted" property | **Missing** — this is the real, honest version of the "restore quorum" scenario; existing tests are adjacent, not equivalent |
 | Restart a Core with intact BoltDB state, confirm it resumes without re-election churn | (restart behavior, §1) | none | **Missing** |
@@ -474,6 +475,14 @@ otherwise permits. Worked around in `TestMultiNodeHappyPath` by
 publishing a Hono-shaped sub-path instead (same convention
 `cross_node_test.go` already uses). Not fixed here — tracked in #19
 for when the routing/data-plane rung of the ladder is reached.
+
+**Ladder progress:** rung 1 (Multi-node happy path) and rung 2
+(Ownership — duplicate-ClientID eviction and owner-Edge-death reconnect
+proven; offline-placement structural agreement deferred to rung 4 per
+§4 risk #5) are done. **Rung 3 (Controlled node loss) is now closed**:
+Edge death, Core follower death, Core follower rejoin, Core leader
+death, and Core leader rejoin are all proven — see their respective
+rows above. Rung 4 (Session/QoS recovery) is next.
 
 Goal: a developer runs `go test -tags cluster ./test/cluster/...` and
 gets a real, multi-process Keel cluster up, exercises one deterministic
