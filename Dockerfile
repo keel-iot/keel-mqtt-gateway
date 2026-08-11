@@ -3,6 +3,13 @@ WORKDIR /src
 
 COPY go.mod go.sum ./
 COPY vendor-pkg/ ./vendor-pkg/
+# thirdparty/mochi-mqtt-server is a local-path `replace` target (see
+# go.mod / thirdparty/mochi-mqtt-server/PATCH.md) — go mod download
+# reads its go.mod to resolve the replacement, so it must exist before
+# this step, same as vendor-pkg above. Copied separately from the full
+# `COPY . .` below so unrelated source changes don't bust this layer's
+# cache.
+COPY thirdparty/ ./thirdparty/
 RUN go mod download
 
 COPY . .
