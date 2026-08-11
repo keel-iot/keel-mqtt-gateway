@@ -397,7 +397,7 @@ where none exists — no test is invented here, only specified.
 | Fixed 3-Edge membership, confirm `Owner(clientID)` computed identically on all 3 | B1 | `internal/session/placement_test.go`'s `TestOwner_Deterministic` (single-process, pure-function level) | Cluster-level (real multi-process) version missing |
 | Remove a non-owner Edge, confirm unrelated ClientIDs' ownership is unchanged | B2, F2 | `internal/session/placement_test.go`'s `TestOwner_MinimalDisruption` and `internal/session/reconciler_test.go`'s `TestReconciler_MembershipChange_MovesOnlyAffectedSessions` (both fake-store/single-process level) | Cluster-level (real multi-process) version missing |
 | Kill the owning Edge, confirm reassignment happens within a bounded window (gossip + reconciler tick) | B3 | none | **Missing** |
-| Subscribe on Edge A, publish through Edge B, confirm delivery | C1 | **`test/e2e/cross_node_test.go`'s `TestCrossNodeDelivery`** (build-tag `e2e`, real docker-compose 3-node cluster, real authenticated MQTT clients, wildcard subscribe across nodes) — already exists, already exercises this exact invariant | — |
+| Subscribe on Edge A, publish through Edge B, confirm delivery | C1 | **`test/e2e/cross_node_test.go`'s `TestCrossNodeDelivery`** (build-tag `e2e`, real docker-compose 3-node cluster, real authenticated MQTT clients, wildcard subscribe across nodes) — already exists, already exercises this exact invariant. Independently reconfirmed via the Testcontainers harness (§7, issue #16): `test/cluster/happy_path_test.go`'s `TestMultiNodeHappyPath` (build-tag `cluster`, 3 Core + 2 Edge, self-contained per-run cluster, no pre-existing docker-compose stack) — PASS, 3/3 clean runs. | — |
 | Unsubscribe, then publish from a remote Edge, confirm no delivery | C2 | none — `TestCrossNodeDelivery` has no unsubscribe path | **Missing** |
 | Kill destination Edge mid-flight, publish from another Edge, confirm the *documented* loss (D2) is what actually happens — not silently swallowed as a pass | C4, D2 | none | **Missing — this is the test that turns §4 risk #2 from "discovered in review" into "continuously regression-tested"** |
 | Add a new Edge, confirm it becomes a valid forward target only after routing convergence, not before | C1 | none | **Missing** |
@@ -422,9 +422,38 @@ where none exists — no test is invented here, only specified.
 Every "Missing test" row above is a candidate for implementation once
 Phase 3 moves from specification to execution — not part of this task.
 
-## 7. Test environment design (design only, not implemented)
+## 7. Test environment design
 
-Goal: a developer runs `go test ./test/cluster/...` (or similar) and
+**Status: implemented, issue #16 closed.** `test/cluster/` (build-tag
+`cluster`) brings up a real, multi-process Keel cluster via
+Testcontainers-for-Go and tears it down per test — no pre-existing
+Kubernetes or docker-compose stack required. First scenario proven
+(§6's "Subscribe on Edge A, publish through Edge B" row): `go test
+-tags cluster ./test/cluster/...`.
+
+One real, production-relevant bug surfaced while building the harness
+and is now fixed: `internal/cluster/membership`'s raft-driven Redis
+failover reconciler issues a self-referential `SLAVEOF` when multiple
+core nodes report the same co-located Redis address — the harness now
+runs one Redis instance per core (matching
+`docker-compose.core-edge-split.yml`'s real topology) to avoid it, and
+the Dockerfile's `go mod download` ordering bug (missing
+`thirdparty/mochi-mqtt-server/` before `go mod download`) was found and
+fixed independently of any test harness — a real, currently-broken
+build until this fix.
+
+One matching-semantics gap was also found, not yet fixed or filed:
+`internal/cluster/routing.Router`'s Olric-backed subscription matching
+did not match a bare parent-level topic (e.g. `"telemetry"`) against a
+`"#"` filter the way mochi-mqtt's own local, single-node matching does
+— a cross-node delivery miss for a topic shape `isAllowedPublish`
+otherwise permits. Worked around in `TestMultiNodeHappyPath` by
+publishing a Hono-shaped sub-path instead (same convention
+`cross_node_test.go` already uses); left open as a candidate issue
+pending confirmation this is worth fixing rather than accepted
+behavior.
+
+Goal: a developer runs `go test -tags cluster ./test/cluster/...` and
 gets a real, multi-process Keel cluster up, exercises one deterministic
 scenario, and tears it down — no pre-existing Kubernetes cluster
 required.
@@ -467,8 +496,9 @@ randomized.
 ## 8. What this document is not
 
 Not a chaos-testing plan (Phase 4). Not a performance benchmark plan
-(Phase 5). Not an implementation — no scenario in §6 has been coded.
-Not a claim that any invariant in §2 has been *disproven* by a real
-test — the risks in §4 are read from source, not yet reproduced by a
-running scenario (that reproduction is exactly what Phase 3 execution
-is for).
+(Phase 5). As of the Testcontainers harness (§7) and the first §6
+scenario going PASS, this is no longer a pure design document — but
+most of §6 is still unimplemented, and nothing here claims an
+invariant in §2 has been *disproven*: the risks in §4 not yet
+reproduced by a running scenario remain read-from-source only (that
+reproduction is exactly what the rest of Phase 3 execution is for).
