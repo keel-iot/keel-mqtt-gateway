@@ -63,8 +63,7 @@ func TestMultiNodeHappyPath(t *testing.T) {
 	// mochi-mqtt matching accepts but the Olric-backed cluster router does
 	// not — a real, if narrow, matching gap, tracked separately from this
 	// scenario since it isn't what C1's happy path is meant to exercise).
-	publishTopic := fmt.Sprintf("telemetry/%s/%s", TenantID, deviceAID)
-	pubToken := publisher.Publish(publishTopic, 1, false, payload)
+	pubToken := publisher.Publish(publishTopicFor(deviceAID), 1, false, payload)
 	if !pubToken.WaitTimeout(10*time.Second) || pubToken.Error() != nil {
 		t.Fatalf("publish: %v", pubToken.Error())
 	}
