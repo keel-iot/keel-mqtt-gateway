@@ -110,9 +110,25 @@ func NewHarness(t *testing.T, numCore, numEdge int, deviceIDs []string) *Harness
 	for i := 1; i <= numCore; i++ {
 		nodeID := fmt.Sprintf("core-%d", i)
 		bootstrap := i == 1
-		// Every core after the first joins via core-1's gossip address —
-		// mirrors docker-compose.core-edge-split.yml's exact peer wiring.
-		peer := "core-1:7946"
+		// Every core after the first joins via core-1's gossip address;
+		// core-1 itself joins via every OTHER core — mirrors
+		// docker-compose.core-edge-split.yml's exact peer wiring
+		// (core-1: "core-2:7946,core-3:7946", others: "core-1:7946").
+		// core-1 pointed at itself instead would be harmless on first
+		// cold start (it bootstraps alone, no peers needed yet) but
+		// breaks its own rejoin after a restart: with only itself as a
+		// configured peer, it can never rediscover core-2/core-3's
+		// already-running memberlist cluster.
+		var peer string
+		if i == 1 {
+			var others []string
+			for j := 2; j <= numCore; j++ {
+				others = append(others, fmt.Sprintf("core-%d:7946", j))
+			}
+			peer = strings.Join(others, ",")
+		} else {
+			peer = "core-1:7946"
+		}
 		h.Cores = append(h.Cores, h.startCore(ctx, nodeID, bootstrap, peer, redisAliases[i-1]+":6379", creds))
 	}
 
