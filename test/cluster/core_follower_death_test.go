@@ -4,6 +4,7 @@ package cluster
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,8 +19,34 @@ import (
 // (that package is internal/, this is a separate build-tagged test
 // binary) since only the two fields this test needs are read.
 type nodeView struct {
-	NodeID   string `json:"node_id"`
-	IsLeader bool   `json:"is_leader"`
+	NodeID    string `json:"node_id"`
+	IsLeader  bool   `json:"is_leader"`
+	RaftVoter bool   `json:"raft_voter"`
+}
+
+// coreIndexFromNodeID converts a management-API node_id like "core-2"
+// into this harness's 0-based Cores index (1).
+func coreIndexFromNodeID(nodeID string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimPrefix(nodeID, "core-"))
+	if err != nil {
+		return -1, fmt.Errorf("parse core index from node_id %q: %w", nodeID, err)
+	}
+	return n - 1, nil
+}
+
+// getNodeViews queries core index queryFrom's own management API and
+// decodes its GET /api/cluster/nodes response.
+func getNodeViews(queryFrom int, h *Harness) ([]nodeView, error) {
+	resp, err := http.Get("http://" + h.ManagementAddr(queryFrom) + "/api/cluster/nodes")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var views []nodeView
+	if err := json.NewDecoder(resp.Body).Decode(&views); err != nil {
+		return nil, err
+	}
+	return views, nil
 }
 
 // currentLeaderIndex queries core index i's own management API — a
@@ -28,25 +55,19 @@ type nodeView struct {
 // whichever node currently reports itself leader.
 func currentLeaderIndex(t *testing.T, h *Harness, queryFrom int) int {
 	t.Helper()
-	resp, err := http.Get("http://" + h.ManagementAddr(queryFrom) + "/api/cluster/nodes")
+	views, err := getNodeViews(queryFrom, h)
 	if err != nil {
 		t.Fatalf("query cluster nodes via core index %d: %v", queryFrom, err)
-	}
-	defer resp.Body.Close()
-
-	var views []nodeView
-	if err := json.NewDecoder(resp.Body).Decode(&views); err != nil {
-		t.Fatalf("decode /api/cluster/nodes response: %v", err)
 	}
 	for _, v := range views {
 		if !v.IsLeader {
 			continue
 		}
-		n, err := strconv.Atoi(strings.TrimPrefix(v.NodeID, "core-"))
+		idx, err := coreIndexFromNodeID(v.NodeID)
 		if err != nil {
-			t.Fatalf("parse core index from leader node_id %q: %v", v.NodeID, err)
+			t.Fatal(err)
 		}
-		return n - 1
+		return idx
 	}
 	t.Fatalf("no core reported itself as leader in /api/cluster/nodes response: %+v", views)
 	return -1

@@ -338,6 +338,27 @@ func (h *Harness) KillCore(i int) {
 	}
 }
 
+// StopCore stops (not Terminate — the container and its writable layer,
+// including the raft data dir under /data/raft, survive) the given
+// core, for rejoin/restart scenarios that need real BoltDB state to
+// still be there afterward. Pairs with StartCore.
+func (h *Harness) StopCore(i int) {
+	h.t.Helper()
+	if err := h.Cores[i].Container.Stop(context.Background(), nil); err != nil {
+		h.t.Fatalf("stop %s: %v", h.Cores[i].ID, err)
+	}
+}
+
+// StartCore resumes a core previously stopped via StopCore, same
+// container/filesystem/data as before — a real restart, not a fresh
+// node with a new empty data dir.
+func (h *Harness) StartCore(i int) {
+	h.t.Helper()
+	if err := h.Cores[i].Container.Start(context.Background()); err != nil {
+		h.t.Fatalf("start %s: %v", h.Cores[i].ID, err)
+	}
+}
+
 // Close tears down every container and the network. Registered
 // automatically via t.Cleanup in NewHarness — tests don't need to call
 // this themselves.
