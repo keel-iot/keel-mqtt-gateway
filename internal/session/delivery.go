@@ -19,13 +19,10 @@ type InflightMessage struct {
 // OfflineDelivery persists an inbound publish for offline sessions
 // directly to Redis, bypassing mqtt.Client entirely.
 type OfflineDelivery struct {
-	// NextPacketID returns the next packet ID for clientID's queued
-	// message. Not mochi-mqtt's own Client.NextPacketID, which needs a
-	// live Client object this path doesn't have.
-	NextPacketID func(clientID string) (uint16, error)
-
-	// Enqueue persists msg as packetID's inflight entry for clientID.
-	Enqueue func(clientID string, packetID uint16, msg InflightMessage) error
+	// Queue atomically allocates a non-colliding packet ID and persists msg.
+	// Allocation and insertion must not be split: a live connection can write
+	// the same packet-ID space between two independent Redis operations.
+	Queue func(clientID string, msg InflightMessage) (packetID uint16, queued bool, err error)
 
 	Log *slog.Logger
 }
@@ -37,8 +34,9 @@ type OfflineDelivery struct {
 // as mqtt.Client's own inflight tracking for live clients. A session
 // matching multiple filters is enqueued once, at the highest QoS.
 //
-// Best-effort per session: a NextPacketID or Enqueue failure skips that
-// session, never aborts the rest of owned.
+// Best-effort per session: a Queue failure skips that session, never aborts
+// the rest of owned. queued=false means a deduplicated delivery and is not an
+// error.
 func (d *OfflineDelivery) Deliver(owned []OfflineSession, topic string, payload []byte, publishQoS byte) (delivered int) {
 	for _, s := range owned {
 		qos, matched := bestMatchQoS(s, topic, publishQoS)
@@ -46,16 +44,16 @@ func (d *OfflineDelivery) Deliver(owned []OfflineSession, topic string, payload 
 			continue
 		}
 
-		packetID, err := d.NextPacketID(s.ClientID)
-		if err != nil {
-			d.logWarn("session: offline delivery packet ID allocation failed", "client_id", s.ClientID, "error", err)
-			continue
-		}
 		msg := InflightMessage{Topic: topic, Payload: payload, QoS: qos}
-		if err := d.Enqueue(s.ClientID, packetID, msg); err != nil {
-			d.logWarn("session: offline delivery enqueue failed", "client_id", s.ClientID, "packet_id", packetID, "error", err)
+		packetID, queued, err := d.Queue(s.ClientID, msg)
+		if err != nil {
+			d.logWarn("session: offline delivery enqueue failed", "client_id", s.ClientID, "error", err)
 			continue
 		}
+		if !queued {
+			continue
+		}
+		_ = packetID // retained in the API for logging/diagnostics by callers
 		delivered++
 	}
 	return delivered

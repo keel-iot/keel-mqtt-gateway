@@ -24,9 +24,7 @@ type offlineDeliveryRegistry interface {
 // testability, same pattern as sessionStore above.
 type offlineDeliveryStore interface {
 	OwnedOfflineSessions(ownedClientIDs []string) ([]session.OfflineSession, error)
-	NextPacketID(ctx context.Context, clientID string) (uint16, error)
-	EnqueueOfflineInflight(ctx context.Context, clientID string, packetID uint16, msg session.InflightMessage) error
-	MarkDelivered(ctx context.Context, publishID uuid.UUID, clientID string, ttl time.Duration) (bool, error)
+	QueueOfflineInflight(ctx context.Context, publishID uuid.UUID, clientID string, ttl time.Duration, msg session.InflightMessage) (packetID uint16, queued bool, err error)
 }
 
 // DeliverOffline checks nodeID's own owned offline sessions (per
@@ -54,23 +52,17 @@ func DeliverOffline(ctx context.Context, registry offlineDeliveryRegistry, store
 		return
 	}
 	delivery := &session.OfflineDelivery{
-		NextPacketID: func(clientID string) (uint16, error) {
-			return store.NextPacketID(ctx, clientID)
-		},
-		Enqueue: func(clientID string, packetID uint16, msg session.InflightMessage) error {
-			first, err := store.MarkDelivered(ctx, publishID, clientID, dedupTTL)
+		Queue: func(clientID string, msg session.InflightMessage) (uint16, bool, error) {
+			packetID, queued, err := store.QueueOfflineInflight(ctx, publishID, clientID, dedupTTL, msg)
 			if err != nil {
-				return err
+				return 0, false, err
 			}
-			if !first {
+			if !queued {
 				telemetry.DeduplicationsTotal.Inc()
-				return nil // already delivered for this publish event elsewhere
-			}
-			if err := store.EnqueueOfflineInflight(ctx, clientID, packetID, msg); err != nil {
-				return err
+				return 0, false, nil
 			}
 			telemetry.MessagesForwarded.WithLabelValues(strconv.Itoa(int(qos)), "offline").Inc()
-			return nil
+			return packetID, true, nil
 		},
 		Log: log,
 	}

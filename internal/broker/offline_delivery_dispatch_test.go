@@ -45,29 +45,21 @@ func (f *fakeOfflineDeliveryStoreImpl) OwnedOfflineSessions(ownedClientIDs []str
 	return out, nil
 }
 
-func (f *fakeOfflineDeliveryStoreImpl) NextPacketID(_ context.Context, _ string) (uint16, error) {
+func (f *fakeOfflineDeliveryStoreImpl) QueueOfflineInflight(_ context.Context, publishID uuid.UUID, clientID string, _ time.Duration, _ session.InflightMessage) (uint16, bool, error) {
 	if f.nextIDErr != nil {
-		return 0, f.nextIDErr
+		return 0, false, f.nextIDErr
 	}
-	f.nextPacket++
-	return f.nextPacket, nil
-}
-
-func (f *fakeOfflineDeliveryStoreImpl) EnqueueOfflineInflight(_ context.Context, clientID string, _ uint16, _ session.InflightMessage) error {
-	if f.enqueueErr != nil {
-		return f.enqueueErr
-	}
-	f.enqueued = append(f.enqueued, clientID)
-	return nil
-}
-
-func (f *fakeOfflineDeliveryStoreImpl) MarkDelivered(_ context.Context, publishID uuid.UUID, clientID string, _ time.Duration) (bool, error) {
 	key := publishID.String() + ":" + clientID
-	if f.delivered[key] {
-		return false, nil
+	if publishID != uuid.Nil && f.delivered[key] {
+		return 0, false, nil
 	}
 	f.delivered[key] = true
-	return true, nil
+	f.nextPacket++
+	if f.enqueueErr != nil {
+		return 0, false, f.enqueueErr
+	}
+	f.enqueued = append(f.enqueued, clientID)
+	return f.nextPacket, true, nil
 }
 
 func TestDeliverOffline_NoOwnedClients_NoOp(t *testing.T) {
@@ -151,12 +143,6 @@ type erroringOfflineDeliveryStore struct {
 func (e *erroringOfflineDeliveryStore) OwnedOfflineSessions(_ []string) ([]session.OfflineSession, error) {
 	return nil, e.err
 }
-func (e *erroringOfflineDeliveryStore) NextPacketID(_ context.Context, _ string) (uint16, error) {
-	return 0, nil
-}
-func (e *erroringOfflineDeliveryStore) EnqueueOfflineInflight(_ context.Context, _ string, _ uint16, _ session.InflightMessage) error {
-	return nil
-}
-func (e *erroringOfflineDeliveryStore) MarkDelivered(_ context.Context, _ uuid.UUID, _ string, _ time.Duration) (bool, error) {
-	return true, nil
+func (e *erroringOfflineDeliveryStore) QueueOfflineInflight(_ context.Context, _ uuid.UUID, _ string, _ time.Duration, _ session.InflightMessage) (uint16, bool, error) {
+	return 0, false, nil
 }

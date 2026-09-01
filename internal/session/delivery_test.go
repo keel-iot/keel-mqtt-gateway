@@ -14,8 +14,7 @@ type fakeInflightStore struct {
 	mu       sync.Mutex
 	nextID   map[string]uint16
 	enqueued []enqueuedMsg
-	nextErr  error
-	enqErr   error
+	queueErr error
 }
 
 type enqueuedMsg struct {
@@ -28,24 +27,16 @@ func newFakeInflightStore() *fakeInflightStore {
 	return &fakeInflightStore{nextID: make(map[string]uint16)}
 }
 
-func (f *fakeInflightStore) nextPacketID(clientID string) (uint16, error) {
-	if f.nextErr != nil {
-		return 0, f.nextErr
+func (f *fakeInflightStore) queue(clientID string, msg session.InflightMessage) (uint16, bool, error) {
+	if f.queueErr != nil {
+		return 0, false, f.queueErr
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID[clientID]++
-	return f.nextID[clientID], nil
-}
-
-func (f *fakeInflightStore) enqueue(clientID string, packetID uint16, msg session.InflightMessage) error {
-	if f.enqErr != nil {
-		return f.enqErr
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	packetID := f.nextID[clientID]
 	f.enqueued = append(f.enqueued, enqueuedMsg{clientID, packetID, msg})
-	return nil
+	return packetID, true, nil
 }
 
 func (f *fakeInflightStore) all() []enqueuedMsg {
@@ -62,7 +53,7 @@ func testSubSession(clientID string, subs ...session.OfflineSubscription) sessio
 
 func TestDeliver_QoS0Publish_NeverQueued(t *testing.T) {
 	store := newFakeInflightStore()
-	d := &session.OfflineDelivery{NextPacketID: store.nextPacketID, Enqueue: store.enqueue}
+	d := &session.OfflineDelivery{Queue: store.queue}
 
 	owned := []session.OfflineSession{
 		testSubSession("device-1", session.OfflineSubscription{Filter: "telemetry/#", QoS: 2}),
@@ -76,7 +67,7 @@ func TestDeliver_QoS0Publish_NeverQueued(t *testing.T) {
 
 func TestDeliver_QoS1Publish_QoS1Subscription_QueuedAtQoS1(t *testing.T) {
 	store := newFakeInflightStore()
-	d := &session.OfflineDelivery{NextPacketID: store.nextPacketID, Enqueue: store.enqueue}
+	d := &session.OfflineDelivery{Queue: store.queue}
 
 	owned := []session.OfflineSession{
 		testSubSession("device-1", session.OfflineSubscription{Filter: "telemetry/#", QoS: 1}),
@@ -94,7 +85,7 @@ func TestDeliver_QoS1Publish_QoS1Subscription_QueuedAtQoS1(t *testing.T) {
 
 func TestDeliver_QoS2Publish_QoS1Subscription_DowngradedToQoS1(t *testing.T) {
 	store := newFakeInflightStore()
-	d := &session.OfflineDelivery{NextPacketID: store.nextPacketID, Enqueue: store.enqueue}
+	d := &session.OfflineDelivery{Queue: store.queue}
 
 	owned := []session.OfflineSession{
 		testSubSession("device-1", session.OfflineSubscription{Filter: "telemetry/#", QoS: 1}),
@@ -109,7 +100,7 @@ func TestDeliver_QoS2Publish_QoS1Subscription_DowngradedToQoS1(t *testing.T) {
 
 func TestDeliver_QoS1Publish_QoS2Subscription_DowngradedToQoS1(t *testing.T) {
 	store := newFakeInflightStore()
-	d := &session.OfflineDelivery{NextPacketID: store.nextPacketID, Enqueue: store.enqueue}
+	d := &session.OfflineDelivery{Queue: store.queue}
 
 	owned := []session.OfflineSession{
 		testSubSession("device-1", session.OfflineSubscription{Filter: "telemetry/#", QoS: 2}),
@@ -124,7 +115,7 @@ func TestDeliver_QoS1Publish_QoS2Subscription_DowngradedToQoS1(t *testing.T) {
 
 func TestDeliver_OverlappingFilters_QueuedOnceAtHighestEffectiveQoS(t *testing.T) {
 	store := newFakeInflightStore()
-	d := &session.OfflineDelivery{NextPacketID: store.nextPacketID, Enqueue: store.enqueue}
+	d := &session.OfflineDelivery{Queue: store.queue}
 
 	owned := []session.OfflineSession{
 		testSubSession("device-1",
@@ -145,7 +136,7 @@ func TestDeliver_OverlappingFilters_QueuedOnceAtHighestEffectiveQoS(t *testing.T
 
 func TestDeliver_NoMatchingFilter_NotQueued(t *testing.T) {
 	store := newFakeInflightStore()
-	d := &session.OfflineDelivery{NextPacketID: store.nextPacketID, Enqueue: store.enqueue}
+	d := &session.OfflineDelivery{Queue: store.queue}
 
 	owned := []session.OfflineSession{
 		testSubSession("device-1", session.OfflineSubscription{Filter: "other/#", QoS: 1}),
@@ -159,7 +150,7 @@ func TestDeliver_NoMatchingFilter_NotQueued(t *testing.T) {
 
 func TestDeliver_MultipleSessions_OnlyMatchingOnesQueued(t *testing.T) {
 	store := newFakeInflightStore()
-	d := &session.OfflineDelivery{NextPacketID: store.nextPacketID, Enqueue: store.enqueue}
+	d := &session.OfflineDelivery{Queue: store.queue}
 
 	owned := []session.OfflineSession{
 		testSubSession("device-1", session.OfflineSubscription{Filter: "telemetry/#", QoS: 1}),
@@ -178,10 +169,10 @@ func TestDeliver_MultipleSessions_OnlyMatchingOnesQueued(t *testing.T) {
 	}
 }
 
-func TestDeliver_NextPacketIDFailure_SkipsSessionContinuesOthers(t *testing.T) {
+func TestDeliver_QueueFailure_SkipsSessionContinuesOthers(t *testing.T) {
 	store := newFakeInflightStore()
-	store.nextErr = fmt.Errorf("redis unreachable")
-	d := &session.OfflineDelivery{NextPacketID: store.nextPacketID, Enqueue: store.enqueue}
+	store.queueErr = fmt.Errorf("redis unreachable")
+	d := &session.OfflineDelivery{Queue: store.queue}
 
 	owned := []session.OfflineSession{
 		testSubSession("device-1", session.OfflineSubscription{Filter: "telemetry/#", QoS: 1}),
@@ -189,14 +180,14 @@ func TestDeliver_NextPacketIDFailure_SkipsSessionContinuesOthers(t *testing.T) {
 	delivered := d.Deliver(owned, "telemetry/temp", []byte("x"), 1)
 
 	if delivered != 0 || len(store.all()) != 0 {
-		t.Fatalf("expected no successful delivery when NextPacketID fails, got delivered=%d calls=%v", delivered, store.all())
+		t.Fatalf("expected no successful delivery when Queue fails, got delivered=%d calls=%v", delivered, store.all())
 	}
 }
 
-func TestDeliver_EnqueueFailure_SkipsSessionContinuesOthers(t *testing.T) {
+func TestDeliver_QueueFailure_ContinuesOthers(t *testing.T) {
 	store := newFakeInflightStore()
-	store.enqErr = fmt.Errorf("redis write failed")
-	d := &session.OfflineDelivery{NextPacketID: store.nextPacketID, Enqueue: store.enqueue}
+	store.queueErr = fmt.Errorf("redis write failed")
+	d := &session.OfflineDelivery{Queue: store.queue}
 
 	owned := []session.OfflineSession{
 		testSubSession("device-1", session.OfflineSubscription{Filter: "telemetry/#", QoS: 1}),
@@ -205,13 +196,13 @@ func TestDeliver_EnqueueFailure_SkipsSessionContinuesOthers(t *testing.T) {
 	delivered := d.Deliver(owned, "telemetry/temp", []byte("x"), 1)
 
 	if delivered != 0 {
-		t.Fatalf("expected 0 successful deliveries when Enqueue always fails, got %d", delivered)
+		t.Fatalf("expected 0 successful deliveries when Queue always fails, got %d", delivered)
 	}
 }
 
 func TestDeliver_PayloadAndTopicPreserved(t *testing.T) {
 	store := newFakeInflightStore()
-	d := &session.OfflineDelivery{NextPacketID: store.nextPacketID, Enqueue: store.enqueue}
+	d := &session.OfflineDelivery{Queue: store.queue}
 
 	owned := []session.OfflineSession{
 		testSubSession("device-1", session.OfflineSubscription{Filter: "telemetry/#", QoS: 1}),
