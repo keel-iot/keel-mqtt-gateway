@@ -128,6 +128,10 @@ type Config struct {
 	// (default).
 	OutputConnectors []connector.OutputConnector
 
+	// InfluxTopicFilters identifies MQTT topics whose payloads use Influx
+	// Line Protocol and should contribute to message_age_seconds.
+	InfluxTopicFilters []string
+
 	// SessionExpiryInterval bounds how long a persistent (clean_session=false)
 	// session's offline QoS1/2 queue, ACL identity (keelHook.OnClientExpired),
 	// and cluster routing entry survive after a disconnect with no reconnect.
@@ -262,25 +266,26 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 	}
 
 	hook := &keelHook{
-		provider:         provider,
-		tenantCache:      cfg.TenantConfigCache,
-		jwksCache:        cfg.JWKSCache,
-		deviceCACache:    cfg.DeviceCACache,
-		retainedStore:    retainedStore,
-		rdb:              cfg.RedisClient,
-		autoProvURL:      cfg.AutoProvisioningURL,
-		log:              log,
-		clusterRegistry:  cfg.ClusterRegistry,
-		clusterFwd:       cfg.ClusterFwd,
-		clusterNodeID:    cfg.ClusterNodeID,
-		outputConnectors: cfg.OutputConnectors,
-		server:           server,
-		liveStats:        cfg.LiveStats,
-		defaultTenantID:  cfg.DefaultTenantID,
-		liveEdgeNodeIDs:  cfg.LiveEdgeNodeIDs,
-		offlineDedupTTL:  cfg.OfflineDedupTTL,
-		connectLimiter:   connectLimiter,
-		publishLimiter:   publishLimiter,
+		provider:           provider,
+		tenantCache:        cfg.TenantConfigCache,
+		jwksCache:          cfg.JWKSCache,
+		deviceCACache:      cfg.DeviceCACache,
+		retainedStore:      retainedStore,
+		rdb:                cfg.RedisClient,
+		autoProvURL:        cfg.AutoProvisioningURL,
+		log:                log,
+		clusterRegistry:    cfg.ClusterRegistry,
+		clusterFwd:         cfg.ClusterFwd,
+		clusterNodeID:      cfg.ClusterNodeID,
+		outputConnectors:   cfg.OutputConnectors,
+		influxTopicFilters: cfg.InfluxTopicFilters,
+		server:             server,
+		liveStats:          cfg.LiveStats,
+		defaultTenantID:    cfg.DefaultTenantID,
+		liveEdgeNodeIDs:    cfg.LiveEdgeNodeIDs,
+		offlineDedupTTL:    cfg.OfflineDedupTTL,
+		connectLimiter:     connectLimiter,
+		publishLimiter:     publishLimiter,
 	}
 	// Typed nil guard: an interface value holding a nil *RedisSessionHook is
 	// itself non-nil, which would defeat OnSessionEstablish's `h.sessionStore

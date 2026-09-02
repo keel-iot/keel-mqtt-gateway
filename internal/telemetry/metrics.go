@@ -53,6 +53,27 @@ var (
 		Help:      "Total payload bytes published by devices.",
 	}, []string{"tenant_id"})
 
+	MessageAge = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "keel_gateway",
+		Name:      "message_age_seconds",
+		Help:      "Age of Influx Line Protocol messages at edge receipt, derived from the payload timestamp.",
+		Buckets:   []float64{0.001, 0.01, 0.1, 0.5, 1, 2, 5, 10, 30, 60, 300, 900, 3600, 21600, 86400},
+	}, []string{"tenant_id", "qos"})
+
+	PublishProcessing = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "keel_gateway",
+		Name:      "publish_processing_seconds",
+		Help:      "Time spent processing an accepted MQTT publish in Keel's OnPublish path.",
+		Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+	}, []string{"tenant_id", "qos"})
+
+	MessageIngressDelay = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "keel_gateway",
+		Name:      "message_ingress_delay_seconds",
+		Help:      "Time between MQTT packet receipt and entry into Keel's OnPublish hook.",
+		Buckets:   []float64{0.0001, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+	}, []string{"tenant_id", "qos"})
+
 	// CommandsDelivered counts commands sent from the platform to devices.
 	// result: "delivered" | "device_offline" | "dropped"
 	CommandsDelivered = promauto.NewCounterVec(prometheus.CounterOpts{

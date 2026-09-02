@@ -177,6 +177,10 @@ type Config struct {
 	// (default). Each entry runs alongside cfg.OutputConnector, not
 	// instead of it — see design doc "N plugin = N sidecar".
 	OutputConnectorPlugins []string
+
+	// InfluxTopicFilters limits Influx Line Protocol timestamp parsing to
+	// matching MQTT topics. Empty disables payload parsing entirely.
+	InfluxTopicFilters []string
 }
 
 // Load reads configuration from environment variables with sensible defaults for
@@ -356,6 +360,15 @@ func Load() (*Config, error) {
 		}
 	}
 
+	var influxTopicFilters []string
+	if v := os.Getenv("INFLUX_TOPIC_FILTERS"); v != "" {
+		for _, filter := range strings.Split(v, ",") {
+			if filter = strings.TrimSpace(filter); filter != "" {
+				influxTopicFilters = append(influxTopicFilters, filter)
+			}
+		}
+	}
+
 	return &Config{
 		MQTTPort:                  mqttPort,
 		MQTTTLSPort:               mqttTLSPort,
@@ -394,6 +407,7 @@ func Load() (*Config, error) {
 		KafkaHonoSASLPass:         os.Getenv("KAFKA_HONO_SASL_PASS"),
 		KafkaHonoTopicPrefix:      os.Getenv("KAFKA_HONO_TOPIC_PREFIX"),
 		OutputConnectorPlugins:    outputConnectorPlugins,
+		InfluxTopicFilters:        influxTopicFilters,
 		ConnectRateLimitPerSec:    connectRateLimitPerSec,
 		ConnectRateLimitBurst:     connectRateLimitBurst,
 		PublishRateLimitPerSec:    publishRateLimitPerSec,

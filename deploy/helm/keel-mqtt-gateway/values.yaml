@@ -187,6 +187,11 @@ edge:
 
   forwarderBufferSize: 1000
 
+  # MQTT topic filters whose payloads use Influx Line Protocol. Empty
+  # disables payload timestamp parsing; examples: ["kimera/devices/#"] or
+  # ["telemetry/#", "measurements/+"]
+  influxTopicFilters: []
+
   service:
     type: LoadBalancer
     annotations: {}

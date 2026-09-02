@@ -201,6 +201,10 @@ spec:
             {{- end }}
             - name: HTTP_PORT
               value: "8085"
+            {{- if .Values.edge.influxTopicFilters }}
+            - name: INFLUX_TOPIC_FILTERS
+              value: {{ join "," .Values.edge.influxTopicFilters | quote }}
+            {{- end }}
             {{- if .Values.redpanda.enabled }}
             - name: REDPANDA_BROKERS
               value: {{ join "," .Values.redpanda.external.brokers | quote }}

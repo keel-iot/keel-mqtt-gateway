@@ -1240,6 +1240,7 @@ func runServer() {
 			ClusterFwd:                clusterFwd,
 			ClusterNodeID:             cf.nodeID,
 			OutputConnectors:          outputConns,
+			InfluxTopicFilters:        cfg.InfluxTopicFilters,
 			SessionExpiryInterval:     cfg.SessionExpiryInterval,
 			MaxKeepAlive:              cfg.MaxKeepAlive,
 			ConnectRateLimitPerSec:    cfg.ConnectRateLimitPerSec,

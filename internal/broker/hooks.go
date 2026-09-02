@@ -58,7 +58,8 @@ type keelHook struct {
 	// in-process one (e.g. kafka-hono) and/or one per attached plugin
 	// sidecar (see internal/connector/pluginhost). Nil-safe: loop is a
 	// no-op when empty.
-	outputConnectors []connector.OutputConnector
+	outputConnectors   []connector.OutputConnector
+	influxTopicFilters []string
 
 	// Cluster wiring (see internal/cluster). Both nil when the gateway
 	// runs standalone (no --role flag / single-node mode) — every cluster
@@ -96,10 +97,11 @@ type keelHook struct {
 	// as today, no different than standalone in-memory-only behavior.
 	sessionStore sessionStore
 
-	mu          sync.RWMutex
-	clients     map[string]*clientState
-	generation  map[string]uint64 // monotonic counter per client_id to detect stale OnDisconnect
-	tenantConns map[string]int    // per-tenant active connection counter for rate limiting
+	mu               sync.RWMutex
+	clients          map[string]*clientState
+	generation       map[string]uint64 // monotonic counter per client_id to detect stale OnDisconnect
+	tenantConns      map[string]int    // per-tenant active connection counter for rate limiting
+	packetReceivedAt map[*mqtt.Client]time.Time
 
 	// liveStats feeds the basic monitoring UI's messages/sec figure (see
 	// internal/telemetry.LiveStats). Nil when not configured (standalone
@@ -177,6 +179,8 @@ func (h *keelHook) Provides(b byte) bool {
 		byte(mqtt.OnSessionEstablish),
 		byte(mqtt.OnACLCheck),
 		byte(mqtt.OnPublish),
+		byte(mqtt.OnPacketRead),
+		byte(mqtt.OnPacketProcessed),
 		byte(mqtt.OnDisconnect),
 		byte(mqtt.OnClientExpired),
 		byte(mqtt.OnSubscribed),
@@ -189,6 +193,7 @@ func (h *keelHook) Init(_ any) error {
 	h.clients = make(map[string]*clientState)
 	h.generation = make(map[string]uint64)
 	h.tenantConns = make(map[string]int)
+	h.packetReceivedAt = make(map[*mqtt.Client]time.Time)
 	return nil
 }
 
@@ -746,6 +751,28 @@ func (h *keelHook) OnACLCheck(cl *mqtt.Client, topic string, write bool) bool {
 		topic == "command/"+tenantID+"//"+deviceID+"/req/#"
 }
 
+// OnPacketRead records the arrival time of inbound publishes before Mochi
+// validates and dispatches them. The client pointer is used as the key so a
+// takeover cannot collide with another socket using the same MQTT client ID.
+func (h *keelHook) OnPacketRead(cl *mqtt.Client, pk packets.Packet) (packets.Packet, error) {
+	if pk.FixedHeader.Type == packets.Publish {
+		h.mu.Lock()
+		h.packetReceivedAt[cl] = time.Now()
+		h.mu.Unlock()
+	}
+	return pk, nil
+}
+
+// OnPacketProcessed removes timestamps for publishes rejected before
+// OnPublish, for example by ACL, preventing stale entries from accumulating.
+func (h *keelHook) OnPacketProcessed(cl *mqtt.Client, pk packets.Packet, _ error) {
+	if pk.FixedHeader.Type == packets.Publish {
+		h.mu.Lock()
+		delete(h.packetReceivedAt, cl)
+		h.mu.Unlock()
+	}
+}
+
 // OnPublish forwards device messages to Redpanda and records metrics.
 func (h *keelHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet, error) {
 	h.mu.RLock()
@@ -756,6 +783,21 @@ func (h *keelHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet
 	}
 	info := state.info
 	tenantStr := info.TenantID.String()
+	qosStr := strconv.Itoa(int(pk.FixedHeader.Qos))
+	start := time.Now()
+	defer func() {
+		telemetry.PublishProcessing.WithLabelValues(tenantStr, qosStr).Observe(time.Since(start).Seconds())
+	}()
+
+	h.mu.Lock()
+	if receivedAt, ok := h.packetReceivedAt[cl]; ok {
+		delete(h.packetReceivedAt, cl)
+		telemetry.MessageIngressDelay.WithLabelValues(tenantStr, qosStr).Observe(time.Since(receivedAt).Seconds())
+	}
+	h.mu.Unlock()
+	if h.isInfluxTopic(pk.TopicName) {
+		telemetry.ObserveInfluxMessageAge(pk.Payload, tenantStr, qosStr, time.Now())
+	}
 
 	// tenantStr == uuid.Nil.String() only for the hardcoded test-consumer
 	// singleton identity (see testConsumerDeviceInfo — it never sets
@@ -811,6 +853,15 @@ func (h *keelHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet
 
 	span.SetStatus(codes.Ok, "")
 	return pk, nil
+}
+
+func (h *keelHook) isInfluxTopic(topic string) bool {
+	for _, filter := range h.influxTopicFilters {
+		if acl.MatchTopic(filter, topic) {
+			return true
+		}
+	}
+	return false
 }
 
 // OnDisconnect always decrements the connections gauge and releases
