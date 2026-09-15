@@ -59,6 +59,13 @@ func (e *EdgeRegistry) UnsubscribeBatch(topics []string, nodeID string) error {
 	return e.router.UnsubscribeBatch(topics, nodeID)
 }
 
+// PurgeNode removes stale routing entries for a confirmed dead node. Edges
+// use the same shared routing store as cores, so confirmed membership leave
+// events can converge routing without waiting for a graceful MQTT disconnect.
+func (e *EdgeRegistry) PurgeNode(nodeID string) error {
+	return e.router.PurgeNode(nodeID)
+}
+
 // TopicsForNode is a pure local-cache read — see routing.Router.TopicsForNode.
 // Used by routing.Reconciler to detect when this node's own routing entries
 // have gone missing from the store (e.g. a total Olric data-loss event)

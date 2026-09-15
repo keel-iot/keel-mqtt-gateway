@@ -3,12 +3,25 @@ package dataplane
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 )
+
+func TestGRPCForwarder_Forward_UnknownNodeIsImmediate(t *testing.T) {
+	fwd := NewGRPCForwarder(func(string) (string, bool) { return "", false }, nil)
+	start := time.Now()
+	err := fwd.Forward(context.Background(), "unknown", &Message{Topic: "t"})
+	if err == nil || !strings.Contains(err.Error(), "dataplane: unknown node") {
+		t.Fatalf("expected unknown-node error, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("unknown node was not immediate: %s", elapsed)
+	}
+}
 
 // startTestServer runs a real in-process gRPC server backed by its own
 // GRPCForwarder, returning the address to dial and the received
@@ -87,5 +100,34 @@ func TestGRPCForwarder_Forward_EmptyPublishID_DecodesToZeroUUID(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the forwarded message")
+	}
+}
+
+func TestGRPCForwarder_Forward_ContextReachesHandler(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := grpc.NewServer()
+	fwd := NewGRPCForwarder(nil, nil)
+	ctxDone := make(chan struct{})
+	_ = fwd.SubscribeContext(func(ctx context.Context, _ *Message) {
+		<-ctx.Done()
+		close(ctxDone)
+	})
+	RegisterServer(s, fwd)
+	go func() { _ = s.Serve(ln) }()
+	t.Cleanup(s.Stop)
+
+	client := NewGRPCForwarder(func(string) (string, bool) { return ln.Addr().String(), true }, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := client.Forward(ctx, "target", &Message{Topic: "t"}); err == nil {
+		t.Fatal("expected forwarding deadline")
+	}
+	select {
+	case <-ctxDone:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not receive cancelled RPC context")
 	}
 }

@@ -101,6 +101,8 @@ type Membership struct {
 
 	mu      sync.RWMutex
 	members map[string]NodeMeta // keyed by memberlist node name (== NodeID)
+	leaveMu sync.RWMutex
+	onLeave func(NodeMeta)
 
 	peers         []string // seed addresses from Config.Peers, retried by rejoinLoop when isolated
 	stopReconcile chan struct{}
@@ -115,6 +117,16 @@ type Membership struct {
 
 	muRedis           sync.Mutex
 	redisMissingSince map[string]time.Time // designated-primary nodeID -> first tick it was observed absent from gossip (absent entirely, since presence clears it)
+}
+
+// SetLeaveHandler installs the callback invoked after a confirmed memberlist
+// leave has been removed from the local membership directory. The callback is
+// deliberately installed after New, because routing is constructed after
+// gossip discovery has started.
+func (m *Membership) SetLeaveHandler(handler func(NodeMeta)) {
+	m.leaveMu.Lock()
+	m.onLeave = handler
+	m.leaveMu.Unlock()
 }
 
 // New creates and starts gossiping. If cfg.Peers is non-empty it attempts
@@ -484,6 +496,14 @@ func (e *eventDelegate) NotifyLeave(n *memberlist.Node) {
 	delete(e.m.members, nodeID)
 	count := len(e.m.members)
 	e.m.mu.Unlock()
+	if err == nil {
+		e.m.leaveMu.RLock()
+		handler := e.m.onLeave
+		e.m.leaveMu.RUnlock()
+		if handler != nil {
+			handler(meta)
+		}
+	}
 	telemetry.ClusterMembers.Set(float64(count))
 	telemetry.MembershipChangesTotal.WithLabelValues("leave").Inc()
 	e.m.log.Info("membership: node left", "node_id", nodeID)

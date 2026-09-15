@@ -33,6 +33,8 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
+const clusterFanoutTimeout = 3 * time.Second
+
 // keelHook implements the mochi-mqtt v2 Hook interface.
 type keelHook struct {
 	mqtt.HookBase
@@ -1145,17 +1147,33 @@ func (h *keelHook) forwardToClusterSubscribers(ctx context.Context, info *auth.D
 		QoS:          pk.FixedHeader.Qos,
 		PublishID:    publishID,
 	}
-	qosStr := strconv.Itoa(int(pk.FixedHeader.Qos))
+	forwardClusterTargets(ctx, h.clusterFwd, h.clusterNodeID, nodes, msg, pk.TopicName, h.log, pk.FixedHeader.Qos)
+}
+
+// forwardClusterTargets sends all targets concurrently under one fan-out
+// budget. A failed target is best-effort and must not affect other targets or
+// turn the MQTT publish into a fatal error.
+func forwardClusterTargets(ctx context.Context, f dataplane.Forwarder, self string, nodes []string, msg *dataplane.Message, topic string, log *slog.Logger, qos byte) {
+	ctx, cancel := context.WithTimeout(ctx, clusterFanoutTimeout)
+	defer cancel()
+
+	var wg sync.WaitGroup
 	for _, nodeID := range nodes {
-		if nodeID == h.clusterNodeID {
+		if nodeID == self {
 			continue // handled directly above, no self-forward
 		}
-		if err := h.clusterFwd.Forward(ctx, nodeID, msg); err != nil {
-			h.log.Error("cluster: forward publish failed", "target_node", nodeID, "topic", pk.TopicName, "error", err)
-			continue
-		}
-		telemetry.MessagesForwarded.WithLabelValues(qosStr, "cluster").Inc()
+		nodeID := nodeID
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := f.Forward(ctx, nodeID, msg); err != nil {
+				log.Error("cluster: forward publish failed", "target_node", nodeID, "topic", topic, "error", err)
+				return
+			}
+			telemetry.MessagesForwarded.WithLabelValues(strconv.Itoa(int(qos)), "cluster").Inc()
+		}()
 	}
+	wg.Wait()
 }
 
 // fanOutNodes returns the union of live-subscriber nodes (NodesFor) and
@@ -1266,7 +1284,16 @@ func (h *keelHook) DeviceInfo(clientID string) (*auth.DeviceInfo, bool) {
 // FSM.nodesFor), so "telemetry/#" correctly receives cross-node publishes
 // — no longer restricted to exact-match topics only.
 func isAllowedConsumerSubscribe(topic string) bool {
-	if topic == "telemetry/#" {
+	// "telemetry" (bare, no sub-path) is a real, isAllowedPublish-permitted
+	// topic (its own `case topic == "telemetry"`) that a "telemetry/#"
+	// subscriber legitimately receives — "#" always also matches its own
+	// parent level [MQTT-4.7.1-2]. This function doubles as the
+	// delivery-time per-message ACL gate (mochi-mqtt's publishToClient
+	// calls it with the message's real topic, not just at SUBSCRIBE time
+	// with the filter string), so it must accept this literal alongside
+	// the "telemetry/#" filter case below. Previously missing — issue #19,
+	// feedback/FB-006.md.
+	if topic == "telemetry/#" || topic == "telemetry" {
 		return true
 	}
 	return strings.HasPrefix(topic, "telemetry/") && !strings.ContainsAny(topic, "+#")

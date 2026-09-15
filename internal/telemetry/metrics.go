@@ -216,11 +216,11 @@ var (
 		Help:      "Latency of a single inter-node gRPC Forward call.",
 		Buckets:   []float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0},
 	})
-	ForwardFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
+	ForwardFailuresTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "keel_gateway",
 		Name:      "cluster_forward_failures_total",
 		Help:      "Inter-node gRPC Forward calls that returned an error (unreachable peer, unknown node, timeout).",
-	})
+	}, []string{"reason"})
 
 	// StorageFailoversTotal counts completed Redis primary promotions
 	// (internal/cluster/membership's failoverRedisPrimary) — expected to be

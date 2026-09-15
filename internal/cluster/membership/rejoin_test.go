@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/memberlist"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,6 +23,26 @@ func freePort(t *testing.T) int {
 	port, err := strconv.Atoi(portStr)
 	require.NoError(t, err)
 	return port
+}
+
+func TestNotifyLeaveInvokesHandlerAfterRemovingMember(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := &Membership{log: log, members: make(map[string]NodeMeta)}
+	meta := NodeMeta{NodeID: "edge-a", Role: RoleEdge, GRPCAddr: "127.0.0.1:7100"}
+	m.members[meta.NodeID] = meta
+	called := make(chan NodeMeta, 1)
+	m.SetLeaveHandler(func(got NodeMeta) { called <- got })
+
+	(&eventDelegate{m: m}).NotifyLeave(&memberlist.Node{Name: meta.NodeID, Meta: meta.encode()})
+	if _, ok := m.NodeGRPCAddr(meta.NodeID); ok {
+		t.Fatal("member must be removed before leave handler runs")
+	}
+	select {
+	case got := <-called:
+		require.Equal(t, meta, got)
+	case <-time.After(time.Second):
+		t.Fatal("leave handler was not invoked")
+	}
 }
 
 func waitForMemberCount(t *testing.T, m *Membership, n int, timeout time.Duration) {
@@ -193,4 +214,3 @@ func TestRejoinIfIsolated_NoopWhenNotIsolated(t *testing.T) {
 	mB.rejoinIfIsolated()
 	require.Len(t, mB.Members(), 2)
 }
-

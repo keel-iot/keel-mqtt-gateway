@@ -936,6 +936,22 @@ func runServer() {
 			clusterRegistry = keelraft.NewEdgeRegistry(edgeRouter, remoteRegistry, aclCache, revocationCache)
 		}
 
+		if purger, ok := clusterRegistry.(keelraft.NodePurger); ok {
+			clusterMembership.SetLeaveHandler(func(meta membership.NodeMeta) {
+				if meta.Role != membership.RoleEdge {
+					return
+				}
+				// Purge is an Olric operation; keep it outside memberlist's
+				// event callback so membership convergence is not blocked by
+				// routing-store I/O.
+				go func() {
+					if err := purger.PurgeNode(meta.NodeID); err != nil {
+						log.Error("cluster: purge routes for departed edge failed", "node_id", meta.NodeID, "error", err)
+					}
+				}()
+			})
+		}
+
 		// Redirect the shared Redis router to whichever node raft has
 		// designated primary — runs on every node, unlike the failover
 		// decision itself (membership's redisFailoverLoop), which only
@@ -1004,6 +1020,9 @@ func runServer() {
 
 			if routesProvider, ok := clusterRegistry.(keelraft.NodesWithRoutesProvider); ok {
 				sweep := lifecycle.NewRoutingSweep(routesProvider.NodesWithRoutes, clusterMembership.Members, cf.routingSweepTTL, log)
+				if purger, ok := clusterRegistry.(keelraft.NodePurger); ok {
+					sweep.PurgeNode = purger.PurgeNode
+				}
 				go sweep.Run(ctx)
 			}
 
@@ -1338,9 +1357,12 @@ func runServer() {
 			if rdb != nil {
 				inboundOfflineStore = broker.NewRedisSessionHook(rdb, log)
 			}
-			_ = gForwarder.Subscribe(func(msg *dataplane.Message) {
+			_ = gForwarder.SubscribeContext(func(ctx context.Context, msg *dataplane.Message) {
 				if err := mqttServer.Publish(msg.Topic, msg.Payload, false, msg.QoS); err != nil {
 					log.Error("cluster: publish forwarded message locally", "topic", msg.Topic, "error", err)
+				}
+				if err := ctx.Err(); err != nil {
+					return
 				}
 				// Typed-nil guard (see broker.go's own comment on the same
 				// issue): only pass inboundOfflineStore through as the
@@ -1349,7 +1371,7 @@ func runServer() {
 				// non-nil interface value would defeat DeliverOffline's
 				// own nil check.
 				if inboundOfflineStore != nil {
-					broker.DeliverOffline(context.Background(), clusterRegistry, inboundOfflineStore, cf.nodeID, msg.PublishID, msg.Topic, msg.Payload, msg.QoS, offlineDedupTTL, log)
+					broker.DeliverOffline(ctx, clusterRegistry, inboundOfflineStore, cf.nodeID, msg.PublishID, msg.Topic, msg.Payload, msg.QoS, offlineDedupTTL, log)
 				}
 			})
 

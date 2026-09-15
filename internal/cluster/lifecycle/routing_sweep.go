@@ -11,12 +11,10 @@ import (
 
 // RoutingSweep is a low-frequency safety net, not the primary routing-table
 // cleanup mechanism — that's OnUnsubscribed/OnDisconnect's
-// UnsubscribeBatch and Monitor's PurgeNode. It periodically compares the
-// routing table's inverse index against current gossip membership and
-// logs (never deletes) any node holding routing entries that gossip
-// hasn't reported for longer than Threshold: evidence of an orphaned
-// entry left behind by a bug or race in the primary path, worth
-// investigating but not worth automatically acting on here.
+// UnsubscribeBatch and membership leave handling. It periodically compares
+// the routing table's inverse index against current gossip membership and
+// purges any node holding routing entries that gossip hasn't reported for
+// longer than Threshold: a safety net for missed leave callbacks.
 type RoutingSweep struct {
 	// NodesWithRoutes returns every node ID currently holding at least one
 	// routing-table entry (see raft.LocalRegistry.NodesWithRoutes /
@@ -28,6 +26,7 @@ type RoutingSweep struct {
 	Threshold time.Duration
 	Interval  time.Duration
 	Log       *slog.Logger
+	PurgeNode func(nodeID string) error
 
 	absentSince map[string]time.Time
 	flagged     map[string]bool
@@ -89,10 +88,19 @@ func (s *RoutingSweep) tick() {
 			continue
 		}
 		if now.Sub(s.absentSince[nodeID]) > s.Threshold && !s.flagged[nodeID] {
-			s.Log.Warn("lifecycle: routing table holds entries for a node absent from gossip beyond threshold",
+			s.Log.Warn("lifecycle: purging routing table entries for node absent from gossip beyond threshold",
 				"node_id", nodeID, "absent_since", s.absentSince[nodeID], "threshold", s.Threshold)
-			telemetry.RoutingOrphanedNodes.WithLabelValues(nodeID).Set(1)
-			s.flagged[nodeID] = true
+			purged := true
+			if s.PurgeNode != nil {
+				if err := s.PurgeNode(nodeID); err != nil {
+					s.Log.Error("lifecycle: routing orphan purge failed", "node_id", nodeID, "error", err)
+					purged = false
+				}
+			}
+			if purged {
+				telemetry.RoutingOrphanedNodes.WithLabelValues(nodeID).Set(1)
+				s.flagged[nodeID] = true
+			}
 		}
 	}
 

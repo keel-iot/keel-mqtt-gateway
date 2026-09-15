@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -9,13 +10,17 @@ import (
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	pb "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/proto/clusterpb"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
 const forwardTimeout = 3 * time.Second
+
+var errUnknownNode = errors.New("dataplane: unknown node")
 
 // GRPCForwarder is the phase-1 Forwarder implementation: direct
 // point-to-point gRPC between nodes, one call per forwarded message. No
@@ -33,8 +38,9 @@ type GRPCForwarder struct {
 	mu    sync.Mutex
 	conns map[string]*grpc.ClientConn
 
-	handlerMu sync.RWMutex
-	handler   func(*Message)
+	handlerMu      sync.RWMutex
+	handler        func(*Message)
+	contextHandler func(context.Context, *Message)
 
 	evictHandlerMu sync.RWMutex
 	evictHandler   func(clientID string)
@@ -71,27 +77,37 @@ type dataplaneServer struct {
 
 // Forward implements pb.DataplaneServer — the inbound side, invoked by
 // gRPC when a remote node calls Forward against this node.
-func (s *dataplaneServer) Forward(_ context.Context, req *pb.ForwardRequest) (*pb.ForwardResponse, error) {
+func (s *dataplaneServer) Forward(ctx context.Context, req *pb.ForwardRequest) (*pb.ForwardResponse, error) {
 	f := s.fwd
 	f.handlerMu.RLock()
 	h := f.handler
+	contextHandler := f.contextHandler
 	f.handlerMu.RUnlock()
-	if h != nil {
-		// Zero UUID on parse failure (e.g. empty from an old peer mid
-		// rolling-upgrade) — offline delivery dedup treats a zero
-		// PublishID as "unknown, skip dedup" rather than dropping the
-		// message.
-		publishID, _ := uuid.Parse(req.GetPublishId())
-		h(&Message{
-			SourceNodeID: req.GetSourceNodeId(),
-			TenantID:     req.GetTenantId(),
-			Topic:        req.GetTopic(),
-			Payload:      req.GetPayload(),
-			QoS:          byte(req.GetQos()),
-			PublishID:    publishID,
-		})
+	if contextHandler != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		contextHandler(ctx, messageFromRequest(req))
+	} else if h != nil {
+		h(messageFromRequest(req))
 	}
 	return &pb.ForwardResponse{}, nil
+}
+
+func messageFromRequest(req *pb.ForwardRequest) *Message {
+	// Zero UUID on parse failure (e.g. empty from an old peer mid
+	// rolling-upgrade) — offline delivery dedup treats a zero
+	// PublishID as "unknown, skip dedup" rather than dropping the
+	// message.
+	publishID, _ := uuid.Parse(req.GetPublishId())
+	return &Message{
+		SourceNodeID: req.GetSourceNodeId(),
+		TenantID:     req.GetTenantId(),
+		Topic:        req.GetTopic(),
+		Payload:      req.GetPayload(),
+		QoS:          byte(req.GetQos()),
+		PublishID:    publishID,
+	}
 }
 
 // Evict implements pb.DataplaneServer — the inbound side, invoked by gRPC
@@ -127,13 +143,13 @@ func (f *GRPCForwarder) Forward(ctx context.Context, targetNodeID string, msg *M
 	defer func() {
 		telemetry.ForwardLatency.Observe(time.Since(start).Seconds())
 		if err != nil {
-			telemetry.ForwardFailuresTotal.Inc()
+			telemetry.ForwardFailuresTotal.WithLabelValues(forwardFailureReason(err)).Inc()
 		}
 	}()
 
 	addr, ok := f.resolve(targetNodeID)
 	if !ok {
-		return fmt.Errorf("dataplane: unknown node %q", targetNodeID)
+		return fmt.Errorf("%w %q", errUnknownNode, targetNodeID)
 	}
 	client, err := f.clientFor(addr)
 	if err != nil {
@@ -162,7 +178,34 @@ func (f *GRPCForwarder) Subscribe(handler func(*Message)) error {
 	f.handlerMu.Lock()
 	defer f.handlerMu.Unlock()
 	f.handler = handler
+	f.contextHandler = nil
 	return nil
+}
+
+// SubscribeContext registers a handler that receives the inbound RPC context.
+// It is intentionally separate from Subscribe so existing dataplane
+// implementations remain source-compatible while the gRPC path can cancel
+// context-aware work when the caller deadline expires.
+func (f *GRPCForwarder) SubscribeContext(handler func(context.Context, *Message)) error {
+	f.handlerMu.Lock()
+	defer f.handlerMu.Unlock()
+	f.contextHandler = handler
+	f.handler = nil
+	return nil
+}
+
+func forwardFailureReason(err error) string {
+	if errors.Is(err, errUnknownNode) {
+		return "unknown_node"
+	}
+	switch status.Code(err) {
+	case codes.DeadlineExceeded:
+		return "deadline"
+	case codes.Unavailable:
+		return "unavailable"
+	default:
+		return "other"
+	}
 }
 
 // Evict sends a best-effort request to targetNodeID to locally

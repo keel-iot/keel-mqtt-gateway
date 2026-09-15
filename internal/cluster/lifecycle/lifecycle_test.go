@@ -69,6 +69,11 @@ func TestRoutingSweepFlagsNodeAbsentBeyondThreshold(t *testing.T) {
 		time.Minute,
 		silentLogger(),
 	)
+	var purged string
+	s.PurgeNode = func(nodeID string) error {
+		purged = nodeID
+		return nil
+	}
 
 	s.tick() // first observation of core-dead's absence — must not flag yet
 	if s.flagged["core-dead"] {
@@ -85,11 +90,14 @@ func TestRoutingSweepFlagsNodeAbsentBeyondThreshold(t *testing.T) {
 	if !s.flagged["core-dead"] {
 		t.Fatalf("expected core-dead to be flagged after exceeding threshold")
 	}
+	if purged != "core-dead" {
+		t.Fatalf("expected orphan route purge, got %q", purged)
+	}
 	if s.flagged["core-1"] {
 		t.Fatalf("core-1 is live, must never be flagged")
 	}
-	// Never deletes anything — NodesWithRoutes (holding) is untouched by
-	// the sweep, only its own internal bookkeeping mutates.
+	// The fake purge does not mutate the backing slice; the real purge is
+	// deliberately performed outside the MQTT publish hot path.
 	if len(holding) != 2 {
 		t.Fatalf("sweep must never mutate the routing table itself, got holding=%v", holding)
 	}

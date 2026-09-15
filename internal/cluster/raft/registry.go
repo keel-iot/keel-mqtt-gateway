@@ -149,7 +149,7 @@ type BatchUnsubscriber interface {
 // routing-table entry for a node in one call — used when a core node is
 // confirmed dead for good (see internal/cluster/lifecycle.Monitor). Same
 // rationale as BatchUnsubscriber for staying out of Registry proper.
-// Implemented by CoreRegistry (delegates to routing.Router).
+// Implemented by CoreRegistry and EdgeRegistry (both delegate to routing.Router).
 type NodePurger interface {
 	PurgeNode(nodeID string) error
 }

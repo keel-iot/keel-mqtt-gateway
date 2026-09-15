@@ -98,6 +98,7 @@ type fakeForwarder struct {
 	evictCalls   []evictCall
 	evictErr     error
 	forwardCalls []forwardCall
+	forwardFn    func(context.Context, string, *dataplane.Message) error
 }
 
 type evictCall struct {
@@ -111,8 +112,12 @@ type forwardCall struct {
 
 func (f *fakeForwarder) Forward(ctx context.Context, targetNodeID string, msg *dataplane.Message) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.forwardCalls = append(f.forwardCalls, forwardCall{targetNodeID, msg})
+	fn := f.forwardFn
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, targetNodeID, msg)
+	}
 	return nil
 }
 func (f *fakeForwarder) Subscribe(handler func(*dataplane.Message)) error { return nil }
@@ -123,6 +128,40 @@ func (f *fakeForwarder) Evict(ctx context.Context, targetNodeID, clientID string
 	return f.evictErr
 }
 func (f *fakeForwarder) SubscribeEvict(handler func(string)) error { return nil }
+
+func TestForwardClusterTargetsUsesOneConcurrentFanoutBudget(t *testing.T) {
+	liveAttempted := make(chan struct{})
+	f := &fakeForwarder{forwardFn: func(ctx context.Context, target string, _ *dataplane.Message) error {
+		if target == "live-D" {
+			close(liveAttempted)
+			return nil
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		forwardClusterTargets(context.Background(), f, "self", []string{"unreachable-A", "unreachable-B", "unreachable-C", "live-D"}, &dataplane.Message{}, "t", slog.Default(), 1)
+		close(done)
+	}()
+	select {
+	case <-liveAttempted:
+		// The live target was attempted without waiting for unreachable
+		// targets to consume the old per-target timeout.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("live target was not attempted promptly")
+	}
+	select {
+	case <-done:
+	case <-time.After(3500 * time.Millisecond):
+		t.Fatal("fanout exceeded global budget")
+	}
+	if elapsed := time.Since(start); elapsed > 3500*time.Millisecond {
+		t.Fatalf("fanout exceeded global budget: %s", elapsed)
+	}
+}
 
 // calls returns a snapshot of recorded Evict calls.
 func (f *fakeForwarder) calls() []evictCall {
@@ -1046,5 +1085,37 @@ func TestProductionACL_Unchanged(t *testing.T) {
 	// Keel's own shapes must still work — this isn't a "deny everything" check.
 	if !h.OnACLCheck(cl, "telemetry", true) {
 		t.Fatal("expected production ACL to still allow a legacy keel-shaped publish topic")
+	}
+}
+
+// TestIsAllowedConsumerSubscribe_BareTelemetryTopic is the regression for
+// issue #19 / feedback/FB-006.md: this function is also mochi-mqtt's
+// delivery-time per-message ACL gate (publishToClient calls it with the
+// real message topic, not just the subscribed filter string at SUBSCRIBE
+// time), so a "telemetry/#"-subscribed consumer must be allowed to
+// actually receive a bare "telemetry" publish — a real,
+// isAllowedPublish-permitted topic shape, and one "#" always matches at
+// its own parent level per MQTT's own rule. Before this fix, the bare
+// literal fell through to the `strings.HasPrefix(topic, "telemetry/")`
+// branch and was silently denied, dropping the message for that consumer
+// with no visible error anywhere in the publish/forward path.
+func TestIsAllowedConsumerSubscribe_BareTelemetryTopic(t *testing.T) {
+	cases := []struct {
+		topic string
+		want  bool
+	}{
+		{"telemetry/#", true}, // the subscribed filter itself
+		{"telemetry", true},   // the fix: bare parent-level topic
+		{"telemetry/poc/device-1", true},
+		{"telemetryextra", false}, // must not become a loose prefix match
+		{"telemetry/+", false},    // wildcard in a delivered topic is never legitimate
+		{"telemetry/#/x", false},
+		{"event", false}, // different namespace entirely
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isAllowedConsumerSubscribe(tc.topic); got != tc.want {
+			t.Errorf("isAllowedConsumerSubscribe(%q) = %v, want %v", tc.topic, got, tc.want)
+		}
 	}
 }
