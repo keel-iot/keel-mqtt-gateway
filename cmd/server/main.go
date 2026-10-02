@@ -994,6 +994,7 @@ func runServer() {
 				Evictor:             clusterFwd,
 				RebalanceConfig:     rebalanceCfg,
 				ClavexWebhookSecret: cfg.ClavexWebhookSecret,
+				InflightMessages:    telemetry.InflightMessagesSnapshot,
 				Log:                 log,
 			}
 			mgmtServer = &http.Server{

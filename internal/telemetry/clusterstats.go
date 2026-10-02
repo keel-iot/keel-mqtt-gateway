@@ -3,11 +3,22 @@ package telemetry
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+var inflightMessagesValue atomic.Int64
+
+// InflightMessagesSnapshot returns the latest sampled cluster-wide count of
+// QoS1/2 messages persisted in Redis. It is shared by Prometheus and the
+// authenticated management API without issuing a Redis scan per dashboard
+// refresh.
+func InflightMessagesSnapshot() int64 {
+	return inflightMessagesValue.Load()
+}
 
 // SessionsLive, RoutingEntries and InflightMessages are core-only cluster
 // gauges, sampled periodically by RunClusterStatsSampler — same pattern as
@@ -78,6 +89,7 @@ func RunClusterStatsSampler(ctx context.Context, sessionsLive func() int, routin
 					log.Warn("telemetry: inflight messages sample failed", "error", err)
 				}
 			} else {
+				inflightMessagesValue.Store(n)
 				InflightMessages.Set(float64(n))
 			}
 		}

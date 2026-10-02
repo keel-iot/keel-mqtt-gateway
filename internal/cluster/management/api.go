@@ -54,7 +54,11 @@ type API struct {
 	// revoke arbitrary devices), so this must be explicitly configured,
 	// never silently permissive.
 	ClavexWebhookSecret string
-	Log                 *slog.Logger
+	// InflightMessages returns the latest sampled cluster-wide QoS1/2 count.
+	// It is a callback so the management API does not scan Redis for every
+	// dashboard request.
+	InflightMessages func() int64
+	Log              *slog.Logger
 }
 
 // Router builds the http.Handler exposing the management endpoints.

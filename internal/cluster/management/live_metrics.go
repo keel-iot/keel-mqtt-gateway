@@ -23,6 +23,7 @@ type clusterStatsView struct {
 	MessagesPerSecond float64                  `json:"messages_per_second"`
 	TotalBytes        uint64                   `json:"total_bytes"`
 	BytesPerSecond    float64                  `json:"bytes_per_second"`
+	InflightMessages  int64                    `json:"inflight_messages"`
 	Nodes             []livestatsapi.StatsView `json:"nodes"`
 	Unreachable       []string                 `json:"unreachable,omitempty"`
 }
@@ -37,6 +38,9 @@ func (a *API) handleLiveMetrics(w http.ResponseWriter, r *http.Request) {
 	stats, unreachable := fetchAll(r.Context(), edges, "/api/live/stats", func() any { return &livestatsapi.StatsView{} })
 
 	view := clusterStatsView{Unreachable: unreachable}
+	if a.InflightMessages != nil {
+		view.InflightMessages = a.InflightMessages()
+	}
 	for _, s := range stats {
 		sv := s.(*livestatsapi.StatsView)
 		view.ActiveConnections += sv.ActiveConnections
