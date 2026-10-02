@@ -24,6 +24,16 @@ var EdgeLoadScore = promauto.NewGauge(prometheus.GaugeOpts{
 	Help:      "Composite HPA load score for this edge pod: (active_connections/limit)*0.6 + cpu_fraction*0.4, both terms clamped to [0,1].",
 })
 
+// ActiveBrokerConnections is the authoritative number of currently open
+// MQTT broker connections for this process. It is sampled directly from
+// mochi-mqtt's Server.Info.ClientsConnected, unlike the per-tenant
+// active_connections gauge which is maintained by authentication hooks.
+var ActiveBrokerConnections = promauto.NewGauge(prometheus.GaugeOpts{
+	Namespace: "keel_gateway",
+	Name:      "active_broker_connections",
+	Help:      "Number of currently open MQTT broker connections for this pod.",
+})
+
 // EdgeConnectionsFraction and EdgeCPUFraction are the two terms behind
 // EdgeLoadScore, exposed individually for dashboards/debugging — the HPA
 // itself should only ever reference the composite.
@@ -101,9 +111,11 @@ func RunEdgeLoadScoreSampler(ctx context.Context, connCount func() int, connecti
 	defer ticker.Stop()
 
 	tick := func() {
+		connections := connCount()
+		ActiveBrokerConnections.Set(float64(connections))
 		connFrac := 0.0
 		if connectionsLimit > 0 {
-			connFrac = clamp01(float64(connCount()) / float64(connectionsLimit))
+			connFrac = clamp01(float64(connections) / float64(connectionsLimit))
 		}
 		cpuFrac := sampler.sample(cpuLimit)
 		score := connFrac*0.6 + cpuFrac*0.4
