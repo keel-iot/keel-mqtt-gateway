@@ -244,6 +244,7 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 	var retainedStore *RetainedStore
 	if cfg.RedisClient != nil {
 		redisHook = NewRedisSessionHook(cfg.RedisClient, log)
+		redisHook.SetLiveStats(cfg.LiveStats)
 		if err := server.AddHook(redisHook, nil); err != nil {
 			return nil, nil, fmt.Errorf("add redis session hook: %w", err)
 		}

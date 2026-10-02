@@ -89,7 +89,7 @@ func (r *Reconciler) ReconcileOnce() {
 		r.logWarn("session: reconciler inventory fetch failed", "error", err)
 		return
 	}
-	telemetry.SessionsOffline.Set(float64(len(sessions)))
+	telemetry.SetOfflineSessions(len(sessions))
 
 	moved := 0
 	for _, s := range sessions {

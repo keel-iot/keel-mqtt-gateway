@@ -11,6 +11,7 @@ import (
 )
 
 var inflightMessagesValue atomic.Int64
+var offlineSessionsValue atomic.Int64
 
 // InflightMessagesSnapshot returns the latest sampled cluster-wide count of
 // QoS1/2 messages persisted in Redis. It is shared by Prometheus and the
@@ -18,6 +19,17 @@ var inflightMessagesValue atomic.Int64
 // refresh.
 func InflightMessagesSnapshot() int64 {
 	return inflightMessagesValue.Load()
+}
+
+// OfflineSessionsSnapshot returns the latest offline-session inventory count.
+// It is updated by the session reconciler and read by the management API.
+func OfflineSessionsSnapshot() int {
+	return int(offlineSessionsValue.Load())
+}
+
+func SetOfflineSessions(n int) {
+	offlineSessionsValue.Store(int64(n))
+	SessionsOffline.Set(float64(n))
 }
 
 // SessionsLive, RoutingEntries and InflightMessages are core-only cluster

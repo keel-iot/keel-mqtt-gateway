@@ -80,6 +80,7 @@ type RedisSessionHook struct {
 	mqtt.HookBase
 	router *redisrouter.Router
 	log    *slog.Logger
+	liveStats *telemetry.LiveStats
 }
 
 // NewRedisSessionHook creates a hook using a pre-initialised Redis router
@@ -88,6 +89,12 @@ type RedisSessionHook struct {
 // once instead of needing a separate swap site here).
 func NewRedisSessionHook(router *redisrouter.Router, log *slog.Logger) *RedisSessionHook {
 	return &RedisSessionHook{router: router, log: log}
+}
+
+// SetLiveStats connects optional live monitoring counters without changing
+// the constructor used by standalone and test callers.
+func (h *RedisSessionHook) SetLiveStats(stats *telemetry.LiveStats) {
+	h.liveStats = stats
 }
 
 func (h *RedisSessionHook) ID() string { return "keel-redis-session" }

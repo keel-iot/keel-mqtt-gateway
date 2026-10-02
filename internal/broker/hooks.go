@@ -810,6 +810,9 @@ func (h *keelHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet
 	// zero value, not an intentional policy.
 	if tenantStr != uuid.Nil.String() && !h.publishLimiter.allow(tenantStr) {
 		telemetry.RateLimitedTotal.WithLabelValues("publish").Inc()
+		if h.liveStats != nil {
+			h.liveStats.RecordDrop()
+		}
 		// MQTT5 QoS1/2 gets a real PUBACK/PUBREC reason (0x97, Quota
 		// Exceeded) — mochi-mqtt's processPublish propagates a
 		// packets.Code error from this hook straight into the ack for
@@ -921,6 +924,9 @@ func (h *keelHook) OnDisconnect(cl *mqtt.Client, _ error, expire bool) {
 			disconnectReason = "expired"
 		}
 		telemetry.DisconnectsTotal.WithLabelValues(state.info.TenantID.String(), disconnectReason).Inc()
+		if h.liveStats != nil {
+			h.liveStats.RecordDisconnect()
+		}
 		h.forwardConnectionEvent(state.info, "offline")
 		if cleanup {
 			h.unsubscribeClusterFilters(cl)
@@ -1271,6 +1277,9 @@ func (h *keelHook) withinDataVolumeLimit(ctx context.Context, tenantID string, p
 	if err := forwarder.CheckAndRecordBytes(ctx, h.rdb.Client(), tenantID, payloadBytes, maxBytes); err != nil {
 		h.log.Warn("mqtt-gateway: data volume limit exceeded, dropping output", "tenant", tenantID, "payload_bytes", payloadBytes)
 		telemetry.DataVolumeLimitExceeded.WithLabelValues(tenantID).Inc()
+		if h.liveStats != nil {
+			h.liveStats.RecordDrop()
+		}
 		return false
 	}
 	return true

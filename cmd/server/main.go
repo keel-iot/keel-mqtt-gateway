@@ -1409,12 +1409,18 @@ func runServer() {
 			Stats: func() livestatsapi.StatsView {
 				snap := liveStats.Snapshot()
 				return livestatsapi.StatsView{
-					NodeID:            cf.nodeID,
-					ActiveConnections: int(atomic.LoadInt64(&srv.Info.ClientsConnected)),
-					TotalMessages:     snap.TotalMessages,
-					MessagesPerSecond: snap.MessagesPerSecond,
-					TotalBytes:        snap.TotalBytes,
-					BytesPerSecond:    snap.BytesPerSecond,
+					NodeID:                     cf.nodeID,
+					ActiveConnections:          int(atomic.LoadInt64(&srv.Info.ClientsConnected)),
+					TotalMessages:              snap.TotalMessages,
+					MessagesPerSecond:          snap.MessagesPerSecond,
+					MessagesPerSecondAverage1m: snap.MessagesPerSecondAverage1m,
+					MessagesPerSecondAverage5m: snap.MessagesPerSecondAverage5m,
+					TotalBytes:                 snap.TotalBytes,
+					BytesPerSecond:             snap.BytesPerSecond,
+					DisconnectsTotal:           snap.DisconnectsTotal,
+					DisconnectsLast5m:          snap.DisconnectsLast5m,
+					DroppedMessagesTotal:       snap.DroppedMessagesTotal,
+					DroppedMessagesLast5m:      snap.DroppedMessagesLast5m,
 				}
 			},
 		}
