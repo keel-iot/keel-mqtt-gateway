@@ -230,7 +230,16 @@ func (h *Hook) packetMeta(pk packets.Packet) map[string]any {
 	}
 
 	if h.config.ShowPacketData {
-		m["packet"] = pk
+		// A full packet dump must not bypass the explicit ShowPasswords
+		// switch. Connect packets carry the password in an exported field,
+		// so logging pk directly would expose it even when ShowPasswords is
+		// false. Keep the intentional opt-in above, but always redact the
+		// password from the packet dump itself.
+		packet := pk
+		if packet.FixedHeader.Type == packets.Connect {
+			packet.Connect.Password = nil
+		}
+		m["packet"] = packet
 	}
 
 	return m
