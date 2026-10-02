@@ -147,6 +147,12 @@ spec:
                 {{- include "keel.envSecretRef" (dict "root" . "existingSecret" .Values.postgresql.external.existingSecret "existingSecretKey" .Values.postgresql.external.existingSecretPasswordKey "generatedKey" "postgresql-password") | nindent 16 }}
             - name: DATABASE_URL
               value: {{ printf "postgres://%s:$(POSTGRES_PASSWORD)@%s:%d/%s?sslmode=%s" .Values.postgresql.external.username .Values.postgresql.external.host (int .Values.postgresql.external.port) .Values.postgresql.external.database .Values.postgresql.external.sslmode | quote }}
+            - name: DB_MAX_CONNS
+              value: {{ .Values.database.maxConns | quote }}
+            - name: DB_MIN_CONNS
+              value: {{ .Values.database.minConns | quote }}
+            - name: DB_TIMEOUT
+              value: {{ .Values.database.timeout | quote }}
             - name: REDIS_ADDR
               value: "$(POD_NAME).{{ $svc }}:6379"
             {{- if .Values.core.redis.password }}

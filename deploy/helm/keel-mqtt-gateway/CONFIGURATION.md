@@ -49,6 +49,28 @@ The gateway owns its schema — it applies its own versioned migrations
 No separate init script or manual `CREATE TABLE` step is needed; a fresh
 empty database is enough.
 
+### PostgreSQL connection pool
+
+The pool is configured per gateway process through Helm:
+
+```yaml
+database:
+  maxConns: 16       # 0 = pgxpool default (max(4, CPU count))
+  minConns: 2        # 0 = no minimum idle pool size
+  timeout: 5s        # query/acquire deadline; 0s disables the application timeout
+```
+
+These values become `DB_MAX_CONNS`, `DB_MIN_CONNS`, and `DB_TIMEOUT`.
+Remember that every Core and Edge pod owns a separate pool, so size the
+aggregate across all pods against PostgreSQL's `max_connections` rather
+than sizing one pod in isolation.
+
+The gateway exposes the live pool state through metrics such as
+`keel_gateway_db_pool_total_connections`,
+`keel_gateway_db_pool_acquired_connections`,
+`keel_gateway_db_pool_idle_connections`, and
+`keel_gateway_db_pool_empty_acquire_count`.
+
 ## 2. Auth backend
 
 Three options (`auth.backend`):

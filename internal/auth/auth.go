@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -43,12 +44,19 @@ func (d *DeviceInfo) RedpandaTopic(category, typ string) string {
 
 // Validator validates MQTT credentials against the PostgreSQL devices database.
 type Validator struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	timeout time.Duration
 }
 
 // NewValidator creates a new Validator using the given connection pool.
 func NewValidator(pool *pgxpool.Pool) *Validator {
-	return &Validator{pool: pool}
+	return NewValidatorWithTimeout(pool, 0)
+}
+
+// NewValidatorWithTimeout creates a Validator with an optional deadline for
+// each PostgreSQL operation.
+func NewValidatorWithTimeout(pool *pgxpool.Pool, timeout time.Duration) *Validator {
+	return &Validator{pool: pool, timeout: timeout}
 }
 
 // Validate checks that the given deviceID (MQTT clientId) and token
@@ -73,7 +81,9 @@ func (v *Validator) Validate(ctx context.Context, deviceID, token string) (*Devi
 
 	var info DeviceInfo
 	var fleetID *uuid.UUID
-	err = v.pool.QueryRow(ctx, q, id, token).Scan(
+	queryCtx, cancel := withDBTimeout(ctx, v.timeout)
+	defer cancel()
+	err = v.pool.QueryRow(queryCtx, q, id, token).Scan(
 		&info.ID,
 		&info.TenantID,
 		&info.TenantSlug,
@@ -102,7 +112,9 @@ func (v *Validator) Validate(ctx context.Context, deviceID, token string) (*Devi
 // Errors are intentionally ignored — the connection must not be rejected because
 // of a non-critical metadata write failure.
 func (v *Validator) UpdateLastSeen(ctx context.Context, deviceID uuid.UUID) {
-	_, _ = v.pool.Exec(ctx,
+	queryCtx, cancel := withDBTimeout(ctx, v.timeout)
+	defer cancel()
+	_, _ = v.pool.Exec(queryCtx,
 		`UPDATE devices.devices SET last_seen = now() WHERE id = $1`,
 		deviceID,
 	)
@@ -131,7 +143,9 @@ func (v *Validator) LookupByCN(ctx context.Context, deviceID, tenantID string) (
 
 	var info DeviceInfo
 	var fleetID *uuid.UUID
-	err = v.pool.QueryRow(ctx, q, devUUID, tenantUUID).Scan(
+	queryCtx, cancel := withDBTimeout(ctx, v.timeout)
+	defer cancel()
+	err = v.pool.QueryRow(queryCtx, q, devUUID, tenantUUID).Scan(
 		&info.ID,
 		&info.TenantID,
 		&info.TenantSlug,

@@ -571,22 +571,45 @@ func runServer() {
 	defer cancel()
 
 	// ── PostgreSQL ────────────────────────────────────────────────────────────
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	poolConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		log.Error("parse database configuration", "error", err)
+		os.Exit(1)
+	}
+	if cfg.DBMaxConns > 0 {
+		poolConfig.MaxConns = cfg.DBMaxConns
+	}
+	if cfg.DBMinConns > 0 {
+		poolConfig.MinConns = cfg.DBMinConns
+	}
+	if poolConfig.MinConns > poolConfig.MaxConns {
+		log.Error("invalid database pool configuration", "min_conns", poolConfig.MinConns, "max_conns", poolConfig.MaxConns)
+		os.Exit(1)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		log.Error("connect to database", "error", err)
 		os.Exit(1)
 	}
 	defer pool.Close()
-	log.Info("connected to database")
+	telemetry.RegisterDBPoolMetrics(pool)
+	log.Info("connected to database", "max_conns", poolConfig.MaxConns, "min_conns", poolConfig.MinConns, "timeout", cfg.DBTimeout)
 
 	// Schema owned by this repo (see internal/db) — no longer assumes
 	// another service's migrations already created these tables.
-	if err := db.Migrate(ctx, pool, log); err != nil {
+	migrationCtx := ctx
+	migrationCancel := func() {}
+	if cfg.DBTimeout > 0 {
+		migrationCtx, migrationCancel = context.WithTimeout(ctx, cfg.DBTimeout)
+	}
+	if err := db.Migrate(migrationCtx, pool, log); err != nil {
+		migrationCancel()
 		log.Error("run database migrations", "error", err)
 		os.Exit(1)
 	}
+	migrationCancel()
 
-	validator := auth.NewValidator(pool)
+	validator := auth.NewValidatorWithTimeout(pool, cfg.DBTimeout)
 
 	// ── Auth provider ─────────────────────────────────────────────────────────
 	// The provider abstracts credential validation; defaults to PostgreSQL.
@@ -628,7 +651,7 @@ func runServer() {
 	defer func() { _ = tracerShutdown(context.Background()) }()
 
 	// ── Tenant config cache ───────────────────────────────────────────────────
-	tenantCache := auth.NewTenantConfigCache(pool, cfg.TenantCacheTTL)
+	tenantCache := auth.NewTenantConfigCacheWithTimeout(pool, cfg.TenantCacheTTL, cfg.DBTimeout)
 
 	// ── JWKS cache (per-tenant JWT key rotation, e.g. Clavex) ─────────────────
 	jwksCache := auth.NewJWKSCache(cfg.JWKSCacheTTL)

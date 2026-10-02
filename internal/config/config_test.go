@@ -135,3 +135,55 @@ func TestLoad_RateLimits_NegativeRejected(t *testing.T) {
 		t.Fatal("expected an error for a negative connect rate limit, got nil")
 	}
 }
+
+func TestLoad_DatabasePool_Defaults(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DBMaxConns != 0 || cfg.DBMinConns != 0 || cfg.DBTimeout != 0 {
+		t.Fatalf("unexpected database defaults: max=%d min=%d timeout=%v", cfg.DBMaxConns, cfg.DBMinConns, cfg.DBTimeout)
+	}
+}
+
+func TestLoad_DatabasePool_ValidValues(t *testing.T) {
+	t.Setenv("DB_MAX_CONNS", "16")
+	t.Setenv("DB_MIN_CONNS", "2")
+	t.Setenv("DB_TIMEOUT", "5s")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DBMaxConns != 16 || cfg.DBMinConns != 2 || cfg.DBTimeout.String() != "5s" {
+		t.Fatalf("unexpected database config: max=%d min=%d timeout=%v", cfg.DBMaxConns, cfg.DBMinConns, cfg.DBTimeout)
+	}
+}
+
+func TestLoad_DatabasePool_InvalidValuesRejected(t *testing.T) {
+	cases := []struct {
+		name  string
+		env   string
+		value string
+	}{
+		{"negative max", "DB_MAX_CONNS", "-1"},
+		{"negative min", "DB_MIN_CONNS", "-1"},
+		{"invalid timeout", "DB_TIMEOUT", "not-a-duration"},
+		{"negative timeout", "DB_TIMEOUT", "-1s"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.env, tc.value)
+			if _, err := Load(); err == nil {
+				t.Fatalf("expected %s=%q to be rejected", tc.env, tc.value)
+			}
+		})
+	}
+}
+
+func TestLoad_DatabasePool_MinCannotExceedMax(t *testing.T) {
+	t.Setenv("DB_MAX_CONNS", "4")
+	t.Setenv("DB_MIN_CONNS", "5")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected DB_MIN_CONNS greater than DB_MAX_CONNS to be rejected")
+	}
+}

@@ -34,6 +34,14 @@ type Config struct {
 
 	// PostgreSQL database URL — must point to the keel_devices database.
 	DatabaseURL string
+	// DBMaxConns and DBMinConns configure the per-process PostgreSQL pool.
+	// Zero DBMaxConns keeps pgxpool's default; zero DBMinConns means no
+	// minimum number of idle connections is maintained.
+	DBMaxConns int32
+	DBMinConns int32
+	// DBTimeout bounds database operations, including waiting to acquire a
+	// pool connection. Zero disables the application-level timeout.
+	DBTimeout time.Duration
 
 	// Redpanda (Kafka-compatible) connection details.
 	RedpandaBrokers  []string
@@ -246,6 +254,30 @@ func Load() (*Config, error) {
 		dbURL = "postgres://postgres:postgres@localhost:5432/keel_devices?sslmode=disable"
 	}
 
+	dbMaxConns, err := parseDBPoolConns("DB_MAX_CONNS")
+	if err != nil {
+		return nil, err
+	}
+	dbMinConns, err := parseDBPoolConns("DB_MIN_CONNS")
+	if err != nil {
+		return nil, err
+	}
+	if dbMaxConns > 0 && dbMinConns > dbMaxConns {
+		return nil, fmt.Errorf("DB_MIN_CONNS (%d) cannot exceed DB_MAX_CONNS (%d)", dbMinConns, dbMaxConns)
+	}
+
+	var dbTimeout time.Duration
+	if v := os.Getenv("DB_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid DB_TIMEOUT %q: %w", v, err)
+		}
+		if d < 0 {
+			return nil, fmt.Errorf("invalid DB_TIMEOUT %q: must not be negative", v)
+		}
+		dbTimeout = d
+	}
+
 	var brokers []string
 	if v := os.Getenv("REDPANDA_BROKERS"); v != "" {
 		for _, b := range strings.Split(v, ",") {
@@ -378,6 +410,9 @@ func Load() (*Config, error) {
 		MQTTWSSPort:               mqttWSSPort,
 		HTTPPort:                  httpPort,
 		DatabaseURL:               dbURL,
+		DBMaxConns:                dbMaxConns,
+		DBMinConns:                dbMinConns,
+		DBTimeout:                 dbTimeout,
 		RedpandaBrokers:           brokers,
 		RedpandaSASLUser:          os.Getenv("REDPANDA_SASL_USER"),
 		RedpandaSASLPass:          os.Getenv("REDPANDA_SASL_PASS"),
@@ -413,6 +448,24 @@ func Load() (*Config, error) {
 		PublishRateLimitPerSec:    publishRateLimitPerSec,
 		PublishRateLimitBurst:     publishRateLimitBurst,
 	}, nil
+}
+
+// parseDBPoolConns reads a non-negative connection count. A zero maximum
+// means "use pgxpool's default"; a zero minimum means "do not pre-warm idle
+// connections".
+func parseDBPoolConns(name string) (int32, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", name, v, err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("invalid %s %q: must be non-negative", name, v)
+	}
+	return int32(n), nil
 }
 
 // parseRateLimitPair reads a "<per-sec float>"/"<burst int>" env var pair

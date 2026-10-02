@@ -43,8 +43,9 @@ type TenantGatewayConfig struct {
 // TenantConfigCache loads TenantGatewayConfig from PostgreSQL and caches
 // entries for ttl to reduce load on the database.
 type TenantConfigCache struct {
-	pool *pgxpool.Pool
-	ttl  time.Duration
+	pool    *pgxpool.Pool
+	ttl     time.Duration
+	timeout time.Duration
 
 	mu    sync.RWMutex
 	cache map[string]*cachedEntry
@@ -58,10 +59,17 @@ type cachedEntry struct {
 // NewTenantConfigCache creates a cache with the given TTL.
 // A TTL of 5 minutes is recommended for production.
 func NewTenantConfigCache(pool *pgxpool.Pool, ttl time.Duration) *TenantConfigCache {
+	return NewTenantConfigCacheWithTimeout(pool, ttl, 0)
+}
+
+// NewTenantConfigCacheWithTimeout creates a tenant configuration cache with
+// an optional deadline for cache misses that query PostgreSQL.
+func NewTenantConfigCacheWithTimeout(pool *pgxpool.Pool, ttl, timeout time.Duration) *TenantConfigCache {
 	return &TenantConfigCache{
-		pool:  pool,
-		ttl:   ttl,
-		cache: make(map[string]*cachedEntry),
+		pool:    pool,
+		ttl:     ttl,
+		timeout: timeout,
+		cache:   make(map[string]*cachedEntry),
 	}
 }
 
@@ -115,11 +123,14 @@ FROM devices.tenant_gateway_config
 WHERE tenant_id = $1`
 
 func (c *TenantConfigCache) load(ctx context.Context, tenantID string) (*TenantGatewayConfig, error) {
+	queryCtx, cancel := withDBTimeout(ctx, c.timeout)
+	defer cancel()
+
 	cfg := &TenantGatewayConfig{
 		PasswordAuthEnabled: true, // safe default when no row exists
 	}
 
-	row := c.pool.QueryRow(ctx, queryTenantGatewayConfig, tenantID)
+	row := c.pool.QueryRow(queryCtx, queryTenantGatewayConfig, tenantID)
 	err := row.Scan(
 		&cfg.PasswordAuthEnabled,
 		&cfg.JWTAuthEnabled,

@@ -15,7 +15,7 @@
 
 image:
   repository: ghcr.io/keel-iot/keel-mqtt-gateway
-  tag: "" # defaults to .Chart.AppVersion
+  tag: "0.2.36" # defaults to the gateway release matching this chart
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
@@ -37,6 +37,15 @@ postgresql:
     existingSecret: "" # Secret name, must contain existingSecretPasswordKey
     existingSecretPasswordKey: password
     password: "" # inline password — chart creates its own Secret; local/dev use only
+
+# ── PostgreSQL pool — per gateway process ─────────────────────────────────
+# Zero maxConns keeps pgxpool's default (max(4, CPU count)); zero minConns
+# keeps no minimum idle connections. timeout bounds database operations,
+# including waiting for a pool connection, and is disabled when empty/0s.
+database:
+  maxConns: 0
+  minConns: 0
+  timeout: 0s
 
 # ── Redpanda/Kafka — always external, never bundled ──────────────────────
 # Feeds ONLY the commander (platform→device commands consumer) — see
