@@ -1,6 +1,9 @@
 package raft
 
 import (
+	"fmt"
+	"sync"
+
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/acl"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/routing"
 )
@@ -17,6 +20,7 @@ import (
 //     periodically-refreshed local reads — see their own docs for the
 //     staleness trade-off
 type EdgeRegistry struct {
+	routerMu        sync.RWMutex
 	router          *routing.Router
 	remote          *RemoteRegistry
 	aclCache        *ACLCache
@@ -31,22 +35,47 @@ func NewEdgeRegistry(router *routing.Router, remote *RemoteRegistry, aclCache *A
 }
 
 func (e *EdgeRegistry) Subscribe(topic, nodeID string) error {
+	e.routerMu.RLock()
+	defer e.routerMu.RUnlock()
+	if e.router == nil {
+		return fmt.Errorf("edge registry: routing router is closed")
+	}
 	return e.router.Subscribe(topic, nodeID)
 }
 
 func (e *EdgeRegistry) Unsubscribe(topic, nodeID string) error {
+	e.routerMu.RLock()
+	defer e.routerMu.RUnlock()
+	if e.router == nil {
+		return fmt.Errorf("edge registry: routing router is closed")
+	}
 	return e.router.Unsubscribe(topic, nodeID)
 }
 
 func (e *EdgeRegistry) NodesFor(topic, localNodeID string) []string {
+	e.routerMu.RLock()
+	defer e.routerMu.RUnlock()
+	if e.router == nil {
+		return nil
+	}
 	return e.router.NodesFor(topic, localNodeID)
 }
 
 func (e *EdgeRegistry) OfflineNodesFor(topic string) []string {
+	e.routerMu.RLock()
+	defer e.routerMu.RUnlock()
+	if e.router == nil {
+		return nil
+	}
 	return e.router.OfflineNodesFor(topic)
 }
 
 func (e *EdgeRegistry) OwnedClientIDs(nodeID string) []string {
+	e.routerMu.RLock()
+	defer e.routerMu.RUnlock()
+	if e.router == nil {
+		return nil
+	}
 	return e.router.OwnedClientIDs(nodeID)
 }
 
@@ -56,6 +85,11 @@ func (e *EdgeRegistry) OwnedClientIDs(nodeID string) []string {
 // loop (still over gRPC); now it's a local, single-call batch write
 // against the router, same as core.
 func (e *EdgeRegistry) UnsubscribeBatch(topics []string, nodeID string) error {
+	e.routerMu.RLock()
+	defer e.routerMu.RUnlock()
+	if e.router == nil {
+		return fmt.Errorf("edge registry: routing router is closed")
+	}
 	return e.router.UnsubscribeBatch(topics, nodeID)
 }
 
@@ -63,6 +97,11 @@ func (e *EdgeRegistry) UnsubscribeBatch(topics []string, nodeID string) error {
 // use the same shared routing store as cores, so confirmed membership leave
 // events can converge routing without waiting for a graceful MQTT disconnect.
 func (e *EdgeRegistry) PurgeNode(nodeID string) error {
+	e.routerMu.RLock()
+	defer e.routerMu.RUnlock()
+	if e.router == nil {
+		return fmt.Errorf("edge registry: routing router is closed")
+	}
 	return e.router.PurgeNode(nodeID)
 }
 
@@ -71,7 +110,24 @@ func (e *EdgeRegistry) PurgeNode(nodeID string) error {
 // have gone missing from the store (e.g. a total Olric data-loss event)
 // while its MQTT clients are still connected.
 func (e *EdgeRegistry) TopicsForNode(nodeID string) []string {
+	e.routerMu.RLock()
+	defer e.routerMu.RUnlock()
+	if e.router == nil {
+		return nil
+	}
 	return e.router.TopicsForNode(nodeID)
+}
+
+// ReplaceRouter atomically switches routing operations to next and returns
+// the previous router. The registry lock is held while callers use either
+// router, so the returned router can be closed after this method returns
+// without racing an in-flight routing operation.
+func (e *EdgeRegistry) ReplaceRouter(next *routing.Router) *routing.Router {
+	e.routerMu.Lock()
+	defer e.routerMu.Unlock()
+	previous := e.router
+	e.router = next
+	return previous
 }
 
 func (e *EdgeRegistry) ClaimSession(clientID, nodeID, identity string) (string, error) {
@@ -105,5 +161,12 @@ func (e *EdgeRegistry) CurrentRedisPrimary() (string, bool) {
 func (e *EdgeRegistry) Close() error {
 	e.aclCache.Close()
 	e.revocationCache.Close()
-	return e.router.Close()
+	e.routerMu.Lock()
+	router := e.router
+	e.router = nil
+	e.routerMu.Unlock()
+	if router == nil {
+		return nil
+	}
+	return router.Close()
 }

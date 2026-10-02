@@ -175,6 +175,53 @@ var (
 		Help:      "Messages forwarded to another cluster node or enqueued for an owned offline session, by QoS and path. Excludes same-node live delivery (mochi-mqtt's own in-process dispatch).",
 	}, []string{"qos", "path"})
 
+	// RoutingPublishes records the result of the local routing-cache lookup
+	// made for every accepted device publish. A no_targets result is not
+	// necessarily an error — it is expected when no subscriber or offline
+	// owner matches — but it makes a missing/stale routing cache observable.
+	RoutingPublishes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "keel_gateway",
+		Name:      "routing_publishes_total",
+		Help:      "Device publishes classified by the local routing-cache lookup result.",
+	}, []string{"outcome"})
+
+	// RoutingTargets counts the node IDs selected by the local routing cache,
+	// split between this node and another cluster node. It is deliberately
+	// not labelled by topic or node ID to keep cardinality bounded.
+	RoutingTargets = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "keel_gateway",
+		Name:      "routing_targets_selected_total",
+		Help:      "Routing target node selections made for accepted device publishes, split by local/remote scope.",
+	}, []string{"scope"})
+
+	// ClusterForwardAttempts distinguishes a route lookup that selected a
+	// remote node from the subsequent gRPC result. This complements
+	// MessagesForwarded (successes) and cluster_forward_failures_total.
+	ClusterForwardAttempts = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "keel_gateway",
+		Name:      "cluster_forward_attempts_total",
+		Help:      "Inter-edge forwarding attempts classified by result.",
+	}, []string{"result"})
+
+	// RoutingReconciles and RoutingStoreUp expose the health of the local
+	// routing cache/store connection. A failed reconcile means the cache may
+	// be stale even while MQTT clients remain connected.
+	RoutingReconciles = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "keel_gateway",
+		Name:      "routing_reconciles_total",
+		Help:      "Routing-cache full reconciliation attempts classified by result.",
+	}, []string{"result"})
+	RoutingStoreUp = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "keel_gateway",
+		Name:      "routing_store_up",
+		Help:      "Whether the latest routing-store reconciliation succeeded (1) or failed (0).",
+	})
+	RoutingClientReplacements = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "keel_gateway",
+		Name:      "routing_client_replacements_total",
+		Help:      "Remote routing clients replaced after a stale or failed backing-store connection, by result.",
+	}, []string{"result"})
+
 	// RedeliveriesTotal counts QoS1/2 resends (mochi-mqtt's OnQosPublish
 	// fires with resends>0 when it reissues an unacknowledged inflight
 	// message) — a proxy for flaky client connectivity or slow ACKs.

@@ -23,12 +23,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mochimqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/packets"
 
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/store"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
 
 // keySep separates the topic filter from the node ID in a store key.
@@ -90,9 +92,11 @@ type Router struct {
 	index  *mochimqtt.TopicsIndex
 	byNode map[string]map[string]struct{}
 
-	stop      chan struct{}
-	closeOnce sync.Once
-	wg        sync.WaitGroup
+	stop          chan struct{}
+	closeOnce     sync.Once
+	wg            sync.WaitGroup
+	storeUp       atomic.Bool
+	storeFailures atomic.Uint64
 }
 
 // New creates a Router: performs an initial full reconciliation from the
@@ -147,6 +151,21 @@ func (r *Router) Close() error {
 		return r.sub.Close()
 	}
 	return nil
+}
+
+// StoreHealthy reports whether the most recent full reconciliation against
+// the backing store succeeded. It is intentionally local to this Router
+// instance: an edge supervisor uses it to detect a stale/broken remote
+// Olric client and replace the router without restarting the MQTT broker.
+func (r *Router) StoreHealthy() bool {
+	return r.storeUp.Load()
+}
+
+// ConsecutiveStoreFailures returns the number of full reconciliations that
+// have failed since the last successful reconciliation. A caller may use it
+// to distinguish a transient store error from a persistently stale client.
+func (r *Router) ConsecutiveStoreFailures() uint64 {
+	return r.storeFailures.Load()
 }
 
 // ── Registry-compatible write path ──────────────────────────────────────
@@ -465,6 +484,10 @@ func (r *Router) reconcileLoop() {
 func (r *Router) reconcile(ctx context.Context) error {
 	it, err := r.store.Scan(ctx)
 	if err != nil {
+		r.storeFailures.Add(1)
+		r.storeUp.Store(false)
+		telemetry.RoutingReconciles.WithLabelValues("failure").Inc()
+		telemetry.RoutingStoreUp.Set(0)
 		return err
 	}
 	defer it.Close()
@@ -489,6 +512,10 @@ func (r *Router) reconcile(ctx context.Context) error {
 	r.index = index
 	r.byNode = byNode
 	r.mu.Unlock()
+	r.storeFailures.Store(0)
+	r.storeUp.Store(true)
+	telemetry.RoutingReconciles.WithLabelValues("success").Inc()
+	telemetry.RoutingStoreUp.Set(1)
 	return nil
 }
 

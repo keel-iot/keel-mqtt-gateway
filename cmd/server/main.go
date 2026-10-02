@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -706,6 +707,7 @@ func runServer() {
 		mgmtServer        *http.Server
 		olricStore        *clusterstore.OlricStore
 		clusterRouter     *routing.Router
+		edgeRegistry      *keelraft.EdgeRegistry
 	)
 	// isCoreRole is true for both "core" (pure) and "combined" (core duties
 	// plus a local broker) — everything raft/Olric/mgmt-API-related below
@@ -933,7 +935,77 @@ func runServer() {
 			// aclCache above, see RevocationCache's doc.
 			revocationCache := keelraft.NewRevocationCache(remoteRegistry.RevokedSnapshot, 0, log)
 
-			clusterRegistry = keelraft.NewEdgeRegistry(edgeRouter, remoteRegistry, aclCache, revocationCache)
+			edgeRegistry = keelraft.NewEdgeRegistry(edgeRouter, remoteRegistry, aclCache, revocationCache)
+			clusterRegistry = edgeRegistry
+
+			// A remote Olric ClusterClient keeps the addresses it resolved at
+			// construction time. After a core StatefulSet pod is recreated,
+			// those IPs can be stale even though the MQTT client remains
+			// connected to this edge. Rebuild the routing client when its
+			// reconcile fails or the membership-provided core endpoints change.
+			// The registry swap is atomic, so the broker keeps serving MQTT
+			// traffic while the replacement performs its initial Scan/Subscribe.
+			currentRouter := edgeRouter
+			currentStore := edgeOlricStore
+			lastAddrs := sortedUniqueStrings(clusterMembership.CoreOlricClientAddrs())
+			go func() {
+				const refreshInterval = 5 * time.Second
+				const minConsecutiveStoreFailures = 3
+				ticker := time.NewTicker(refreshInterval)
+				defer ticker.Stop()
+
+				defer func() {
+					if err := edgeRegistry.Close(); err != nil {
+						log.Warn("cluster: close edge routing router", "error", err)
+					}
+					if err := currentStore.Close(context.Background()); err != nil {
+						log.Warn("cluster: close edge olric client", "error", err)
+					}
+				}()
+
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						addrs := sortedUniqueStrings(clusterMembership.CoreOlricClientAddrs())
+						endpointsChanged := !equalStringSlices(lastAddrs, addrs)
+						if !endpointsChanged && (currentRouter.StoreHealthy() || currentRouter.ConsecutiveStoreFailures() < minConsecutiveStoreFailures) {
+							continue
+						}
+
+						newStore, refreshErr := clusterstore.NewRemoteOlricStore(addrs, "")
+						if refreshErr != nil {
+							telemetry.RoutingClientReplacements.WithLabelValues("failure").Inc()
+							log.Warn("cluster: edge olric client refresh failed", "addrs", addrs, "error", refreshErr)
+							continue
+						}
+						newRouter, refreshErr := routing.New(routing.Config{Store: newStore, Log: log})
+						if refreshErr != nil {
+							_ = newStore.Close(context.Background())
+							telemetry.RoutingClientReplacements.WithLabelValues("failure").Inc()
+							log.Warn("cluster: edge routing router refresh failed", "addrs", addrs, "error", refreshErr)
+							continue
+						}
+
+						oldRouter := edgeRegistry.ReplaceRouter(newRouter)
+						oldStore := currentStore
+						currentRouter = newRouter
+						currentStore = newStore
+						lastAddrs = addrs
+						if oldRouter != nil {
+							_ = oldRouter.Close()
+						}
+						_ = oldStore.Close(context.Background())
+						// The old router may have completed a failed reconcile
+						// while it was being drained and updated the process-wide
+						// gauge after the new router had already become healthy.
+						telemetry.RoutingStoreUp.Set(1)
+						telemetry.RoutingClientReplacements.WithLabelValues("success").Inc()
+						log.Info("cluster: edge olric client refreshed", "addrs", addrs)
+					}
+				}
+			}()
 		}
 
 		if purger, ok := clusterRegistry.(keelraft.NodePurger); ok {
@@ -1500,4 +1572,33 @@ func runServer() {
 	}
 
 	log.Info("mqtt-gateway: stopped")
+}
+
+func sortedUniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -1137,7 +1137,16 @@ func (h *keelHook) forwardToClusterSubscribers(ctx context.Context, info *auth.D
 	}
 	nodes := h.fanOutNodes(pk.TopicName)
 	if len(nodes) == 0 {
+		telemetry.RoutingPublishes.WithLabelValues("no_targets").Inc()
 		return
+	}
+	telemetry.RoutingPublishes.WithLabelValues("targets_found").Inc()
+	for _, nodeID := range nodes {
+		scope := "remote"
+		if nodeID == h.clusterNodeID {
+			scope = "local"
+		}
+		telemetry.RoutingTargets.WithLabelValues(scope).Inc()
 	}
 	msg := &dataplane.Message{
 		SourceNodeID: h.clusterNodeID,
@@ -1167,9 +1176,11 @@ func forwardClusterTargets(ctx context.Context, f dataplane.Forwarder, self stri
 		go func() {
 			defer wg.Done()
 			if err := f.Forward(ctx, nodeID, msg); err != nil {
+				telemetry.ClusterForwardAttempts.WithLabelValues("failure").Inc()
 				log.Error("cluster: forward publish failed", "target_node", nodeID, "topic", topic, "error", err)
 				return
 			}
+			telemetry.ClusterForwardAttempts.WithLabelValues("success").Inc()
 			telemetry.MessagesForwarded.WithLabelValues(strconv.Itoa(int(qos)), "cluster").Inc()
 		}()
 	}
