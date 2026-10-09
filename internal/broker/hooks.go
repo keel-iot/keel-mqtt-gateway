@@ -152,8 +152,9 @@ type offlineOwnershipStore interface {
 type clientState struct {
 	info       *auth.DeviceInfo
 	method     auth.AuthMethod
-	username   string // raw MQTT username, used as the RBAC principal alongside client ID
-	generation uint64 // incremented on every new auth for this client_id
+	username   string       // raw MQTT username, used as the RBAC principal alongside client ID
+	client     *mqtt.Client // exact connection instance; client IDs can reconnect before old hooks finish
+	generation uint64       // incremented on every new auth for this client_id
 }
 
 // ── TEMPORARY: hardcoded test-consumer role ─────────────────────────────
@@ -246,6 +247,7 @@ func (h *keelHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packet) boo
 		info:       info,
 		method:     method,
 		username:   string(pk.Connect.Username),
+		client:     cl,
 		generation: h.generation[cl.ID],
 	}
 	h.tenantConns[tenantStr]++
@@ -899,9 +901,12 @@ func (h *keelHook) OnDisconnect(cl *mqtt.Client, _ error, expire bool) {
 
 	h.mu.Lock()
 	state, ok := h.clients[cl.ID]
-	// Only act if this disconnect belongs to the current generation.
-	// A higher generation means a newer connection has already taken over.
-	if ok && state.generation == h.generation[cl.ID] {
+	// Only act if this is the exact connection currently tracked for the
+	// client ID. OnDisconnect runs asynchronously after Stop, so an older
+	// connection can arrive here after a newer CONNECT has already replaced
+	// h.clients[cl.ID]. Comparing only the client ID (or the current map
+	// generation) would then clean up the newer connection's state and claim.
+	if ok && state.client == cl && state.generation == h.generation[cl.ID] {
 		if ts := state.info.TenantID.String(); h.tenantConns[ts] > 0 {
 			h.tenantConns[ts]--
 		}
@@ -967,9 +972,11 @@ func (h *keelHook) OnDisconnect(cl *mqtt.Client, _ error, expire bool) {
 func (h *keelHook) OnClientExpired(cl *mqtt.Client) {
 	h.mu.Lock()
 	state, ok := h.clients[cl.ID]
-	if ok {
+	if ok && state.client == cl {
 		delete(h.clients, cl.ID)
 		delete(h.generation, cl.ID)
+	} else {
+		ok = false
 	}
 	h.mu.Unlock()
 

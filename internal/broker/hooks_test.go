@@ -213,6 +213,10 @@ func deviceState(username string) *clientState {
 	}
 }
 
+func bindClientState(h *keelHook, cl *mqtt.Client) {
+	h.clients[cl.ID].client = cl
+}
+
 // TestOnACLCheckRBACExplicitDenyWins verifies that when RBAC produces an
 // explicit decision (Rule != nil), it is authoritative even if the legacy
 // hardcoded ACL logic would have allowed the same topic.
@@ -442,6 +446,7 @@ func TestOnDisconnect_ReleasesClusterSession(t *testing.T) {
 	h.clients["device-1"] = deviceState("dev-1")
 
 	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	bindClientState(h, cl)
 	h.OnDisconnect(cl, nil, false)
 
 	reg.mu.Lock()
@@ -468,6 +473,7 @@ func TestOnDisconnect_PersistentSessionKeepsRouting(t *testing.T) {
 
 	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
 	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+	bindClientState(h, cl)
 
 	h.OnDisconnect(cl, nil, false) // expire=false: persistent session, not ending
 
@@ -493,6 +499,7 @@ func TestOnDisconnect_ExpiringSessionClearsRouting(t *testing.T) {
 
 	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
 	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+	bindClientState(h, cl)
 
 	h.OnDisconnect(cl, nil, true) // expire=true: clean session, truly ending
 
@@ -521,6 +528,7 @@ func TestOnDisconnect_PersistentSessionKeepsACLIdentity(t *testing.T) {
 	h.clients["device-1"] = deviceState("dev-1")
 
 	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	bindClientState(h, cl)
 	h.OnDisconnect(cl, nil, false) // expire=false: persistent session, not ending
 
 	h.mu.RLock()
@@ -548,6 +556,7 @@ func TestOnClientExpired_CleansUpACLIdentityAndRouting(t *testing.T) {
 
 	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
 	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+	bindClientState(h, cl)
 
 	h.OnClientExpired(cl)
 
@@ -605,10 +614,46 @@ func TestOnDisconnect_StaleGenerationSkipsRelease(t *testing.T) {
 	h.clients["device-1"] = state
 
 	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	state.client = cl
 	h.OnDisconnect(cl, nil, false)
 
 	if len(reg.releaseCalls) != 0 {
 		t.Fatalf("expected no ReleaseSession call for a stale-generation disconnect, got %+v", reg.releaseCalls)
+	}
+}
+
+// TestOnDisconnect_StaleConnectionInstanceSkipsRelease verifies the race that
+// generation numbers alone cannot detect: the old and new connections share a
+// client ID and node, so the old hook sees the current generation in the
+// client-ID map. It must still be rejected by the connection-instance check.
+func TestOnDisconnect_StaleConnectionInstanceSkipsRelease(t *testing.T) {
+	reg := &fakeRegistry{}
+	h := newClusterTestHook(reg, &fakeForwarder{}, "edge-1")
+	h.tenantConns = map[string]int{"11111111-1111-1111-1111-111111111111": 1}
+	h.generation = map[string]uint64{"device-1": 2}
+
+	old := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	current := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
+	state := deviceState("dev-1")
+	state.client = current
+	state.generation = 2
+	h.clients["device-1"] = state
+
+	old.Stop(packets.ErrSessionTakenOver)
+	h.OnDisconnect(old, nil, false)
+
+	h.mu.RLock()
+	got := h.clients["device-1"]
+	connections := h.tenantConns["11111111-1111-1111-1111-111111111111"]
+	h.mu.RUnlock()
+	if got != state {
+		t.Fatalf("stale disconnect replaced or removed the current client state")
+	}
+	if connections != 1 {
+		t.Fatalf("stale disconnect changed active tenant connections to %d", connections)
+	}
+	if len(reg.releaseCalls) != 0 {
+		t.Fatalf("expected no ReleaseSession call for stale connection instance, got %+v", reg.releaseCalls)
 	}
 }
 
@@ -631,6 +676,7 @@ func TestOnDisconnect_EvictedPersistentSessionClearsRouting(t *testing.T) {
 
 	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
 	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+	bindClientState(h, cl)
 	cl.Stop(packets.ErrSessionTakenOver) // mirrors cmd/server/main.go's SubscribeEvict handler
 
 	h.OnDisconnect(cl, nil, false) // expire=false: persistent session per MQTT semantics
@@ -668,6 +714,7 @@ func TestOnDisconnect_PersistentSession_PlacesOfflineOwnership(t *testing.T) {
 
 	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
 	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+	bindClientState(h, cl)
 
 	h.OnDisconnect(cl, nil, false) // expire=false: persistent session, genuinely offline
 
@@ -703,6 +750,7 @@ func TestOnDisconnect_ExpiringSession_DoesNotPlaceOfflineOwnership(t *testing.T)
 
 	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
 	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+	bindClientState(h, cl)
 
 	h.OnDisconnect(cl, nil, true) // expire=true: clean session, truly ending
 
@@ -729,6 +777,7 @@ func TestOnDisconnect_NoLiveEdgeNodeIDs_SkipsPlacement(t *testing.T) {
 
 	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
 	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+	bindClientState(h, cl)
 
 	h.OnDisconnect(cl, nil, false)
 
@@ -751,6 +800,7 @@ func TestOnDisconnect_NoOfflineOwnership_SkipsPlacement(t *testing.T) {
 
 	cl := &mqtt.Client{ID: "device-1", State: mqtt.ClientState{Subscriptions: mqtt.NewSubscriptions()}}
 	cl.State.Subscriptions.Add("telemetry/tenant/device-1", packets.Subscription{Filter: "telemetry/tenant/device-1"})
+	bindClientState(h, cl)
 
 	h.OnDisconnect(cl, nil, false) // must not panic with offlineOwnership/liveEdgeNodeIDs both nil
 }
