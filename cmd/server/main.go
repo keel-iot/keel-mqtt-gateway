@@ -731,6 +731,7 @@ func runServer() {
 		olricStore        *clusterstore.OlricStore
 		clusterRouter     *routing.Router
 		edgeRegistry      *keelraft.EdgeRegistry
+		offlineInventory  *session.InventoryCache
 	)
 	// isCoreRole is true for both "core" (pure) and "combined" (core duties
 	// plus a local broker) — everything raft/Olric/mgmt-API-related below
@@ -748,6 +749,9 @@ func runServer() {
 		log.Info("cluster: starting", "role", cf.role, "node_id", cf.nodeID)
 
 		if isCoreRole {
+			if rdb != nil {
+				offlineInventory = session.NewInventoryCache()
+			}
 			raftNode, err = keelraft.NewNode(keelraft.NodeConfig{
 				NodeID:            cf.nodeID,
 				RaftBindAddr:      cf.raftBindAddr,
@@ -1090,7 +1094,13 @@ func runServer() {
 				RebalanceConfig:     rebalanceCfg,
 				ClavexWebhookSecret: cfg.ClavexWebhookSecret,
 				InflightMessages:    telemetry.InflightMessagesSnapshot,
-				Log:                 log,
+				OfflineSessions: func() ([]session.OfflineSession, time.Time, bool) {
+					if offlineInventory == nil {
+						return nil, time.Time{}, false
+					}
+					return offlineInventory.Snapshot()
+				},
+				Log: log,
 			}
 			mgmtServer = &http.Server{
 				Addr:         cf.managementAddr,
@@ -1144,6 +1154,11 @@ func runServer() {
 							return nil, err
 						}
 						return session.FilterOffline(all, raftNode.Registry.SessionsSnapshot()), nil
+					},
+					OnInventory: func(sessions []session.OfflineSession) {
+						if offlineInventory != nil {
+							offlineInventory.Set(sessions)
+						}
 					},
 					LiveEdgeNodeIDs: func() []string { return lifecycle.LiveEdgeNodeIDs(clusterMembership.Members()) },
 					CurrentOwner:    offlineOwnership.CurrentOwner,

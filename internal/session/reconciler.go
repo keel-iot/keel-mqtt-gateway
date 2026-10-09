@@ -27,6 +27,11 @@ type Reconciler struct {
 	// placement.
 	Inventory func() ([]OfflineSession, error)
 
+	// OnInventory receives each successful, already-filtered inventory. It is
+	// useful for read-only observability consumers that should share the
+	// reconciler's Redis scan rather than perform another one.
+	OnInventory func([]OfflineSession)
+
 	// LiveEdgeNodeIDs returns the current live edge nodes, feeding
 	// Owner's hash. This package never imports membership itself.
 	LiveEdgeNodeIDs func() []string
@@ -90,6 +95,9 @@ func (r *Reconciler) ReconcileOnce() {
 		return
 	}
 	telemetry.SetOfflineSessions(len(sessions))
+	if r.OnInventory != nil {
+		r.OnInventory(sessions)
+	}
 
 	moved := 0
 	for _, s := range sessions {

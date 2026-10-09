@@ -24,6 +24,7 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/lifecycle"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/membership"
 	keelraft "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/raft"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/session"
 )
 
 // API bundles the dependencies the HTTP handlers read from.
@@ -58,7 +59,12 @@ type API struct {
 	// It is a callback so the management API does not scan Redis for every
 	// dashboard request.
 	InflightMessages func() int64
-	Log              *slog.Logger
+	// OfflineSessions returns the latest Redis-backed offline-session
+	// inventory, its refresh time, and whether Redis inventory is available.
+	// The callback is intentionally cache-backed; management requests must not
+	// scan Redis synchronously.
+	OfflineSessions func() ([]session.OfflineSession, time.Time, bool)
+	Log             *slog.Logger
 }
 
 // Router builds the http.Handler exposing the management endpoints.
@@ -67,6 +73,7 @@ func (a *API) Router() http.Handler {
 	mux.HandleFunc("GET /api/cluster/nodes", a.handleNodes)
 	mux.HandleFunc("GET /api/cluster/routes", a.handleRoutes)
 	mux.HandleFunc("GET /api/cluster/sessions", a.handleSessions)
+	mux.HandleFunc("GET /api/cluster/session-inventory", a.handleSessionInventory)
 	mux.HandleFunc("GET /api/metrics", a.handleLiveMetrics)
 	mux.HandleFunc("GET /api/live/clients", a.handleLiveClients)
 	mux.HandleFunc("GET /ui", a.handleUI)
