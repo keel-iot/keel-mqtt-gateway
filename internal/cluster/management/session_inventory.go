@@ -12,13 +12,15 @@ import (
 )
 
 type sessionInventoryItem struct {
-	ClientID      string   `json:"client_id"`
-	Status        string   `json:"status"`
-	NodeID        string   `json:"node_id,omitempty"`
-	Username      string   `json:"username,omitempty"`
-	RemoteAddr    string   `json:"remote_addr,omitempty"`
-	CleanSession  bool     `json:"clean_session"`
-	Subscriptions []string `json:"subscriptions"`
+	ClientID          string     `json:"client_id"`
+	Status            string     `json:"status"`
+	NodeID            string     `json:"node_id,omitempty"`
+	Username          string     `json:"username,omitempty"`
+	RemoteAddr        string     `json:"remote_addr,omitempty"`
+	CleanSession      bool       `json:"clean_session"`
+	Subscriptions     []string   `json:"subscriptions"`
+	LastSeenAt        *time.Time `json:"last_seen_at,omitempty"`
+	OfflineForSeconds *int64     `json:"offline_for_seconds,omitempty"`
 }
 
 type sessionInventoryResponse struct {
@@ -180,6 +182,15 @@ func (a *API) collectSessionInventory(r *http.Request, status, search string, of
 			ClientID:      persisted.ClientID,
 			Status:        "offline",
 			Subscriptions: make([]string, 0, len(persisted.Subscriptions)),
+		}
+		if !persisted.LastSeenAt.IsZero() {
+			lastSeenAt := persisted.LastSeenAt
+			item.LastSeenAt = &lastSeenAt
+			seconds := int64(time.Since(lastSeenAt).Seconds())
+			if seconds < 0 {
+				seconds = 0
+			}
+			item.OfflineForSeconds = &seconds
 		}
 		for _, sub := range persisted.Subscriptions {
 			item.Subscriptions = append(item.Subscriptions, sub.Filter)

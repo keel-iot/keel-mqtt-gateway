@@ -10,6 +10,7 @@
 //
 //	keel:gw:CLIENTS          — SET of client IDs (inventory only)
 //	keel:gw:CL:<client>      — storage.Client value
+//	keel:gw:LASTSEEN:<client> — UTC timestamp of the last persistent disconnect
 //	keel:gw:SUB:<client>     — HASH of storage.Subscription (field: filter)
 //	keel:gw:IFM:<client>     — HASH of storage.Message (field: packet ID)
 //	keel:gw:PKID:<client>    — offline packet-ID counter
@@ -51,6 +52,7 @@ const (
 	legacySubHash        = redisKeyPrefix + storage.SubscriptionKey
 	legacyInflightHash   = redisKeyPrefix + storage.InflightKey
 	legacyPacketIDPrefix = redisKeyPrefix + "PKID:"
+	redisLastSeenPrefix  = redisKeyPrefix + "LASTSEEN:"
 )
 
 func redisClientToken(clientID string) string {
@@ -59,6 +61,10 @@ func redisClientToken(clientID string) string {
 
 func redisClientKey(clientID string) string {
 	return redisKeyPrefix + storage.ClientKey + ":" + redisClientToken(clientID)
+}
+
+func redisLastSeenKey(clientID string) string {
+	return redisLastSeenPrefix + redisClientToken(clientID)
 }
 
 func redisSubKey(clientID string) string {
@@ -321,13 +327,29 @@ func (h *RedisSessionHook) saveClient(cl *mqtt.Client) {
 // or explicit session expiry).  Non-expiring disconnects keep the record so the
 // client can resume after a reconnect.
 func (h *RedisSessionHook) OnDisconnect(cl *mqtt.Client, _ error, expire bool) {
-	if !expire {
-		return
-	}
 	if cl.StopCause() == packets.ErrSessionTakenOver {
 		return
 	}
+	if !expire {
+		h.markOffline(cl.ID)
+		return
+	}
 	h.deleteSessionState(context.Background(), cl.ID)
+}
+
+// markOffline records only the online -> offline transition. It is
+// deliberately not called from keepalive or publish paths: one Redis write
+// per persistent disconnect is enough for the management UI's last-seen data.
+func (h *RedisSessionHook) markOffline(clientID string) {
+	if h.router == nil {
+		return
+	}
+	value := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := h.router.Client().Set(context.Background(), redisLastSeenKey(clientID), value, 0).Err(); err != nil {
+		if h.log != nil {
+			h.log.Error("redis session: persist last seen", "error", err, "id", clientID)
+		}
+	}
 }
 
 // OnClientExpired is mochi-mqtt's callback for a persistent
@@ -354,6 +376,7 @@ func (h *RedisSessionHook) deleteSessionState(ctx context.Context, clientID stri
 	pipe := h.router.Client().TxPipeline()
 	pipe.Del(ctx,
 		redisClientKey(clientID),
+		redisLastSeenKey(clientID),
 		redisSubKey(clientID),
 		redisInflightKey(clientID),
 		redisPacketIDKey(clientID),
@@ -541,9 +564,11 @@ func (h *RedisSessionHook) OfflineInventory() ([]session.OfflineSession, error) 
 
 		pipe := h.router.Client().Pipeline()
 		clientCmds := make([]*redis.StringCmd, len(ids))
+		lastSeenCmds := make([]*redis.StringCmd, len(ids))
 		subCmds := make([]*redis.MapStringStringCmd, len(ids))
 		for i, clientID := range ids {
 			clientCmds[i] = pipe.Get(ctx, redisClientKey(clientID))
+			lastSeenCmds[i] = pipe.Get(ctx, redisLastSeenKey(clientID))
 			subCmds[i] = pipe.HGetAll(ctx, redisSubKey(clientID))
 		}
 		if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
@@ -571,7 +596,15 @@ func (h *RedisSessionHook) OfflineInventory() ([]session.OfflineSession, error) 
 				}
 				subs = append(subs, sub)
 			}
-			out = append(out, session.FromStorage(client.ID, subs))
+			offline := session.FromStorage(client.ID, subs)
+			if rawLastSeen, err := lastSeenCmds[i].Result(); err == nil {
+				if lastSeen, parseErr := time.Parse(time.RFC3339Nano, rawLastSeen); parseErr == nil {
+					offline.LastSeenAt = lastSeen
+				} else {
+					h.log.Warn("redis session: invalid last-seen timestamp", "client_id", clientID, "value", rawLastSeen, "error", parseErr)
+				}
+			}
+			out = append(out, offline)
 		}
 		if next == 0 {
 			return out, nil

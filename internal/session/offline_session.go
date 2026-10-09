@@ -6,6 +6,8 @@
 package session
 
 import (
+	"time"
+
 	"github.com/mochi-mqtt/server/v2/hooks/storage"
 )
 
@@ -28,6 +30,10 @@ type OfflineSubscription struct {
 type OfflineSession struct {
 	ClientID      string
 	Subscriptions []OfflineSubscription
+	// LastSeenAt is the time the session most recently transitioned from
+	// online to offline. Zero means the timestamp predates this metadata or
+	// the session has never completed an observable disconnect yet.
+	LastSeenAt time.Time
 }
 
 // FromStorage builds the OfflineSession for clientID out of mochi-mqtt's
