@@ -3,6 +3,7 @@ package session
 
 import (
 	"log/slog"
+	"sort"
 
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/acl"
 )
@@ -38,8 +39,9 @@ type OfflineDelivery struct {
 // the rest of owned. queued=false means a deduplicated delivery and is not an
 // error.
 func (d *OfflineDelivery) Deliver(owned []OfflineSession, topic string, payload []byte, publishQoS byte) (delivered int) {
+	sharedSelected := selectSharedSessions(owned, topic)
 	for _, s := range owned {
-		qos, matched := bestMatchQoS(s, topic, publishQoS)
+		qos, matched := bestMatchQoS(s, topic, publishQoS, sharedSelected)
 		if !matched || qos == 0 {
 			continue
 		}
@@ -63,9 +65,16 @@ func (d *OfflineDelivery) Deliver(owned []OfflineSession, topic string, payload 
 // sub.QoS) per MQTT-3.3.5's downgrade rule, maxed across every
 // subscription of s that matches topic) and whether anything matched at
 // all.
-func bestMatchQoS(s OfflineSession, topic string, publishQoS byte) (qos byte, matched bool) {
+func bestMatchQoS(s OfflineSession, topic string, publishQoS byte, sharedSelected map[string]string) (qos byte, matched bool) {
 	for _, sub := range s.Subscriptions {
-		if !acl.MatchTopic(sub.Filter, topic) {
+		filter := sub.Filter
+		if _, sharedFilter, ok := acl.SharedFilter(filter); ok {
+			if sharedSelected[filter] != s.ClientID {
+				continue
+			}
+			filter = sharedFilter
+		}
+		if !acl.MatchTopic(filter, topic) {
 			continue
 		}
 		matched = true
@@ -78,6 +87,29 @@ func bestMatchQoS(s OfflineSession, topic string, publishQoS byte) (qos byte, ma
 		}
 	}
 	return qos, matched
+}
+
+// selectSharedSessions chooses one offline session for each shared filter.
+// The routing layer has already selected one owner edge for the group; this
+// second selection is needed when that edge owns multiple offline members.
+func selectSharedSessions(owned []OfflineSession, topic string) map[string]string {
+	candidates := make(map[string][]string)
+	for _, s := range owned {
+		for _, sub := range s.Subscriptions {
+			_, filter, ok := acl.SharedFilter(sub.Filter)
+			if !ok || !acl.MatchTopic(filter, topic) {
+				continue
+			}
+			candidates[sub.Filter] = append(candidates[sub.Filter], s.ClientID)
+		}
+	}
+
+	selected := make(map[string]string, len(candidates))
+	for filter, clients := range candidates {
+		sort.Strings(clients)
+		selected[filter] = clients[0]
+	}
+	return selected
 }
 
 func (d *OfflineDelivery) logWarn(msg string, args ...any) {
