@@ -99,11 +99,15 @@ type keelHook struct {
 	// as today, no different than standalone in-memory-only behavior.
 	sessionStore sessionStore
 
-	mu               sync.RWMutex
-	clients          map[string]*clientState
-	generation       map[string]uint64 // monotonic counter per client_id to detect stale OnDisconnect
-	tenantConns      map[string]int    // per-tenant active connection counter for rate limiting
-	packetReceivedAt map[*mqtt.Client]time.Time
+	mu         sync.RWMutex
+	clients    map[string]*clientState
+	generation map[string]uint64 // monotonic counter per client_id to detect stale OnDisconnect
+	// clusterFilterRefs mirrors the distributed (filter,node) route locally:
+	// several MQTT clients on one Edge can share one route, so it is removed
+	// only when the last local client using that filter disconnects.
+	clusterFilterRefs map[string]map[string]struct{}
+	tenantConns       map[string]int // per-tenant active connection counter for rate limiting
+	packetReceivedAt  map[*mqtt.Client]time.Time
 
 	// liveStats feeds the basic monitoring UI's messages/sec figure (see
 	// internal/telemetry.LiveStats). Nil when not configured (standalone
@@ -195,6 +199,7 @@ func (h *keelHook) Provides(b byte) bool {
 func (h *keelHook) Init(_ any) error {
 	h.clients = make(map[string]*clientState)
 	h.generation = make(map[string]uint64)
+	h.clusterFilterRefs = make(map[string]map[string]struct{})
 	h.tenantConns = make(map[string]int)
 	h.packetReceivedAt = make(map[*mqtt.Client]time.Time)
 	return nil
@@ -295,7 +300,11 @@ func (h *keelHook) OnSessionEstablish(cl *mqtt.Client, pk packets.Packet) {
 	}
 	h.clearOfflineOwnership(cl.ID)
 
-	if _, ok := h.server.Clients.Get(cl.ID); ok {
+	if existing, ok := h.server.Clients.Get(cl.ID); ok {
+		// OnDisconnect removes persistent sessions from live routing before
+		// placing their offline ownership. Restore the live route when mochi
+		// resumes a session that is already local to this node.
+		h.subscribeClusterFilters(existing.ID, existing.State.Subscriptions.GetAll())
 		return
 	}
 
@@ -330,6 +339,7 @@ func (h *keelHook) OnSessionEstablish(cl *mqtt.Client, pk packets.Packet) {
 		ghost.State.Inflight.Set(m.ToPacket())
 	}
 	h.server.Clients.Add(ghost)
+	h.subscribeClusterFiltersFromStorage(cl.ID, subs)
 
 	h.log.Info("session rehydrate: seeded from Redis for reconnect on a different node",
 		"client_id", cl.ID, "subscriptions", len(subs), "inflight", len(inflight))
@@ -941,6 +951,10 @@ func (h *keelHook) OnDisconnect(cl *mqtt.Client, _ error, expire bool) {
 			// waiting for the periodic session.Reconciler's next tick. See
 			// placeOfflineOwnership's doc.
 			h.placeOfflineOwnership(cl)
+			// A persistent session is no longer a live subscriber while its
+			// connection is down. Remove its live route after placing the
+			// offline owner so there is no routing gap during the transition.
+			h.unsubscribeClusterFilters(cl)
 		}
 		if h.clusterRegistry != nil {
 			// Guarded by nodeID: a no-op if this node was already
@@ -1005,6 +1019,14 @@ func (h *keelHook) unsubscribeClusterFilters(cl *mqtt.Client) {
 	for filter := range subs {
 		filters = append(filters, filter)
 	}
+	tracked := make(map[string]packets.Subscription, len(filters))
+	for _, filter := range filters {
+		tracked[filter] = subs[filter]
+	}
+	filters = h.removeClusterFilterRefs(cl.ID, tracked)
+	if len(filters) == 0 {
+		return
+	}
 
 	if batch, ok := h.clusterRegistry.(keelraft.BatchUnsubscriber); ok {
 		if err := batch.UnsubscribeBatch(filters, h.clusterNodeID); err != nil {
@@ -1020,6 +1042,78 @@ func (h *keelHook) unsubscribeClusterFilters(cl *mqtt.Client) {
 	}
 }
 
+// subscribeClusterFilters restores live routing entries for a persistent
+// session resumed from local state. OnSessionEstablish runs before mochi-mqtt
+// emits OnSubscribed for inherited subscriptions, so the hook restores them
+// explicitly.
+func (h *keelHook) subscribeClusterFilters(clientID string, filters map[string]packets.Subscription) {
+	if h.clusterRegistry == nil {
+		return
+	}
+	for filter := range filters {
+		if !h.addClusterFilterRef(clientID, filter) {
+			continue
+		}
+		if err := h.clusterRegistry.Subscribe(filter, h.clusterNodeID); err != nil {
+			h.log.Error("cluster: subscribe on session resume failed", "topic", filter, "error", err)
+		}
+	}
+}
+
+func (h *keelHook) subscribeClusterFiltersFromStorage(clientID string, subs []storage.Subscription) {
+	if h.clusterRegistry == nil {
+		return
+	}
+	for _, sub := range subs {
+		if !h.addClusterFilterRef(clientID, sub.Filter) {
+			continue
+		}
+		if err := h.clusterRegistry.Subscribe(sub.Filter, h.clusterNodeID); err != nil {
+			h.log.Error("cluster: subscribe on session rehydrate failed", "topic", sub.Filter, "error", err)
+		}
+	}
+}
+
+func (h *keelHook) addClusterFilterRef(clientID, filter string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.clusterFilterRefs == nil {
+		h.clusterFilterRefs = make(map[string]map[string]struct{})
+	}
+	clients := h.clusterFilterRefs[filter]
+	if clients == nil {
+		clients = make(map[string]struct{})
+		h.clusterFilterRefs[filter] = clients
+	}
+	if _, exists := clients[clientID]; exists {
+		return false
+	}
+	wasEmpty := len(clients) == 0
+	clients[clientID] = struct{}{}
+	return wasEmpty
+}
+
+func (h *keelHook) removeClusterFilterRefs(clientID string, filters map[string]packets.Subscription) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var lastUsers []string
+	for filter := range filters {
+		clients := h.clusterFilterRefs[filter]
+		if clients == nil {
+			// Keep the legacy direct-unsubscribe behavior for tests and
+			// in-process callers that did not populate the ref map.
+			lastUsers = append(lastUsers, filter)
+			continue
+		}
+		delete(clients, clientID)
+		if len(clients) == 0 {
+			delete(h.clusterFilterRefs, filter)
+			lastUsers = append(lastUsers, filter)
+		}
+	}
+	return lastUsers
+}
+
 // OnSubscribed registers this node in the cluster routing table for every
 // filter a client just subscribed to, so OnPublish on any other node
 // knows to forward matching messages here. No-op when running standalone
@@ -1027,11 +1121,11 @@ func (h *keelHook) unsubscribeClusterFilters(cl *mqtt.Client) {
 // backfill (see deliverRetainedBackfill) when configured.
 func (h *keelHook) OnSubscribed(cl *mqtt.Client, pk packets.Packet, _ []byte) {
 	if h.clusterRegistry != nil {
+		filters := make(map[string]packets.Subscription, len(pk.Filters))
 		for _, f := range pk.Filters {
-			if err := h.clusterRegistry.Subscribe(f.Filter, h.clusterNodeID); err != nil {
-				h.log.Error("cluster: subscribe failed", "topic", f.Filter, "error", err)
-			}
+			filters[f.Filter] = f
 		}
+		h.subscribeClusterFilters(cl.ID, filters)
 	}
 	if h.retainedStore != nil {
 		// Dispatched async: mochi-mqtt itself sends SUBACK, then its own
@@ -1111,9 +1205,13 @@ func (h *keelHook) OnUnsubscribed(cl *mqtt.Client, pk packets.Packet) {
 	if h.clusterRegistry == nil {
 		return
 	}
+	filters := make(map[string]packets.Subscription, len(pk.Filters))
 	for _, f := range pk.Filters {
-		if err := h.clusterRegistry.Unsubscribe(f.Filter, h.clusterNodeID); err != nil {
-			h.log.Error("cluster: unsubscribe failed", "topic", f.Filter, "error", err)
+		filters[f.Filter] = f
+	}
+	for _, filter := range h.removeClusterFilterRefs(cl.ID, filters) {
+		if err := h.clusterRegistry.Unsubscribe(filter, h.clusterNodeID); err != nil {
+			h.log.Error("cluster: unsubscribe failed", "topic", filter, "error", err)
 		}
 	}
 }
@@ -1311,6 +1409,13 @@ func (h *keelHook) DeviceInfo(clientID string) (*auth.DeviceInfo, bool) {
 // FSM.nodesFor), so "telemetry/#" correctly receives cross-node publishes
 // — no longer restricted to exact-match topics only.
 func isAllowedConsumerSubscribe(topic string) bool {
+	// Shared subscriptions carry the actual topic filter after the
+	// "$share/<group>/" prefix. Apply the same telemetry policy to that
+	// underlying filter; otherwise the test-consumer role cannot exercise
+	// the cluster's shared-subscription routing path at all.
+	if _, underlying, ok := acl.SharedFilter(topic); ok {
+		topic = underlying
+	}
 	// "telemetry" (bare, no sub-path) is a real, isAllowedPublish-permitted
 	// topic (its own `case topic == "telemetry"`) that a "telemetry/#"
 	// subscriber legitimately receives — "#" always also matches its own

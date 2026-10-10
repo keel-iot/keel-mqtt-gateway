@@ -34,6 +34,7 @@ type fakeRegistry struct {
 	claimFn func(clientID, nodeID, identity string) (string, error)
 
 	mu               sync.Mutex
+	subscribeCalls   []subscribeCall
 	releaseCalls     []releaseCall
 	unsubscribeCalls []unsubscribeCall
 
@@ -56,11 +57,20 @@ type releaseCall struct {
 	clientID, nodeID string
 }
 
+type subscribeCall struct {
+	topic, nodeID string
+}
+
 type unsubscribeCall struct {
 	topic, nodeID string
 }
 
-func (f *fakeRegistry) Subscribe(topic, nodeID string) error { return nil }
+func (f *fakeRegistry) Subscribe(topic, nodeID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.subscribeCalls = append(f.subscribeCalls, subscribeCall{topic, nodeID})
+	return nil
+}
 func (f *fakeRegistry) Unsubscribe(topic, nodeID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -459,11 +469,10 @@ func TestOnDisconnect_ReleasesClusterSession(t *testing.T) {
 	}
 }
 
-// TestOnDisconnect_PersistentSessionKeepsRouting verifies a persistent
-// (non-expiring) session's disconnect releases cluster session ownership
-// but leaves its cluster-wide routing entries alone — clearing them broke
-// cross-node delivery to a QoS1/2 offline subscriber immediately, before
-// any node crash was even involved.
+// TestOnDisconnect_PersistentSessionClearsLiveRouting verifies a persistent
+// (non-expiring) session's disconnect releases cluster session ownership and
+// removes its live routing entry. A disconnected persistent client is no
+// longer a live subscriber; keeping that route suppresses offline delivery.
 func TestOnDisconnect_PersistentSessionKeepsRouting(t *testing.T) {
 	reg := &fakeRegistry{}
 	h := newClusterTestHook(reg, &fakeForwarder{}, "edge-1")
@@ -479,8 +488,8 @@ func TestOnDisconnect_PersistentSessionKeepsRouting(t *testing.T) {
 
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
-	if len(reg.unsubscribeCalls) != 0 {
-		t.Fatalf("expected no Unsubscribe call for a persistent session disconnect, got %+v", reg.unsubscribeCalls)
+	if len(reg.unsubscribeCalls) != 1 || reg.unsubscribeCalls[0].topic != "telemetry/tenant/device-1" {
+		t.Fatalf("expected exactly 1 Unsubscribe call for a persistent session disconnect, got %+v", reg.unsubscribeCalls)
 	}
 	if len(reg.releaseCalls) != 1 {
 		t.Fatalf("expected cluster session ownership to still be released, got %d calls", len(reg.releaseCalls))
@@ -1154,12 +1163,15 @@ func TestIsAllowedConsumerSubscribe_BareTelemetryTopic(t *testing.T) {
 		topic string
 		want  bool
 	}{
-		{"telemetry/#", true}, // the subscribed filter itself
-		{"telemetry", true},   // the fix: bare parent-level topic
+		{"telemetry/#", true},                   // the subscribed filter itself
+		{"$share/test-group/telemetry/#", true}, // shared form of the same filter
+		{"$share/test-group/telemetry", true},   // shared bare parent topic
+		{"telemetry", true},                     // the fix: bare parent-level topic
 		{"telemetry/poc/device-1", true},
 		{"telemetryextra", false}, // must not become a loose prefix match
 		{"telemetry/+", false},    // wildcard in a delivered topic is never legitimate
 		{"telemetry/#/x", false},
+		{"$share/test-group/event/#", false},
 		{"event", false}, // different namespace entirely
 		{"", false},
 	}

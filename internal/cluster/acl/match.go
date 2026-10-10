@@ -2,6 +2,16 @@ package acl
 
 import "strings"
 
+// SharedFilter splits an MQTT shared subscription filter into its group name
+// and underlying topic filter.
+func SharedFilter(filter string) (group, topicFilter string, ok bool) {
+	parts := strings.SplitN(filter, "/", 3)
+	if len(parts) != 3 || !strings.EqualFold(parts[0], "$share") || parts[1] == "" || parts[2] == "" {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
+}
+
 // MatchTopic reports whether filter (an MQTT subscription filter, with +/#
 // wildcards) matches topic (a concrete publish/subscribe topic that itself
 // may contain + or # in this ACL context, since we also match subscribe

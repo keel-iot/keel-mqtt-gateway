@@ -353,6 +353,78 @@ func TestRouterOfflineNodesFor_MatchesWildcard(t *testing.T) {
 	waitForOfflineNodes(t, r, "telemetry/device-1", []string{"edge-1"})
 }
 
+func TestRouterOfflineNodesFor_SharedOwnershipSelectsOneNode(t *testing.T) {
+	r := newTestRouter(t)
+	filter := "$share/telemetry/telemetry/#"
+	if err := r.Subscribe(OwnershipKey("device-a", filter), "edge-1"); err != nil {
+		t.Fatalf("subscribe edge-1: %v", err)
+	}
+	if err := r.Subscribe(OwnershipKey("device-b", filter), "edge-2"); err != nil {
+		t.Fatalf("subscribe edge-2: %v", err)
+	}
+
+	got := waitForOfflineNodes(t, r, "telemetry/device-1", []string{"edge-1"})
+	if len(got) != 1 || got[0] != "edge-1" {
+		t.Fatalf("expected exactly one shared offline owner edge-1, got %v", got)
+	}
+}
+
+func TestRouterOfflineNodesFor_SharedOwnershipFollowsExactOwner(t *testing.T) {
+	r := newTestRouter(t)
+	filter := "$share/telemetry/telemetry/#"
+	key := OwnershipKey("device-a", filter)
+	if err := r.Subscribe(key, "edge-1"); err != nil {
+		t.Fatalf("subscribe edge-1: %v", err)
+	}
+	if err := r.Subscribe(key, "edge-2"); err != nil {
+		t.Fatalf("subscribe edge-2: %v", err)
+	}
+	if err := r.Unsubscribe(key, "edge-1"); err != nil {
+		t.Fatalf("unsubscribe edge-1: %v", err)
+	}
+
+	waitForOfflineNodes(t, r, "telemetry/device-1", []string{"edge-2"})
+}
+
+func TestRouterOfflineNodesFor_SharedOwnershipKeepsNodeWhileAnotherClientRemains(t *testing.T) {
+	r := newTestRouter(t)
+	filter := "$share/telemetry/telemetry/#"
+	keyA := OwnershipKey("device-a", filter)
+	keyB := OwnershipKey("device-b", filter)
+	if err := r.Subscribe(keyA, "edge-1"); err != nil {
+		t.Fatalf("subscribe device-a: %v", err)
+	}
+	if err := r.Subscribe(keyB, "edge-1"); err != nil {
+		t.Fatalf("subscribe device-b: %v", err)
+	}
+	if err := r.Unsubscribe(keyA, "edge-1"); err != nil {
+		t.Fatalf("unsubscribe device-a: %v", err)
+	}
+
+	waitForOfflineNodes(t, r, "telemetry/device-1", []string{"edge-1"})
+}
+
+func TestRouterOfflineNodesFor_SharedLiveMemberSuppressesOfflineMember(t *testing.T) {
+	r := newTestRouter(t)
+	filter := "$share/telemetry/telemetry/#"
+	if err := r.Subscribe(filter, "edge-live"); err != nil {
+		t.Fatalf("subscribe live member: %v", err)
+	}
+	if err := r.Subscribe(OwnershipKey("device-offline", filter), "edge-offline"); err != nil {
+		t.Fatalf("subscribe offline owner: %v", err)
+	}
+
+	waitForNodes(t, r, "telemetry/device-1", []string{"edge-live"})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(r.OwnedClientIDs("edge-offline")) == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(r.OwnedClientIDs("edge-offline")) == 0 {
+		t.Fatal("offline ownership did not converge")
+	}
+	waitForOfflineNodes(t, r, "telemetry/device-1", nil)
+}
+
 // TestRouterOfflineNodesFor_NeverMatchesLiveRoutingIndex verifies the two
 // indices stay distinct: a live subscription to a real filter must never
 // show up in OfflineNodesFor's result for the same topic, and vice versa.

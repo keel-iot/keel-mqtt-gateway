@@ -220,3 +220,40 @@ func TestDeliver_PayloadAndTopicPreserved(t *testing.T) {
 		t.Fatalf("expected first packet ID to be 1, got %d", calls[0].packetID)
 	}
 }
+
+func TestDeliver_SharedSubscription_QueuesOnlyOneOfflineMember(t *testing.T) {
+	store := newFakeInflightStore()
+	d := &session.OfflineDelivery{Queue: store.queue}
+
+	owned := []session.OfflineSession{
+		testSubSession("device-a", session.OfflineSubscription{Filter: "$share/telemetry/telemetry/#", QoS: 1}),
+		testSubSession("device-b", session.OfflineSubscription{Filter: "$share/telemetry/telemetry/#", QoS: 1}),
+	}
+	delivered := d.Deliver(owned, "telemetry/temp", []byte("x"), 1)
+
+	calls := store.all()
+	if delivered != 1 || len(calls) != 1 {
+		t.Fatalf("expected exactly one offline shared delivery, got delivered=%d calls=%+v", delivered, calls)
+	}
+	if calls[0].clientID != "device-a" {
+		t.Fatalf("expected deterministic first client to be selected, got %q", calls[0].clientID)
+	}
+}
+
+func TestDeliver_SharedSubscription_MatchesUnderlyingFilter(t *testing.T) {
+	store := newFakeInflightStore()
+	d := &session.OfflineDelivery{Queue: store.queue}
+
+	owned := []session.OfflineSession{
+		testSubSession("device-1", session.OfflineSubscription{Filter: "$share/group/telemetry/#", QoS: 1}),
+	}
+	d.Deliver(owned, "telemetry/temp", []byte("x"), 1)
+	if calls := store.all(); len(calls) != 1 {
+		t.Fatalf("expected shared filter to match underlying topic, got %+v", calls)
+	}
+
+	d.Deliver(owned, "other/temp", []byte("x"), 1)
+	if calls := store.all(); len(calls) != 1 {
+		t.Fatalf("expected non-matching underlying topic to be ignored, got %+v", calls)
+	}
+}

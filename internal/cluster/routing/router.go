@@ -29,6 +29,7 @@ import (
 	mochimqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/packets"
 
+	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/acl"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/store"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/telemetry"
 )
@@ -91,6 +92,11 @@ type Router struct {
 	mu     sync.RWMutex
 	index  *mochimqtt.TopicsIndex
 	byNode map[string]map[string]struct{}
+	// offlineShared indexes exact offline ownership keys by shared filter.
+	// These entries are removed with the exact client ownership key, so a
+	// moved/reconnected session cannot select a stale edge.
+	offlineShared       map[string]*mochimqtt.TopicsIndex
+	offlineSharedOwners map[string]map[string]struct{}
 
 	stop          chan struct{}
 	closeOnce     sync.Once
@@ -116,13 +122,15 @@ func New(cfg Config) (*Router, error) {
 	}
 
 	r := &Router{
-		store:             cfg.Store,
-		channel:           channel,
-		log:               cfg.Log,
-		reconcileInterval: interval,
-		index:             mochimqtt.NewTopicsIndex(),
-		byNode:            make(map[string]map[string]struct{}),
-		stop:              make(chan struct{}),
+		store:               cfg.Store,
+		channel:             channel,
+		log:                 cfg.Log,
+		reconcileInterval:   interval,
+		index:               mochimqtt.NewTopicsIndex(),
+		byNode:              make(map[string]map[string]struct{}),
+		offlineShared:       make(map[string]*mochimqtt.TopicsIndex),
+		offlineSharedOwners: make(map[string]map[string]struct{}),
+		stop:                make(chan struct{}),
 	}
 
 	if err := r.reconcile(context.Background()); err != nil {
@@ -283,12 +291,58 @@ func OfflineRouteKey(filter string) string {
 }
 
 // OfflineNodesFor returns the node IDs owning at least one offline
-// session whose subscription filter matches topic — the Offline Routing
-// Index. Delegates to the same trie NodesFor uses, just under the
-// Offline Routing Index's namespace, so a publish's fan-out target list
-// is a single extra call away, no separate mechanism to maintain.
+// session whose subscription filter matches topic. Ordinary filters use the
+// Offline Routing Index; shared filters use exact ownership entries so one
+// edge is selected per shared filter and stale add-only route hints cannot
+// steal the selection. A live member suppresses the offline member for the
+// same shared filter, preserving one delivery across live and offline state.
 func (r *Router) OfflineNodesFor(topic string) []string {
-	return r.NodesFor(OfflineRouteKey(topic), "")
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Ordinary offline routes retain the existing wildcard-index lookup.
+	subs := r.index.Subscribers(OfflineRouteKey(topic))
+	seen := make(map[string]struct{}, len(subs.Subscriptions))
+	out := make([]string, 0, len(subs.Subscriptions)+len(r.offlineShared))
+	for nodeID := range subs.Subscriptions {
+		seen[nodeID] = struct{}{}
+		out = append(out, nodeID)
+	}
+
+	// Shared filters are indexed from exact ownership keys and queried using
+	// their underlying MQTT filter. Select one owner edge per shared filter,
+	// matching live shared-subscription semantics across the cluster.
+	liveShared := r.index.Subscribers(topic).Shared
+	for filter, sharedIndex := range r.offlineShared {
+		// The map key is the original shared filter. If that group currently
+		// has a live member, NodesFor will handle the delivery; do not also
+		// enqueue one of its offline members.
+		if _, live := liveShared[filter]; live {
+			continue
+		}
+		matched := sharedIndex.Subscribers(topic).Subscriptions
+		if len(matched) == 0 {
+			continue
+		}
+		selected := ""
+		for ownerKey := range matched {
+			nodeID, ok := sharedOwnerNode(ownerKey)
+			if !ok {
+				continue
+			}
+			if selected == "" || nodeID < selected {
+				selected = nodeID
+			}
+		}
+		if selected == "" {
+			continue
+		}
+		if _, duplicate := seen[selected]; !duplicate {
+			seen[selected] = struct{}{}
+			out = append(out, selected)
+		}
+	}
+	return out
 }
 
 // ownershipKeyPrefix namespaces the Ownership Index — exact per
@@ -309,18 +363,39 @@ func OwnershipKey(clientID, filter string) string {
 // ownershipKeyClientID recovers clientID from a key built by OwnershipKey,
 // discarding the filter — all OwnedClientIDs needs.
 func ownershipKeyClientID(key string) (clientID string, ok bool) {
+	clientID, _, ok = ownershipKeyParts(key)
+	return clientID, ok
+}
+
+// ownershipKeyParts decodes the exact offline ownership key so shared
+// subscriptions can be indexed without relying on the add-only, filter-level
+// offline routing hint.
+func ownershipKeyParts(key string) (clientID, filter string, ok bool) {
 	if !strings.HasPrefix(key, ownershipKeyPrefix) {
-		return "", false
+		return "", "", false
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(key, ownershipKeyPrefix))
 	if err != nil {
+		return "", "", false
+	}
+	rawString := string(raw)
+	i := strings.IndexByte(rawString, 0)
+	if i < 0 || i+1 >= len(rawString) {
+		return "", "", false
+	}
+	return rawString[:i], rawString[i+1:], true
+}
+
+func sharedOwnerKey(nodeID, clientID string) string {
+	return nodeID + keySep + clientID
+}
+
+func sharedOwnerNode(key string) (string, bool) {
+	i := strings.Index(key, keySep)
+	if i <= 0 {
 		return "", false
 	}
-	i := strings.IndexByte(string(raw), 0)
-	if i < 0 {
-		return "", false
-	}
-	return string(raw[:i]), true
+	return key[:i], true
 }
 
 // OwnedClientIDs returns every distinct clientID this node owns at least
@@ -403,6 +478,7 @@ func (r *Router) addLocalLocked(topic, nodeID string) {
 	}
 	topics[topic] = struct{}{}
 	r.index.Subscribe(nodeID, packets.Subscription{Filter: topic})
+	r.addOfflineSharedOwnershipLocked(topic, nodeID)
 }
 
 func (r *Router) removeLocalLocked(topic, nodeID string) {
@@ -413,6 +489,58 @@ func (r *Router) removeLocalLocked(topic, nodeID string) {
 		}
 	}
 	r.index.Unsubscribe(topic, nodeID)
+	r.removeOfflineSharedOwnershipLocked(topic, nodeID)
+}
+
+func (r *Router) addOfflineSharedOwnershipLocked(topic, nodeID string) {
+	clientID, filter, ok := ownershipKeyParts(topic)
+	if !ok {
+		return
+	}
+	if _, _, ok := acl.SharedFilter(filter); !ok {
+		return
+	}
+	idx := r.offlineShared[filter]
+	if idx == nil {
+		idx = mochimqtt.NewTopicsIndex()
+		r.offlineShared[filter] = idx
+	}
+	_, underlying, _ := acl.SharedFilter(filter)
+	ownerKey := sharedOwnerKey(nodeID, clientID)
+	owners := r.offlineSharedOwners[filter]
+	if owners == nil {
+		owners = make(map[string]struct{})
+		r.offlineSharedOwners[filter] = owners
+	}
+	if _, exists := owners[ownerKey]; exists {
+		return
+	}
+	owners[ownerKey] = struct{}{}
+	idx.Subscribe(ownerKey, packets.Subscription{Filter: underlying})
+}
+
+func (r *Router) removeOfflineSharedOwnershipLocked(topic, nodeID string) {
+	clientID, filter, ok := ownershipKeyParts(topic)
+	if !ok {
+		return
+	}
+	if _, _, ok := acl.SharedFilter(filter); !ok {
+		return
+	}
+	idx := r.offlineShared[filter]
+	if idx == nil {
+		return
+	}
+	_, underlying, _ := acl.SharedFilter(filter)
+	ownerKey := sharedOwnerKey(nodeID, clientID)
+	idx.Unsubscribe(underlying, ownerKey)
+	if owners := r.offlineSharedOwners[filter]; owners != nil {
+		delete(owners, ownerKey)
+		if len(owners) == 0 {
+			delete(r.offlineSharedOwners, filter)
+			delete(r.offlineShared, filter)
+		}
+	}
 }
 
 // ── event consumption (fast path) ────────────────────────────────────────
@@ -494,6 +622,8 @@ func (r *Router) reconcile(ctx context.Context) error {
 
 	index := mochimqtt.NewTopicsIndex()
 	byNode := make(map[string]map[string]struct{})
+	offlineShared := make(map[string]*mochimqtt.TopicsIndex)
+	offlineSharedOwners := make(map[string]map[string]struct{})
 	for it.Next() {
 		topic, nodeID, ok := parseRouteKey(it.Key())
 		if !ok {
@@ -506,11 +636,26 @@ func (r *Router) reconcile(ctx context.Context) error {
 		}
 		topics[topic] = struct{}{}
 		index.Subscribe(nodeID, packets.Subscription{Filter: topic})
+		if clientID, filter, ok := ownershipKeyParts(topic); ok {
+			if _, underlying, shared := acl.SharedFilter(filter); shared {
+				idx := offlineShared[filter]
+				if idx == nil {
+					idx = mochimqtt.NewTopicsIndex()
+					offlineShared[filter] = idx
+					offlineSharedOwners[filter] = make(map[string]struct{})
+				}
+				ownerKey := sharedOwnerKey(nodeID, clientID)
+				offlineSharedOwners[filter][ownerKey] = struct{}{}
+				idx.Subscribe(ownerKey, packets.Subscription{Filter: underlying})
+			}
+		}
 	}
 
 	r.mu.Lock()
 	r.index = index
 	r.byNode = byNode
+	r.offlineShared = offlineShared
+	r.offlineSharedOwners = offlineSharedOwners
 	r.mu.Unlock()
 	r.storeFailures.Store(0)
 	r.storeUp.Store(true)
