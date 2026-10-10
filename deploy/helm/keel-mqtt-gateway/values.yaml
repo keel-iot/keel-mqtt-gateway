@@ -15,7 +15,7 @@
 
 image:
   repository: ghcr.io/keel-iot/keel-mqtt-gateway
-  tag: "0.2.42" # defaults to the gateway release matching this chart
+  tag: "0.2.43" # defaults to the gateway release matching this chart
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
