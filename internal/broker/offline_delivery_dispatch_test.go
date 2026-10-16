@@ -136,6 +136,23 @@ func TestDeliverOffline_OwnedOfflineSessionsError_NoPanic(t *testing.T) {
 	DeliverOffline(context.Background(), reg, store, "edge-1", uuid.New(), "t", nil, 1, time.Minute, nil)
 }
 
+func TestDeliverOffline_DoesNotUseCanceledForwardContextForQueue(t *testing.T) {
+	reg := &fakeOfflineDeliveryRegistry{owned: map[string][]string{"edge-1": {"device-1"}}}
+	store := newFakeOfflineDeliveryStore()
+	store.sessions["device-1"] = session.OfflineSession{
+		ClientID:      "device-1",
+		Subscriptions: []session.OfflineSubscription{{Filter: "telemetry/#", QoS: 1}},
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	DeliverOffline(parent, reg, store, "edge-1", uuid.New(), "telemetry/device-1", []byte("x"), 1, time.Minute, nil)
+
+	if len(store.enqueued) != 1 {
+		t.Fatalf("expected enqueue despite canceled forwarding context, got %v", store.enqueued)
+	}
+}
+
 type erroringOfflineDeliveryStore struct {
 	err error
 }

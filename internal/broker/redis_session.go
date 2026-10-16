@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -86,7 +87,20 @@ type RedisSessionHook struct {
 	mqtt.HookBase
 	router *redisrouter.Router
 	log    *slog.Logger
-	liveStats *telemetry.LiveStats
+	liveStats   *telemetry.LiveStats
+
+	// offlineLocks serializes QueueOfflineInflight calls for the same client
+	// within one edge. The Redis WATCH transaction still protects against a
+	// concurrent writer on another edge during an ownership handoff, but the
+	// local lock prevents a burst of publishes for one offline subscriber from
+	// self-invalidating its own transaction dozens of times.
+	offlineLocksMu sync.Mutex
+	offlineLocks   map[string]*offlineClientLock
+}
+
+type offlineClientLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // NewRedisSessionHook creates a hook using a pre-initialised Redis router
@@ -94,7 +108,36 @@ type RedisSessionHook struct {
 // Redis consumer goes through, so a primary failover updates them all at
 // once instead of needing a separate swap site here).
 func NewRedisSessionHook(router *redisrouter.Router, log *slog.Logger) *RedisSessionHook {
-	return &RedisSessionHook{router: router, log: log}
+	return &RedisSessionHook{router: router, log: log, offlineLocks: make(map[string]*offlineClientLock)}
+}
+
+// lockOfflineClient returns a release function for the per-client offline
+// enqueue lock. Entries are removed when the last waiter leaves, keeping the
+// map bounded by currently active enqueue operations rather than by the
+// lifetime of the client fleet.
+func (h *RedisSessionHook) lockOfflineClient(clientID string) func() {
+	h.offlineLocksMu.Lock()
+	if h.offlineLocks == nil {
+		h.offlineLocks = make(map[string]*offlineClientLock)
+	}
+	lock := h.offlineLocks[clientID]
+	if lock == nil {
+		lock = &offlineClientLock{}
+		h.offlineLocks[clientID] = lock
+	}
+	lock.refs++
+	h.offlineLocksMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		h.offlineLocksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(h.offlineLocks, clientID)
+		}
+		h.offlineLocksMu.Unlock()
+	}
 }
 
 // SetLiveStats connects optional live monitoring counters without changing
@@ -831,6 +874,9 @@ var errOfflineAlreadyDelivered = errors.New("offline publish already delivered")
 // OnQosPublish touching the same per-client hash, so the transaction retries
 // instead of overwriting that live message.
 func (h *RedisSessionHook) QueueOfflineInflight(ctx context.Context, publishID uuid.UUID, clientID string, ttl time.Duration, msg session.InflightMessage) (packetID uint16, queued bool, err error) {
+	release := h.lockOfflineClient(clientID)
+	defer release()
+
 	rdb := h.router.Client()
 	inflightKey := redisInflightKey(clientID)
 	counterKey := redisPacketIDKey(clientID)
@@ -896,6 +942,16 @@ func (h *RedisSessionHook) QueueOfflineInflight(ctx context.Context, publishID u
 			return 0, false, nil
 		case errors.Is(err, redis.TxFailedErr):
 			packetID = 0
+			if attempt+1 < 32 {
+				delay := time.Duration(1<<min(attempt, 5)) * time.Millisecond
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return 0, false, fmt.Errorf("redis session: atomic offline enqueue for %s: %w", clientID, ctx.Err())
+				case <-timer.C:
+				}
+			}
 			continue
 		case err != nil:
 			return 0, false, fmt.Errorf("redis session: atomic offline enqueue for %s: %w", clientID, err)
