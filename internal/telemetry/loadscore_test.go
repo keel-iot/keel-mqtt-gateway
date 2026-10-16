@@ -23,6 +23,29 @@ func TestClamp01(t *testing.T) {
 	}
 }
 
+func TestConnectionPressureSoftToHardRamp(t *testing.T) {
+	cases := []struct {
+		name         string
+		connections  int
+		wantBase     float64
+		wantOverload float64
+	}{
+		{name: "below soft", connections: 1500, wantBase: 0.75, wantOverload: 0},
+		{name: "at soft", connections: 2000, wantBase: 1, wantOverload: 0},
+		{name: "mid ramp", connections: 2150, wantBase: 1, wantOverload: 0.25},
+		{name: "at hard", connections: 2300, wantBase: 1, wantOverload: 1},
+		{name: "above hard", connections: 2500, wantBase: 1, wantOverload: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotBase, gotOverload := connectionPressure(tc.connections, 2000, 2300)
+			if gotBase != tc.wantBase || gotOverload != tc.wantOverload {
+				t.Errorf("connectionPressure(%d, 2000, 2300) = (%v, %v), want (%v, %v)", tc.connections, gotBase, gotOverload, tc.wantBase, tc.wantOverload)
+			}
+		})
+	}
+}
+
 func TestRunEdgeLoadScoreSampler_ConnectionsFraction(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -30,7 +53,7 @@ func TestRunEdgeLoadScoreSampler_ConnectionsFraction(t *testing.T) {
 	connCount := 400
 	done := make(chan struct{})
 	go func() {
-		RunEdgeLoadScoreSampler(ctx, func() int { return connCount }, 2000, 4, 10*time.Millisecond)
+		RunEdgeLoadScoreSampler(ctx, func() int { return connCount }, 2000, 2300, 4, 10*time.Millisecond)
 		close(done)
 	}()
 
@@ -61,7 +84,7 @@ func TestRunEdgeLoadScoreSampler_ConnectionsFraction(t *testing.T) {
 func TestRunEdgeLoadScoreSampler_ZeroLimitAvoidsDivideByZero(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		RunEdgeLoadScoreSampler(ctx, func() int { return 10 }, 0, 4, 10*time.Millisecond)
+		RunEdgeLoadScoreSampler(ctx, func() int { return 10 }, 0, 2300, 4, 10*time.Millisecond)
 	}()
 	time.Sleep(15 * time.Millisecond)
 	cancel()

@@ -280,8 +280,12 @@ part is not the gap. What's missing is entirely the
 Once 1-6 hold, the HPA already shipped in this chart (`edge-hpa.yaml`)
 picks the metric up with no further chart changes.
 
-Tune `edge.edgeConnectionsLimit` to your real per-pod MQTT connection
-target — it's the denominator of the load-score's connections term.
+Tune `edge.edgeConnectionsLimit` to the per-pod connection level at which
+you want the base connection term to saturate. It is a soft threshold, not a
+hard broker limit. `edge.edgeConnectionsHardLimit` is the upper threshold for
+the progressive overload guard (2300 by default); between the two thresholds
+the guard grows quadratically, so the HPA does not scale immediately at the
+first connection above 2000 but does react as the edge approaches 2300.
 
 If you don't have a metrics pipeline yet, set
 `edge.autoscaling.enabled: false` and manage `edge.replicaCount` manually

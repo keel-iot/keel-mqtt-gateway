@@ -15,7 +15,7 @@
 
 image:
   repository: ghcr.io/keel-iot/keel-mqtt-gateway
-  tag: "0.2.43" # defaults to the gateway release matching this chart
+  tag: "0.2.44" # defaults to the gateway release matching this chart
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
@@ -191,7 +191,8 @@ edge:
   affinity: {}
 
   routingReconcilerInterval: 20s
-  edgeConnectionsLimit: 2000 # denominator of edge_load_score's connections term — tune to your real per-pod MQTT connection target
+  edgeConnectionsLimit: 2000 # soft threshold and denominator of edge_load_score's base connections term; not a hard connection cap
+  edgeConnectionsHardLimit: 2300 # hard threshold where the progressive overload term reaches 1; <= soft threshold disables the extra term
   edgeLoadScoreInterval: 15s
 
   forwarderBufferSize: 1000

@@ -70,6 +70,7 @@ spec:
                 --grpc-advertise="$POD_IP:7100" \
                 --routing-reconciler-interval={{ .Values.edge.routingReconcilerInterval }} \
                 --edge-connections-limit={{ .Values.edge.edgeConnectionsLimit }} \
+                --edge-connections-hard-limit={{ .Values.edge.edgeConnectionsHardLimit }} \
                 --edge-load-score-interval={{ .Values.edge.edgeLoadScoreInterval }} \
                 --forwarder-buffer-size={{ .Values.edge.forwarderBufferSize }}{{ if .Values.tls.enabled }} \
                 --tls-enabled=true \

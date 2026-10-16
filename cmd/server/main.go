@@ -428,13 +428,14 @@ type clusterFlags struct {
 	// for the same reason as the TLS flags above.
 	forwarderBufferSize int
 
-	// edgeConnectionsLimit/edgeCPULimit/edgeLoadScoreInterval feed
+	// edgeConnectionsLimit/edgeConnectionsHardLimit/edgeCPULimit/edgeLoadScoreInterval feed
 	// telemetry.RunEdgeLoadScoreSampler (keel_gateway_edge_load_score, the
 	// real HPA custom metric) — see design doc "HPA sui nodi edge". Not
 	// cluster-specific, registered here for the same reason as above.
-	edgeConnectionsLimit  int
-	edgeCPULimit          float64
-	edgeLoadScoreInterval time.Duration
+	edgeConnectionsLimit     int
+	edgeConnectionsHardLimit int
+	edgeCPULimit             float64
+	edgeLoadScoreInterval    time.Duration
 
 	// rebalance* feed the management API's POST /api/cluster/rebalance —
 	// see internal/cluster/lifecycle.RebalanceConfig's doc.
@@ -511,7 +512,8 @@ func parseClusterFlags() clusterFlags {
 	flag.StringVar(&f.tlsCertDir, "tls-cert-dir", "", "directory containing tls.crt/tls.key (K8s Secret volume layout); watched and reloaded automatically on change, no restart needed. Required when --tls-enabled=true or MQTT_TLS_PORT is set")
 	flag.StringVar(&f.tlsClientAuth, "tls-client-auth", "request", `tls.Config.ClientAuth for the TLS listener: "none", "request" (default — optional client cert, needed for the existing X.509 device-auth path), or "require-and-verify"`)
 	flag.IntVar(&f.forwarderBufferSize, "forwarder-buffer-size", 1000, "capacity, in messages, of the bounded in-memory backpressure buffer sitting in front of the output connector (Kafka/Ditto); drop-oldest when full, see internal/connector.BufferedConnector")
-	flag.IntVar(&f.edgeConnectionsLimit, "edge-connections-limit", 2000, "edge/combined/standalone only: expected max MQTT connections per pod, the denominator of edge_load_score's connections term — tune to the HPA scaling threshold actually chosen for the deployment")
+	flag.IntVar(&f.edgeConnectionsLimit, "edge-connections-limit", 2000, "edge/combined/standalone only: soft per-pod MQTT connection threshold and denominator of edge_load_score's base connections term — this is not a hard connection cap")
+	flag.IntVar(&f.edgeConnectionsHardLimit, "edge-connections-hard-limit", 2300, "edge/combined/standalone only: hard per-pod MQTT connection threshold where edge_load_score's progressive overload term reaches 1; <= --edge-connections-limit disables that extra term")
 	flag.Float64Var(&f.edgeCPULimit, "edge-cpu-limit", float64(runtime.NumCPU()), "edge/combined/standalone only: CPU cores available to this pod (match the Deployment's CPU request/limit), the denominator of edge_load_score's CPU term; defaults to the host's core count, only correct for non-K8s/no-cgroup-limit deployments")
 	flag.DurationVar(&f.edgeLoadScoreInterval, "edge-load-score-interval", 15*time.Second, "edge/combined/standalone only: how often edge_load_score (and its connections/CPU components) is recomputed")
 	flag.Float64Var(&f.rebalanceImbalanceThreshold, "rebalance-imbalance-threshold", 0.20, "core only: POST /api/cluster/rebalance only acts on an edge node whose connection count exceeds the cluster-wide average by more than this fraction")
@@ -1415,7 +1417,7 @@ func runServer() {
 		srv := mqttServer
 		go telemetry.RunEdgeLoadScoreSampler(ctx,
 			func() int { return int(atomic.LoadInt64(&srv.Info.ClientsConnected)) },
-			cf.edgeConnectionsLimit, cf.edgeCPULimit, cf.edgeLoadScoreInterval)
+			cf.edgeConnectionsLimit, cf.edgeConnectionsHardLimit, cf.edgeCPULimit, cf.edgeLoadScoreInterval)
 
 		// GET /api/live/stats, GET /api/live/clients — mounted on the
 		// metrics mux (already serving, safe to add routes to a live

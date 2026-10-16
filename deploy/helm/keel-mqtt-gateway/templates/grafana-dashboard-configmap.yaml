@@ -107,6 +107,7 @@ data:
           "targets": [
             { "expr": "keel_gateway_edge_load_score", "legendFormat": "{{`{{pod}}`}} load score" },
             { "expr": "keel_gateway_edge_load_connections_fraction", "legendFormat": "{{`{{pod}}`}} conn fraction" },
+            { "expr": "keel_gateway_edge_load_connections_overload_fraction", "legendFormat": "{{`{{pod}}`}} conn overload" },
             { "expr": "keel_gateway_edge_load_cpu_fraction", "legendFormat": "{{`{{pod}}`}} cpu fraction" }
           ] },
         { "id": 17, "title": "Membership changes (rate, by type)", "type": "timeseries", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 56 },
