@@ -85,9 +85,9 @@ func redisPacketIDKey(clientID string) string {
 // session data is available during server startup.
 type RedisSessionHook struct {
 	mqtt.HookBase
-	router *redisrouter.Router
-	log    *slog.Logger
-	liveStats   *telemetry.LiveStats
+	router    *redisrouter.Router
+	log       *slog.Logger
+	liveStats *telemetry.LiveStats
 
 	// offlineLocks serializes QueueOfflineInflight calls for the same client
 	// within one edge. The Redis WATCH transaction still protects against a
@@ -99,8 +99,8 @@ type RedisSessionHook struct {
 }
 
 type offlineClientLock struct {
-	mu   sync.Mutex
-	refs int
+	token chan struct{}
+	refs  int
 }
 
 // NewRedisSessionHook creates a hook using a pre-initialised Redis router
@@ -115,28 +115,39 @@ func NewRedisSessionHook(router *redisrouter.Router, log *slog.Logger) *RedisSes
 // enqueue lock. Entries are removed when the last waiter leaves, keeping the
 // map bounded by currently active enqueue operations rather than by the
 // lifetime of the client fleet.
-func (h *RedisSessionHook) lockOfflineClient(clientID string) func() {
+func (h *RedisSessionHook) lockOfflineClient(ctx context.Context, clientID string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	h.offlineLocksMu.Lock()
 	if h.offlineLocks == nil {
 		h.offlineLocks = make(map[string]*offlineClientLock)
 	}
 	lock := h.offlineLocks[clientID]
 	if lock == nil {
-		lock = &offlineClientLock{}
+		lock = &offlineClientLock{token: make(chan struct{}, 1)}
 		h.offlineLocks[clientID] = lock
 	}
 	lock.refs++
 	h.offlineLocksMu.Unlock()
 
-	lock.mu.Lock()
-	return func() {
-		lock.mu.Unlock()
+	releaseRef := func() {
 		h.offlineLocksMu.Lock()
 		lock.refs--
 		if lock.refs == 0 {
 			delete(h.offlineLocks, clientID)
 		}
 		h.offlineLocksMu.Unlock()
+	}
+	select {
+	case lock.token <- struct{}{}:
+		return func() {
+			<-lock.token
+			releaseRef()
+		}, nil
+	case <-ctx.Done():
+		releaseRef()
+		return nil, ctx.Err()
 	}
 }
 
@@ -874,7 +885,10 @@ var errOfflineAlreadyDelivered = errors.New("offline publish already delivered")
 // OnQosPublish touching the same per-client hash, so the transaction retries
 // instead of overwriting that live message.
 func (h *RedisSessionHook) QueueOfflineInflight(ctx context.Context, publishID uuid.UUID, clientID string, ttl time.Duration, msg session.InflightMessage) (packetID uint16, queued bool, err error) {
-	release := h.lockOfflineClient(clientID)
+	release, err := h.lockOfflineClient(ctx, clientID)
+	if err != nil {
+		return 0, false, fmt.Errorf("redis session: wait offline enqueue for %s: %w", clientID, err)
+	}
 	defer release()
 
 	rdb := h.router.Client()
@@ -906,22 +920,14 @@ func (h *RedisSessionHook) QueueOfflineInflight(ctx context.Context, publishID u
 				return err
 			}
 
-			var nextCounter int64
-			for offset := int64(0); offset < 65535; offset++ {
-				candidate := uint16((counter+offset)%65535) + 1
-				used, err := tx.HExists(ctx, inflightKey, strconv.FormatUint(uint64(candidate), 10)).Result()
-				if err != nil {
-					return err
-				}
-				if !used {
-					packetID = candidate
-					nextCounter = counter + offset + 1
-					break
-				}
+			nextCounter, err := nextOfflinePacketCounter(ctx, tx, inflightKey, counter, "")
+			if err != nil {
+				return err
 			}
-			if packetID == 0 {
+			if nextCounter == 0 {
 				return packets.ErrQuotaExceeded
 			}
+			packetID = uint16((nextCounter-1)%65535) + 1
 
 			data, err := marshalOfflineInflight(clientID, packetID, msg)
 			if err != nil {

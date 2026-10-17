@@ -751,6 +751,13 @@ func (s *Server) processPingreq(cl *Client, _ packets.Packet) error {
 // to any topic (including $SYS) and bypass ACL checks. The qos byte is used for limiting the
 // outbound qos (mqtt v5) rather than issuing to the broker (we assume qos 2 complete).
 func (s *Server) Publish(topic string, payload []byte, retain bool, qos byte) error {
+	return s.PublishWithSharedFilters(topic, payload, retain, qos, nil)
+}
+
+// PublishWithSharedFilters injects one publish with an explicit shared-group
+// selection made by a distributed router. Nil preserves legacy selection;
+// an empty non-nil slice prevents every shared delivery for this event.
+func (s *Server) PublishWithSharedFilters(topic string, payload []byte, retain bool, qos byte, filters []string) error {
 	if !s.Options.InlineClient {
 		return ErrInlineClientNotEnabled
 	}
@@ -761,9 +768,10 @@ func (s *Server) Publish(topic string, payload []byte, retain bool, qos byte) er
 			Qos:    qos,
 			Retain: retain,
 		},
-		TopicName: topic,
-		Payload:   payload,
-		PacketID:  uint16(qos), // we never process the inbound qos, but we need a packet id for validity checks.
+		TopicName:     topic,
+		Payload:       payload,
+		SharedFilters: filters,
+		PacketID:      uint16(qos), // we never process the inbound qos, but we need a packet id for validity checks.
 	})
 }
 

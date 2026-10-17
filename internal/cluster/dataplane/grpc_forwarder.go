@@ -100,13 +100,18 @@ func messageFromRequest(req *pb.ForwardRequest) *Message {
 	// PublishID as "unknown, skip dedup" rather than dropping the
 	// message.
 	publishID, _ := uuid.Parse(req.GetPublishId())
+	var sharedFilters []string
+	if req.GetSharedRoutingSet() {
+		sharedFilters = append(make([]string, 0, len(req.GetSharedFilters())), req.GetSharedFilters()...)
+	}
 	return &Message{
-		SourceNodeID: req.GetSourceNodeId(),
-		TenantID:     req.GetTenantId(),
-		Topic:        req.GetTopic(),
-		Payload:      req.GetPayload(),
-		QoS:          byte(req.GetQos()),
-		PublishID:    publishID,
+		SourceNodeID:  req.GetSourceNodeId(),
+		TenantID:      req.GetTenantId(),
+		Topic:         req.GetTopic(),
+		Payload:       req.GetPayload(),
+		QoS:           byte(req.GetQos()),
+		PublishID:     publishID,
+		SharedFilters: sharedFilters,
 	}
 }
 
@@ -158,12 +163,14 @@ func (f *GRPCForwarder) Forward(ctx context.Context, targetNodeID string, msg *M
 	ctx, cancel := context.WithTimeout(ctx, forwardTimeout)
 	defer cancel()
 	_, err = client.Forward(ctx, &pb.ForwardRequest{
-		SourceNodeId: msg.SourceNodeID,
-		TenantId:     msg.TenantID,
-		Topic:        msg.Topic,
-		Payload:      msg.Payload,
-		Qos:          uint32(msg.QoS),
-		PublishId:    msg.PublishID.String(),
+		SourceNodeId:     msg.SourceNodeID,
+		TenantId:         msg.TenantID,
+		Topic:            msg.Topic,
+		Payload:          msg.Payload,
+		Qos:              uint32(msg.QoS),
+		PublishId:        msg.PublishID.String(),
+		SharedRoutingSet: msg.SharedFilters != nil,
+		SharedFilters:    msg.SharedFilters,
 	})
 	if err != nil {
 		return fmt.Errorf("dataplane: forward to %s (%s): %w", targetNodeID, addr, err)

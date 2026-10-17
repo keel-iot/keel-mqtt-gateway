@@ -65,8 +65,16 @@ func (c *CoreRegistry) NodesFor(topic, localNodeID string) []string {
 	return c.router.NodesFor(topic, localNodeID)
 }
 
+func (c *CoreRegistry) LiveDeliveryPlan(topic, localNodeID string) routing.LivePlan {
+	return c.router.LiveDeliveryPlan(topic, localNodeID)
+}
+
 func (c *CoreRegistry) OfflineNodesFor(topic string) []string {
 	return c.router.OfflineNodesFor(topic)
+}
+
+func (c *CoreRegistry) OfflineSharedClientsFor(topic, nodeID string) map[string]string {
+	return c.router.OfflineSharedClientsFor(topic, nodeID)
 }
 
 func (c *CoreRegistry) OwnedClientIDs(nodeID string) []string {

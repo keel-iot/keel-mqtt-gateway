@@ -22,6 +22,10 @@ type offlineDeliveryRegistry interface {
 	OwnedClientIDs(nodeID string) []string
 }
 
+type offlineSharedSelector interface {
+	OfflineSharedClientsFor(topic, nodeID string) map[string]string
+}
+
 // offlineDeliveryStore is satisfied by *RedisSessionHook — narrowed for
 // testability, same pattern as sessionStore above.
 type offlineDeliveryStore interface {
@@ -52,6 +56,14 @@ func DeliverOffline(ctx context.Context, registry offlineDeliveryRegistry, store
 	// context so the operation still stops during a real Redis stall.
 	queueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), offlineDeliveryTimeout)
 	defer cancel()
+	// Always provide a decision, including an empty one. Falling back to local
+	// selection would enqueue shared copies despite live members on other edges.
+	sharedSelected := make(map[string]string)
+	if selector, ok := registry.(offlineSharedSelector); ok {
+		for filter, clientID := range selector.OfflineSharedClientsFor(topic, nodeID) {
+			sharedSelected[filter] = clientID
+		}
+	}
 	owned := registry.OwnedClientIDs(nodeID)
 	if len(owned) == 0 {
 		return
@@ -64,6 +76,7 @@ func DeliverOffline(ctx context.Context, registry offlineDeliveryRegistry, store
 		return
 	}
 	delivery := &session.OfflineDelivery{
+		SharedSelected: sharedSelected,
 		Queue: func(clientID string, msg session.InflightMessage) (uint16, bool, error) {
 			packetID, queued, err := store.QueueOfflineInflight(queueCtx, publishID, clientID, dedupTTL, msg)
 			if err != nil {

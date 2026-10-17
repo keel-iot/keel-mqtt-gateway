@@ -61,6 +61,15 @@ func (e *EdgeRegistry) NodesFor(topic, localNodeID string) []string {
 	return e.router.NodesFor(topic, localNodeID)
 }
 
+func (e *EdgeRegistry) LiveDeliveryPlan(topic, localNodeID string) routing.LivePlan {
+	e.routerMu.RLock()
+	defer e.routerMu.RUnlock()
+	if e.router == nil {
+		return routing.LivePlan{SharedNodes: map[string]string{}}
+	}
+	return e.router.LiveDeliveryPlan(topic, localNodeID)
+}
+
 func (e *EdgeRegistry) OfflineNodesFor(topic string) []string {
 	e.routerMu.RLock()
 	defer e.routerMu.RUnlock()
@@ -77,6 +86,15 @@ func (e *EdgeRegistry) OwnedClientIDs(nodeID string) []string {
 		return nil
 	}
 	return e.router.OwnedClientIDs(nodeID)
+}
+
+func (e *EdgeRegistry) OfflineSharedClientsFor(topic, nodeID string) map[string]string {
+	e.routerMu.RLock()
+	defer e.routerMu.RUnlock()
+	if e.router == nil {
+		return map[string]string{}
+	}
+	return e.router.OfflineSharedClientsFor(topic, nodeID)
 }
 
 // UnsubscribeBatch satisfies the optional BatchUnsubscriber capability

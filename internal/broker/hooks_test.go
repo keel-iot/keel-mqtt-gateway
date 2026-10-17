@@ -153,7 +153,7 @@ func TestForwardClusterTargetsUsesOneConcurrentFanoutBudget(t *testing.T) {
 	done := make(chan struct{})
 	start := time.Now()
 	go func() {
-		forwardClusterTargets(context.Background(), f, "self", []string{"unreachable-A", "unreachable-B", "unreachable-C", "live-D"}, &dataplane.Message{}, "t", slog.Default(), 1)
+		forwardClusterTargets(context.Background(), f, "self", []string{"unreachable-A", "unreachable-B", "unreachable-C", "live-D"}, &dataplane.Message{}, "t", slog.Default(), 1, nil)
 		close(done)
 	}()
 	select {

@@ -1477,7 +1477,7 @@ func runServer() {
 				inboundOfflineStore = broker.NewRedisSessionHook(rdb, log)
 			}
 			_ = gForwarder.SubscribeContext(func(ctx context.Context, msg *dataplane.Message) {
-				if err := mqttServer.Publish(msg.Topic, msg.Payload, false, msg.QoS); err != nil {
+				if err := mqttServer.PublishWithSharedFilters(msg.Topic, msg.Payload, false, msg.QoS, msg.SharedFilters); err != nil {
 					log.Error("cluster: publish forwarded message locally", "topic", msg.Topic, "error", err)
 				}
 				if err := ctx.Err(); err != nil {

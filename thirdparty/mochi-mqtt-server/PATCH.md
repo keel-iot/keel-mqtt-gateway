@@ -37,4 +37,14 @@ building the ack, exactly like the ACL-deny branch above it.
 Remove `replace github.com/mochi-mqtt/server/v2 => ./thirdparty/mochi-mqtt-server`
 from `go.mod`, delete this directory, and bump the dependency once a
 released version of `github.com/mochi-mqtt/server/v2` upstream contains
-this fix.
+this fix and supports the internal shared-routing extension documented below.
+
+## Distributed shared-subscription selection (v0.2.46)
+
+`packets.Packet.SharedFilters` and `Server.PublishWithSharedFilters` carry
+internal per-publish routing metadata. Nil preserves ordinary broker
+selection; an explicit empty slice suppresses shared delivery on a node
+reached only for ordinary/offline subscriptions. The Keel subscriber hook
+filters shared groups before Mochi selects a local member. This metadata is
+not an MQTT property and is not transmitted to devices. Packet copies
+preserve the nil/empty distinction.

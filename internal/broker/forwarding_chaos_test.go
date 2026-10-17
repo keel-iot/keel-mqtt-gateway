@@ -79,7 +79,7 @@ func TestKnownButUnreachableForwarding_ConcurrentLiveTarget(t *testing.T) {
 	t.Logf("publish/fanout started: %s", start.Format(time.RFC3339Nano))
 	done := make(chan struct{})
 	go func() {
-		forwardClusterTargets(context.Background(), forwarder, "publisher", []string{"unreachable-A", "live-B"}, &dataplane.Message{Topic: "telemetry/test"}, "telemetry/test", slog.New(slog.NewTextHandler(io.Discard, nil)), 1)
+		forwardClusterTargets(context.Background(), forwarder, "publisher", []string{"unreachable-A", "live-B"}, &dataplane.Message{Topic: "telemetry/test"}, "telemetry/test", slog.New(slog.NewTextHandler(io.Discard, nil)), 1, nil)
 		close(done)
 	}()
 

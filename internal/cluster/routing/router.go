@@ -256,23 +256,42 @@ func (r *Router) publish(ctx context.Context, ev routeEvent) error {
 // than once per member node. localNodeID may be "" to disable this local
 // preference (e.g. no node ID is meaningful).
 func (r *Router) NodesFor(topic, localNodeID string) []string {
+	return r.LiveDeliveryPlan(topic, localNodeID).Nodes
+}
+
+// LivePlan records one shared node per exact group/filter, alongside the
+// ordinary fan-out targets. A forward must carry this decision so a node
+// reached for an unrelated subscription cannot elect another shared member.
+type LivePlan struct {
+	Nodes       []string
+	SharedNodes map[string]string
+}
+
+func (r *Router) LiveDeliveryPlan(topic, localNodeID string) LivePlan {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	subs := r.index.Subscribers(topic)
-
+	sharedNodes := make(map[string]string, len(subs.Shared))
+	seen := make(map[string]struct{}, len(subs.Subscriptions))
+	for nodeID := range subs.Subscriptions {
+		seen[nodeID] = struct{}{}
+	}
 	for filter, members := range subs.Shared {
 		if _, ok := members[localNodeID]; ok {
-			delete(subs.Shared, filter)
+			sharedNodes[filter] = localNodeID
+			continue
+		}
+		for nodeID := range members {
+			sharedNodes[filter] = nodeID
+			seen[nodeID] = struct{}{}
+			break
 		}
 	}
-	subs.SelectShared()
-	subs.MergeSharedSelected()
-
-	out := make([]string, 0, len(subs.Subscriptions))
-	for nodeID := range subs.Subscriptions {
+	out := make([]string, 0, len(seen))
+	for nodeID := range seen {
 		out = append(out, nodeID)
 	}
-	return out
+	return LivePlan{Nodes: out, SharedNodes: sharedNodes}
 }
 
 // offlineRoutePrefix namespaces the Offline Routing Index from the Live
@@ -312,6 +331,38 @@ func (r *Router) OfflineNodesFor(topic string) []string {
 	// Shared filters are indexed from exact ownership keys and queried using
 	// their underlying MQTT filter. Select one owner edge per shared filter,
 	// matching live shared-subscription semantics across the cluster.
+	for _, selected := range r.offlineSharedSelectionsLocked(topic) {
+		if _, duplicate := seen[selected.nodeID]; !duplicate {
+			seen[selected.nodeID] = struct{}{}
+			out = append(out, selected.nodeID)
+		}
+	}
+	return out
+}
+
+type offlineSharedSelection struct {
+	nodeID   string
+	clientID string
+}
+
+// OfflineSharedClientsFor returns the exact shared filter -> client decisions
+// for nodeID. Dispatchers must apply these even for local publishes and
+// forwards sent to the node for another filter; a node target alone cannot
+// authorize delivery to every offline shared group it owns.
+func (r *Router) OfflineSharedClientsFor(topic, nodeID string) map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	clients := make(map[string]string)
+	for filter, selected := range r.offlineSharedSelectionsLocked(topic) {
+		if selected.nodeID == nodeID {
+			clients[filter] = selected.clientID
+		}
+	}
+	return clients
+}
+
+func (r *Router) offlineSharedSelectionsLocked(topic string) map[string]offlineSharedSelection {
+	selected := make(map[string]offlineSharedSelection)
 	liveShared := r.index.Subscribers(topic).Shared
 	for filter, sharedIndex := range r.offlineShared {
 		// The map key is the original shared filter. If that group currently
@@ -324,25 +375,22 @@ func (r *Router) OfflineNodesFor(topic string) []string {
 		if len(matched) == 0 {
 			continue
 		}
-		selected := ""
+		var choice offlineSharedSelection
 		for ownerKey := range matched {
 			nodeID, ok := sharedOwnerNode(ownerKey)
 			if !ok {
 				continue
 			}
-			if selected == "" || nodeID < selected {
-				selected = nodeID
+			clientID := ownerKey[len(nodeID)+len(keySep):]
+			if choice.nodeID == "" || nodeID < choice.nodeID || (nodeID == choice.nodeID && clientID < choice.clientID) {
+				choice = offlineSharedSelection{nodeID: nodeID, clientID: clientID}
 			}
 		}
-		if selected == "" {
-			continue
-		}
-		if _, duplicate := seen[selected]; !duplicate {
-			seen[selected] = struct{}{}
-			out = append(out, selected)
+		if choice.nodeID != "" {
+			selected[filter] = choice
 		}
 	}
-	return out
+	return selected
 }
 
 // ownershipKeyPrefix namespaces the Ownership Index — exact per
