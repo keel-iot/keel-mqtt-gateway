@@ -2,6 +2,7 @@ package membership
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"sync"
@@ -20,7 +21,14 @@ type fakeRedisAdmin struct {
 	mu             sync.Mutex
 	replicaOfCalls []replicaOfCall
 	promoteCalls   []string // addrs promoted via replicaOfNoOne
-	failAddr       string   // if set, any call targeting this addr returns an error
+	failAddr       string   // if set, replication commands targeting this addr return an error
+	pingErrors     map[string]error
+}
+
+func (f *fakeRedisAdmin) ping(_ context.Context, addr string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pingErrors[addr]
 }
 
 type replicaOfCall struct {
@@ -242,4 +250,150 @@ func TestReconcileRedisPrimary_FailoverSkipsWhenPromoteFails(t *testing.T) {
 	primary, ok := m.raft.Registry.CurrentRedisPrimary()
 	require.True(t, ok)
 	require.Equal(t, "core-1", primary, "raft designation must not advance when the promotion RPC itself failed")
+}
+
+// Reproduce the production incident: the gateway and its gossip membership
+// survive, while only the co-located Redis crashes or repeatedly loads AOF.
+func TestReconcileRedisPrimary_FailoverWithCoreStillInGossip(t *testing.T) {
+	for _, failure := range []string{"connection refused", "LOADING Redis is loading the dataset in memory"} {
+		t.Run(failure, func(t *testing.T) {
+			members := []NodeMeta{
+				{NodeID: "core-1", Role: RoleCore, RedisAddr: "127.0.0.1:7001"},
+				{NodeID: "core-2", Role: RoleCore, RedisAddr: "127.0.0.1:7002"},
+			}
+			admin := &fakeRedisAdmin{pingErrors: map[string]error{members[0].RedisAddr: errors.New(failure)}}
+			m := newTestLeaderMembership(t, "core-1", members, admin, 2)
+			require.NoError(t, m.raft.Registry.SetRedisPrimary("core-1"))
+
+			m.reconcileRedisPrimary()
+			primary, _ := m.raft.Registry.CurrentRedisPrimary()
+			require.Equal(t, "core-1", primary, "transient failures must respect the grace window")
+			configured, promoted := admin.snapshot()
+			require.Empty(t, configured, "do not repoint replicas at an unhealthy primary")
+			require.Empty(t, promoted)
+
+			m.redisMissingSince["core-1"] = time.Now().Add(-2 * m.redisPrimaryDeadThreshold)
+			m.reconcileRedisPrimary()
+			primary, _ = m.raft.Registry.CurrentRedisPrimary()
+			require.Equal(t, "core-2", primary)
+			require.Len(t, m.Members(), 2, "failover must not require removing the gateway from gossip")
+			_, promoted = admin.snapshot()
+			require.Equal(t, []string{members[1].RedisAddr}, promoted)
+
+			// A recovered old primary must become a replica, not reclaim
+			// its former designation.
+			delete(admin.pingErrors, members[0].RedisAddr)
+			m.reconcileRedisPrimary()
+			primary, _ = m.raft.Registry.CurrentRedisPrimary()
+			require.Equal(t, "core-2", primary)
+			configured, _ = admin.snapshot()
+			require.Contains(t, configured, replicaOfCall{members[0].RedisAddr, "127.0.0.1", "7002"})
+		})
+	}
+}
+
+func TestReconcileRedisPrimary_RecoveryResetsFailureWindow(t *testing.T) {
+	members := []NodeMeta{
+		{NodeID: "core-1", Role: RoleCore, RedisAddr: "127.0.0.1:7001"},
+		{NodeID: "core-2", Role: RoleCore, RedisAddr: "127.0.0.1:7002"},
+	}
+	admin := &fakeRedisAdmin{pingErrors: map[string]error{members[0].RedisAddr: errFakeAdmin}}
+	m := newTestLeaderMembership(t, "core-1", members, admin, 2)
+	require.NoError(t, m.raft.Registry.SetRedisPrimary("core-1"))
+	m.reconcileRedisPrimary()
+	m.redisMissingSince["core-1"] = time.Now().Add(-time.Hour)
+	delete(admin.pingErrors, members[0].RedisAddr)
+	m.reconcileRedisPrimary()
+	require.Empty(t, m.redisMissingSince)
+	admin.pingErrors[members[0].RedisAddr] = errFakeAdmin
+	m.reconcileRedisPrimary()
+	m.reconcileRedisPrimary()
+	primary, _ := m.raft.Registry.CurrentRedisPrimary()
+	require.Equal(t, "core-1", primary, "a later failure must receive a new grace window")
+	_, promoted := admin.snapshot()
+	require.Empty(t, promoted)
+}
+
+func TestFailoverRedisPrimary_SelectsReachableCandidateInStableOrder(t *testing.T) {
+	for _, failure := range []string{"none", "ping", "promotion", "all unavailable"} {
+		t.Run(failure, func(t *testing.T) {
+			// Deliberately reverse input order: map iteration must not
+			// decide which replica is promoted.
+			members := []NodeMeta{
+				{NodeID: "core-2", Role: RoleCore, RedisAddr: "127.0.0.1:7002"},
+				{NodeID: "core-1", Role: RoleCore, RedisAddr: "127.0.0.1:7001"},
+			}
+			admin := &fakeRedisAdmin{pingErrors: make(map[string]error)}
+			want := "core-1"
+			switch failure {
+			case "ping":
+				admin.pingErrors["127.0.0.1:7001"] = errors.New("LOADING Redis is loading the dataset in memory")
+				want = "core-2"
+			case "promotion":
+				admin.failAddr = "127.0.0.1:7001"
+				want = "core-0"
+			case "all unavailable":
+				admin.pingErrors["127.0.0.1:7001"] = errFakeAdmin
+				admin.pingErrors["127.0.0.1:7002"] = errFakeAdmin
+				want = "core-0"
+			}
+			m := newTestLeaderMembership(t, "core-1", members, admin, 3)
+			require.NoError(t, m.raft.Registry.SetRedisPrimary("core-0"))
+			m.failoverRedisPrimary(members, "core-0")
+			primary, _ := m.raft.Registry.CurrentRedisPrimary()
+			require.Equal(t, want, primary)
+			_, promoted := admin.snapshot()
+			if failure == "all unavailable" || failure == "promotion" {
+				require.Empty(t, promoted)
+			} else {
+				require.Len(t, promoted, 1)
+			}
+		})
+	}
+}
+
+func TestRealRedisAdmin_PingRespectsDeadline(t *testing.T) {
+	// An accepting TCP socket which never answers Redis commands must
+	// fail promptly, rather than block the failover loop on socket retries.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err == nil {
+			defer conn.Close()
+			buf := make([]byte, 4096)
+			for {
+				if _, err := conn.Read(buf); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	require.Error(t, (realRedisAdmin{}).ping(ctx, listener.Addr().String()))
+	require.Less(t, time.Since(start), time.Second)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Redis client did not close the stalled connection")
+	}
+}
+
+func TestReconcileRedisPrimary_FollowerClearsFailureWindow(t *testing.T) {
+	admin := &fakeRedisAdmin{}
+	members := []NodeMeta{{NodeID: "core-1", Role: RoleCore, RedisAddr: "127.0.0.1:7001"}}
+	m := newTestLeaderMembership(t, "core-1", members, admin, 3)
+	require.NoError(t, m.raft.Registry.SetRedisPrimary("core-0"))
+	m.redisMissingSince["core-0"] = time.Now().Add(-time.Hour)
+	require.NoError(t, m.raft.Raft.Shutdown().Error())
+	m.reconcileRedisPrimary()
+	require.Empty(t, m.redisMissingSince, "a later leadership term must observe a new failure window")
+	configured, promoted := admin.snapshot()
+	require.Empty(t, configured)
+	require.Empty(t, promoted)
 }

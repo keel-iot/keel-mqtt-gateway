@@ -51,8 +51,8 @@ type Config struct {
 	RedisPassword string
 
 	// RedisPrimaryDeadThreshold bounds how long the currently-designated
-	// Redis primary can be missing from gossip before the failover loop
-	// promotes a replica — same debounce rationale as
+	// Redis primary can be absent from gossip or fail Redis PING before
+	// the failover loop promotes a reachable replica — same debounce rationale as
 	// lifecycle.Monitor.Threshold (a blip must not trigger a failover).
 	// Zero defaults to 30s (matching cmd/server/main.go's own
 	// --heartbeat-threshold default for the analogous core-node-missing
@@ -116,7 +116,7 @@ type Membership struct {
 	stopRedisFailover         chan struct{}
 
 	muRedis           sync.Mutex
-	redisMissingSince map[string]time.Time // designated-primary nodeID -> first tick it was observed absent from gossip (absent entirely, since presence clears it)
+	redisMissingSince map[string]time.Time // designated-primary nodeID -> first failed observation (absent core or failed Redis PING); successful PING clears it
 }
 
 // SetLeaveHandler installs the callback invoked after a confirmed memberlist

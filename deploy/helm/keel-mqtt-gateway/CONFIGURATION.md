@@ -313,6 +313,20 @@ The co-located Redis (primary+replica across core pods, per risk #6 in
 the design doc) is managed entirely by this chart — there's no
 external-service pointer for it, only the optional shared password above.
 
+Redis runs as standalone instances with asynchronous primary/replica
+replication. The gateway's Raft leader manages replication and failover;
+Redis Cluster and Sentinel are not enabled. It probes the designated
+primary with an authenticated Redis `PING`, even while its core remains
+visible in gossip. After 30 seconds of continuously failed observations,
+it attempts to promote a reachable replica and commits the new designation
+through Raft. A successful probe resets the failure window. The old
+primary is configured as a replica when it becomes reachable again.
+With a Redis password set, the chart configures both client authentication
+(`requirepass`) and upstream replication authentication (`masterauth`).
+
+See [Redis failover operations](../../../docs/operations/redis-failover.md)
+for recovery behavior, validation commands, and durability limitations.
+
 ## 8. Verifying the deployment
 
 ```sh

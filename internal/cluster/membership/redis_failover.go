@@ -3,6 +3,7 @@ package membership
 import (
 	"context"
 	"net"
+	"sort"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -20,12 +21,18 @@ const redisFailoverInterval = 2 * time.Second
 // one core node's co-located Redis.
 const redisAdminTimeout = 5 * time.Second
 
+// A stalled Redis must not block failure detection for the default client
+// socket timeout (or its retries). LOADING and authentication errors also
+// fail this probe: accepting TCP connections alone is not readiness.
+const redisHealthTimeout = 2 * time.Second
+
 // redisAdminClient issues Redis replication admin commands against a
 // specific node's co-located Redis instance. Narrowed interface (rather
 // than exposing *redis.Client directly) so tests can substitute a fake
 // without a real Redis — same pattern as fakeRegistry/fakeForwarder in
 // internal/broker/hooks_test.go.
 type redisAdminClient interface {
+	ping(ctx context.Context, addr string) error
 	// replicaOf points the Redis instance at addr to replicate from
 	// primaryHost:primaryPort.
 	replicaOf(ctx context.Context, addr, primaryHost, primaryPort string) error
@@ -46,7 +53,27 @@ type realRedisAdmin struct {
 func (a realRedisAdmin) dial(addr string) *redis.Client {
 	// Protocol pinned to RESP2 — see internal/cluster/redisrouter's same
 	// choice; nothing here needs RESP3-only features either.
-	return redis.NewClient(&redis.Options{Addr: addr, Password: a.password, Protocol: 2})
+	return redis.NewClient(&redis.Options{
+		Addr: addr, Password: a.password, Protocol: 2,
+		ContextTimeoutEnabled: true,
+		MaxRetries:            -1,
+		DialerRetries:         1,
+		DialTimeout:           redisHealthTimeout,
+		ReadTimeout:           redisAdminTimeout,
+		WriteTimeout:          redisAdminTimeout,
+	})
+}
+
+func (a realRedisAdmin) ping(ctx context.Context, addr string) error {
+	client := a.dial(addr)
+	defer client.Close()
+	return client.Ping(ctx).Err()
+}
+
+func (m *Membership) pingRedis(addr string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), redisHealthTimeout)
+	defer cancel()
+	return m.redisAdmin.ping(ctx, addr)
 }
 
 func (a realRedisAdmin) replicaOf(ctx context.Context, addr, primaryHost, primaryPort string) error {
@@ -66,21 +93,12 @@ func (a realRedisAdmin) replicaOfNoOne(ctx context.Context, addr string) error {
 	return client.SlaveOf(ctx, "NO", "ONE").Err()
 }
 
-// redisFailoverLoop periodically reconciles the co-located Redis
-// primary+replica topology across core nodes, whenever this node is raft
-// leader — same single-arbiter principle as reconcileVotersLoop, so
-// there's never a moment where two nodes could both decide to promote
-// themselves (the raft.Apply in failoverRedisPrimary/bootstrapRedisPrimary
-// is itself gated on this being the leader, and hashicorp/raft guarantees
-// at most one leader at a time).
-//
-// "Who is primary" is a raft-replicated fact (see
-// internal/cluster/raft's OpSetRedisPrimary) — not gossip — precisely so a
-// leadership change mid-failover doesn't risk two different nodes
-// deciding two different things: the new leader reads the same
-// CurrentRedisPrimary() the old one would have, from the same log,
-// instead of re-deciding from scratch with gossip's eventually-consistent
-// view.
+// redisFailoverLoop reconciles the co-located Redis topology on the Raft
+// leader. The designated primary is replicated through OpSetRedisPrimary,
+// so a new leader reads the committed designation rather than inferring it
+// from gossip. Redis admin commands execute outside Raft: leadership checks
+// stop work after an observed leadership loss but do not fence Redis writes
+// during every network partition.
 func (m *Membership) redisFailoverLoop() {
 	ticker := time.NewTicker(redisFailoverInterval)
 	defer ticker.Stop()
@@ -140,6 +158,10 @@ func (m *Membership) coreMembersWithRedis() []NodeMeta {
 
 func (m *Membership) reconcileRedisPrimary() {
 	if !m.raft.IsLeader() {
+		// A future leadership term must observe its own failure window.
+		m.muRedis.Lock()
+		clear(m.redisMissingSince)
+		m.muRedis.Unlock()
 		return
 	}
 
@@ -175,20 +197,28 @@ func (m *Membership) reconcileRedisPrimary() {
 		return
 	}
 
-	visible := false
+	healthy := false
+	reason := "core absent from gossip"
 	for _, meta := range coreMembers {
 		if meta.NodeID == primary {
-			visible = true
+			if err := m.pingRedis(meta.RedisAddr); err != nil {
+				reason = err.Error()
+			} else {
+				healthy = true
+			}
 			break
 		}
+	}
+	if !m.raft.IsLeader() {
+		return
 	}
 
 	now := time.Now()
 	m.muRedis.Lock()
-	if visible {
-		// Present again (or still) — clear any prior absence tracking so
-		// a later disappearance starts its own fresh threshold window,
-		// not one left over from an earlier, since-recovered blip.
+	if healthy {
+		// Gossip presence is insufficient: a crashed Redis sidecar leaves
+		// the core process alive. Only a successful Redis PING resets the
+		// continuous failure window.
 		delete(m.redisMissingSince, primary)
 		m.muRedis.Unlock()
 		m.ensureReplicasConfigured(coreMembers, primary)
@@ -196,16 +226,13 @@ func (m *Membership) reconcileRedisPrimary() {
 	}
 	missingSince, tracked := m.redisMissingSince[primary]
 	if !tracked {
-		// First tick this primary is observed absent — start the clock
-		// here rather than failing over immediately (a single missed
-		// gossip round shouldn't trigger a failover) or, the bug this
-		// replaced, never starting the clock at all when the primary was
-		// already gone before this process ever got a chance to see it
-		// present even once (a real scenario: the leader that will run
-		// this reconciliation is often elected only shortly AFTER the old
-		// primary died).
+		// Start a grace window even if this leader has never seen a
+		// working primary. Do not repoint replicas at a failed primary
+		// while waiting for it to recover.
 		m.redisMissingSince[primary] = now
 		m.muRedis.Unlock()
+		m.log.Warn("membership: redis primary unavailable, starting failure window",
+			"node_id", primary, "reason", reason, "threshold", m.redisPrimaryDeadThreshold)
 		return
 	}
 	m.muRedis.Unlock()
@@ -214,8 +241,8 @@ func (m *Membership) reconcileRedisPrimary() {
 		return // within the grace window — do nothing yet, not even replica reconfiguration (primary might still be right)
 	}
 
-	m.log.Warn("membership: redis primary missing beyond threshold, initiating failover",
-		"node_id", primary, "threshold", m.redisPrimaryDeadThreshold)
+	m.log.Warn("membership: redis primary unavailable beyond threshold, initiating failover",
+		"node_id", primary, "reason", reason, "threshold", m.redisPrimaryDeadThreshold)
 	m.failoverRedisPrimary(coreMembers, primary)
 }
 
@@ -297,6 +324,9 @@ func (m *Membership) ensureReplicasConfigured(coreMembers []NodeMeta, primaryNod
 		if meta.NodeID == primaryNodeID {
 			continue
 		}
+		if !m.raft.IsLeader() {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), redisAdminTimeout)
 		err := m.redisAdmin.replicaOf(ctx, meta.RedisAddr, primaryHost, primaryPort)
 		cancel()
@@ -308,38 +338,49 @@ func (m *Membership) ensureReplicasConfigured(coreMembers []NodeMeta, primaryNod
 }
 
 // failoverRedisPrimary promotes a surviving replica after the previous
-// primary has been missing beyond redisPrimaryDeadThreshold. Promotion
-// happens BEFORE the raft designation is updated — if replicaOfNoOne
-// itself fails, the authoritative "who is primary" fact is never advanced
-// to a node that isn't actually writable yet, same fail-safe ordering as
-// claimClusterSession rolling back local state on a failed raft.Apply.
+// primary has been unavailable beyond redisPrimaryDeadThreshold. Promotion
+// happens BEFORE the Raft designation is updated. A failed promotion leaves
+// the designation unchanged; only an acknowledged promotion advances it.
 func (m *Membership) failoverRedisPrimary(coreMembers []NodeMeta, deadPrimary string) {
 	// No explicit single-core early-return here either — see
 	// ensureReplicasConfigured's doc. The caller already gated on raft
 	// voter count; if coreMembers contains no survivor (deadPrimary is the
 	// only entry, or the list is otherwise empty), the loop below simply
-	// finds nothing and the "no surviving replica candidate found" log
+	// finds nothing and the "no promotable replica found" log
 	// below fires, which is the correct, honest outcome for that case.
+	// Stable ordering avoids choosing a different candidate on every tick
+	// due to map iteration. This is not a replication-freshness ranking:
+	// asynchronous replication can still lose unreplicated writes.
+	sort.Slice(coreMembers, func(i, j int) bool { return coreMembers[i].NodeID < coreMembers[j].NodeID })
 	var candidate NodeMeta
 	found := false
 	for _, meta := range coreMembers {
 		if meta.NodeID == deadPrimary {
 			continue
 		}
-		candidate = meta
-		found = true
-		break // any survivor works — only the leader acts, so no promotion race to break ties for
+		if err := m.pingRedis(meta.RedisAddr); err != nil {
+			m.log.Warn("membership: redis failover candidate unavailable", "node_id", meta.NodeID, "error", err)
+			continue
+		}
+		// Network probes can outlive leadership. Do not issue promotion
+		// commands after observing that this node lost its authority.
+		if !m.raft.IsLeader() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), redisAdminTimeout)
+		err := m.redisAdmin.replicaOfNoOne(ctx, meta.RedisAddr)
+		cancel()
+		if err != nil {
+			m.log.Error("membership: promote redis replica failed", "node_id", meta.NodeID, "error", err)
+			// A timeout can mean the command succeeded but its reply was
+			// lost. Do not promote a second Redis in the same attempt.
+			return
+		}
+		candidate, found = meta, true
+		break
 	}
 	if !found {
-		m.log.Warn("membership: redis primary dead but no surviving replica candidate found", "dead_primary", deadPrimary)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), redisAdminTimeout)
-	err := m.redisAdmin.replicaOfNoOne(ctx, candidate.RedisAddr)
-	cancel()
-	if err != nil {
-		m.log.Error("membership: promote redis replica failed", "node_id", candidate.NodeID, "error", err)
+		m.log.Warn("membership: redis primary unavailable but no promotable replica found", "dead_primary", deadPrimary)
 		return
 	}
 
