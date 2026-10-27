@@ -1148,10 +1148,10 @@ func runServer() {
 				offlineSessionHook := broker.NewRedisSessionHook(rdb, log)
 				offlineOwnership := &keelraft.OfflineOwnership{Registry: clusterRegistry}
 				offlineReconciler := &session.Reconciler{
-					// FilterOffline drops currently-live clients, which
-					// Redis alone can't tell apart from offline ones.
+					// Skip known live clients before reading Redis, then
+					// filter again for connections established during the scan.
 					Inventory: func() ([]session.OfflineSession, error) {
-						all, err := offlineSessionHook.OfflineInventory()
+						all, err := offlineSessionHook.OfflineInventoryExcept(raftNode.Registry.SessionsSnapshot())
 						if err != nil {
 							return nil, err
 						}

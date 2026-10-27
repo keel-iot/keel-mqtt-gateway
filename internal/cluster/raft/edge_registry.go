@@ -79,6 +79,15 @@ func (e *EdgeRegistry) OfflineNodesFor(topic string) []string {
 	return e.router.OfflineNodesFor(topic)
 }
 
+func (e *EdgeRegistry) OfflineDeliveryCandidates(topic, nodeID string) ([]string, map[string]string) {
+	e.routerMu.RLock()
+	defer e.routerMu.RUnlock()
+	if e.router == nil {
+		return nil, map[string]string{}
+	}
+	return e.router.OfflineDeliveryCandidates(topic, nodeID)
+}
+
 func (e *EdgeRegistry) OwnedClientIDs(nodeID string) []string {
 	e.routerMu.RLock()
 	defer e.routerMu.RUnlock()

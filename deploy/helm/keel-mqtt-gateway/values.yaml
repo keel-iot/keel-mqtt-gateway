@@ -15,7 +15,7 @@
 
 image:
   repository: ghcr.io/keel-iot/keel-mqtt-gateway
-  tag: "0.2.47" # defaults to the gateway release matching this chart
+  tag: "0.3.0" # defaults to the gateway release matching this chart
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
@@ -150,6 +150,9 @@ core:
       repository: redis
       tag: 7-alpine
     resources: {}
+    # Replication history in RAM on every core; size for write rate x outage
+    # duration, with headroom under the container memory limit. Redis units.
+    replBacklogSize: "1mb" # compatibility default; e.g. "128mb" for a busy fleet
     password: "" # optional — same password shared by every co-located instance; empty = no auth
 
   # Raft/gossip/olric/grpc/mgmt tuning — see cmd/server/main.go flag docs

@@ -393,6 +393,43 @@ func (r *Router) offlineSharedSelectionsLocked(topic string) map[string]offlineS
 	return selected
 }
 
+// OfflineDeliveryCandidates selects matching clients and shared-group choices
+// from one local routing snapshot. Redis is still the authority for persisted
+// subscriptions and QoS; this only avoids fetching unrelated clients' records.
+// Exact ownership keys are used rather than add-only offline route hints.
+func (r *Router) OfflineDeliveryCandidates(topic, nodeID string) ([]string, map[string]string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	seen := make(map[string]struct{})
+	var clients []string
+	add := func(clientID string) {
+		if _, exists := seen[clientID]; !exists {
+			seen[clientID] = struct{}{}
+			clients = append(clients, clientID)
+		}
+	}
+	for key := range r.byNode[nodeID] {
+		clientID, filter, ok := ownershipKeyParts(key)
+		if !ok {
+			continue
+		}
+		if _, _, shared := acl.SharedFilter(filter); shared {
+			continue // shared selection below also accounts for live members
+		}
+		if acl.MatchTopic(filter, topic) {
+			add(clientID)
+		}
+	}
+	sharedSelected := make(map[string]string)
+	for filter, selected := range r.offlineSharedSelectionsLocked(topic) {
+		if selected.nodeID == nodeID {
+			sharedSelected[filter] = selected.clientID
+			add(selected.clientID)
+		}
+	}
+	return clients, sharedSelected
+}
+
 // ownershipKeyPrefix namespaces the Ownership Index — exact per
 // (clientID, filter) ownership, never matched via wildcard, only ever
 // looked up by its exact key or enumerated via OwnedClientIDs below.

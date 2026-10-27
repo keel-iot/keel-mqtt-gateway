@@ -77,6 +77,10 @@ func (c *CoreRegistry) OfflineSharedClientsFor(topic, nodeID string) map[string]
 	return c.router.OfflineSharedClientsFor(topic, nodeID)
 }
 
+func (c *CoreRegistry) OfflineDeliveryCandidates(topic, nodeID string) ([]string, map[string]string) {
+	return c.router.OfflineDeliveryCandidates(topic, nodeID)
+}
+
 func (c *CoreRegistry) OwnedClientIDs(nodeID string) []string {
 	return c.router.OwnedClientIDs(nodeID)
 }

@@ -324,6 +324,23 @@ primary is configured as a replica when it becomes reachable again.
 With a Redis password set, the chart configures both client authentication
 (`requirepass`) and upstream replication authentication (`masterauth`).
 
+Set the in-memory replication backlog on every core (primary and replicas):
+
+```yaml
+core:
+  redis:
+    replBacklogSize: "128mb"
+```
+
+`core.redis.replBacklogSize` defaults to `"1mb"` for compatibility. Redis units
+apply (`mb` means MiB). Size it for replication-stream bytes/second multiplied
+by the disconnect interval to cover, with a traffic margin. Account for the
+additional RAM on every core alongside dataset, buffers and fork overhead.
+The chart passes this setting at startup, so it survives pod replacement;
+`CONFIG SET repl-backlog-size 128mb` alone does not survive a restart.
+A larger backlog enables partial resynchronization when replication IDs and
+requested offsets permit it; it does not guarantee recovery after any restart.
+
 See [Redis failover operations](../../../docs/operations/redis-failover.md)
 for recovery behavior, validation commands, and durability limitations.
 

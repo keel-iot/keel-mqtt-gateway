@@ -607,6 +607,15 @@ func (h *RedisSessionHook) indexedClientIDs(ctx context.Context) ([]string, erro
 // in bounded pages and each page fetches exact per-client keys through a
 // pipeline. No command returns or scans the fleet's complete session payload.
 func (h *RedisSessionHook) OfflineInventory() ([]session.OfflineSession, error) {
+	return h.OfflineInventoryExcept(nil)
+}
+
+// OfflineInventoryExcept skips clients already claimed by a live connection
+// before fetching their persisted records, subscriptions and last-seen data.
+// The caller supplies an immutable Raft snapshot and should filter against a
+// fresh snapshot after the scan to discard clients that connected meanwhile.
+// A client that disconnects during the scan is picked up on the next pass.
+func (h *RedisSessionHook) OfflineInventoryExcept(liveClaimed map[string]string) ([]session.OfflineSession, error) {
 	ctx := context.Background()
 	var out []session.OfflineSession
 	var cursor uint64
@@ -614,6 +623,23 @@ func (h *RedisSessionHook) OfflineInventory() ([]session.OfflineSession, error) 
 		ids, next, err := h.router.Client().SScan(ctx, redisClientIndex, cursor, "*", redisScanCount).Result()
 		if err != nil && !errors.Is(err, redis.Nil) {
 			return nil, fmt.Errorf("redis session: offline inventory scan: %w", err)
+		}
+
+		// Compact this page in place. SSCAN remains fleet-wide, but live
+		// clients require no payload reads or subscription deserialization.
+		candidates := ids[:0]
+		for _, clientID := range ids {
+			if _, live := liveClaimed[clientID]; !live {
+				candidates = append(candidates, clientID)
+			}
+		}
+		ids = candidates
+		if len(ids) == 0 {
+			if next == 0 {
+				return out, nil
+			}
+			cursor = next
+			continue
 		}
 
 		pipe := h.router.Client().Pipeline()
@@ -667,19 +693,30 @@ func (h *RedisSessionHook) OfflineInventory() ([]session.OfflineSession, error) 
 	}
 }
 
-// OwnedOfflineSessions returns the OfflineSession view for exactly
-// ownedClientIDs (see keelraft.Registry.OwnedClientIDs) — one targeted
-// SubscriptionsForClient lookup per owned client, never a fleet-wide
-// scan. Used on the inbound side of offline delivery, where the set of
-// candidates is already bounded to what this node owns.
+// OwnedOfflineSessions reads only the requested clients' subscriptions in
+// bounded pipelines. This avoids one network round trip per candidate while
+// keeping the response batch bounded when a topic has many offline subscribers.
 func (h *RedisSessionHook) OwnedOfflineSessions(ownedClientIDs []string) ([]session.OfflineSession, error) {
+	ctx := context.Background()
 	out := make([]session.OfflineSession, 0, len(ownedClientIDs))
-	for _, clientID := range ownedClientIDs {
-		subs, err := h.SubscriptionsForClient(clientID)
-		if err != nil {
-			return nil, fmt.Errorf("redis session: owned offline sessions for %s: %w", clientID, err)
+	for start := 0; start < len(ownedClientIDs); start += int(redisScanCount) {
+		end := start + int(redisScanCount)
+		if end > len(ownedClientIDs) {
+			end = len(ownedClientIDs)
 		}
-		out = append(out, session.FromStorage(clientID, subs))
+		ids := ownedClientIDs[start:end]
+		pipe := h.router.Client().Pipeline()
+		cmds := make([]*redis.MapStringStringCmd, len(ids))
+		for i, clientID := range ids {
+			cmds[i] = pipe.HGetAll(ctx, redisSubKey(clientID))
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return nil, fmt.Errorf("redis session: owned offline subscriptions: %w", err)
+		}
+		for i, clientID := range ids {
+			subs := h.decodeSubscriptions(clientID, cmds[i].Val())
+			out = append(out, session.FromStorage(clientID, subs))
+		}
 	}
 	return out, nil
 }
@@ -788,6 +825,10 @@ func (h *RedisSessionHook) SubscriptionsForClient(clientID string) ([]storage.Su
 	if err != nil {
 		return nil, fmt.Errorf("redis session: HGetAll subscriptions for %s: %w", clientID, err)
 	}
+	return h.decodeSubscriptions(clientID, rows), nil
+}
+
+func (h *RedisSessionHook) decodeSubscriptions(clientID string, rows map[string]string) []storage.Subscription {
 	out := make([]storage.Subscription, 0, len(rows))
 	for _, raw := range rows {
 		var s storage.Subscription
@@ -797,7 +838,7 @@ func (h *RedisSessionHook) SubscriptionsForClient(clientID string) ([]storage.Su
 		}
 		out = append(out, s)
 	}
-	return out, nil
+	return out
 }
 
 // InflightForClient returns clientID's persisted in-flight QoS1/2 messages.

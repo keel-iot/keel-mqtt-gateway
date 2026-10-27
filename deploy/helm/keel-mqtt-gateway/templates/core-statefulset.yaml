@@ -203,11 +203,13 @@ spec:
             - |
               set -e
               if [ -n "$REDIS_PASSWORD" ]; then
-                exec redis-server --appendonly yes --requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD"
+                exec redis-server --appendonly yes --repl-backlog-size "$REDIS_REPL_BACKLOG_SIZE" --requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD"
               fi
-              exec redis-server --appendonly yes
-          {{- if .Values.core.redis.password }}
+              exec redis-server --appendonly yes --repl-backlog-size "$REDIS_REPL_BACKLOG_SIZE"
           env:
+            - name: REDIS_REPL_BACKLOG_SIZE
+              value: {{ .Values.core.redis.replBacklogSize | default "1mb" | quote }}
+          {{- if .Values.core.redis.password }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
