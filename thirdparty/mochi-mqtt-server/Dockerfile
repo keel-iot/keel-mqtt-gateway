@@ -1,4 +1,4 @@
-FROM golang:1.21.0-alpine3.18 AS builder
+FROM golang:1.26.10-alpine3.24 AS builder
 
 RUN apk update
 RUN apk add git
@@ -13,7 +13,7 @@ COPY . ./
 
 RUN go build -o /app/mochi ./cmd/docker
 
-FROM alpine
+FROM alpine:3.24.3
 
 WORKDIR /
 COPY --from=builder /app/mochi .

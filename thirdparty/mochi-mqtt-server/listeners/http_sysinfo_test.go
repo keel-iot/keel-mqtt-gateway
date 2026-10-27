@@ -74,7 +74,11 @@ func TestHTTPStatsServeAndClose(t *testing.T) {
 	time.Sleep(time.Millisecond)
 
 	// get body from stats address
-	resp, err := http.Get("http://localhost" + testAddr)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		resp, err = http.Get("http://localhost" + testAddr)
+		return err == nil
+	}, time.Second, time.Millisecond)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 

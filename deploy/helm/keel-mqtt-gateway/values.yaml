@@ -15,7 +15,7 @@
 
 image:
   repository: ghcr.io/keel-iot/keel-mqtt-gateway
-  tag: "0.3.0" # defaults to the gateway release matching this chart
+  tag: "0.3.1" # defaults to the gateway release matching this chart
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
@@ -148,7 +148,7 @@ core:
   redis:
     image:
       repository: redis
-      tag: 7-alpine
+      tag: 7.4.12-alpine
     resources: {}
     # Replication history in RAM on every core; size for write rate x outage
     # duration, with headroom under the container memory limit. Redis units.

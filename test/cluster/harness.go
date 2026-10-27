@@ -168,7 +168,7 @@ func (h *Harness) startPostgres(ctx context.Context) testcontainers.Container {
 func (h *Harness) startRedis(ctx context.Context, alias string) testcontainers.Container {
 	h.t.Helper()
 	req := testcontainers.ContainerRequest{
-		Image:          "redis:7-alpine",
+		Image:          "redis:7.4.12-alpine",
 		ExposedPorts:   []string{"6379/tcp"},
 		Networks:       []string{h.network.Name},
 		NetworkAliases: map[string][]string{h.network.Name: {alias}},

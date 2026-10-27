@@ -64,7 +64,11 @@ func TestHTTPHealthCheckServeAndClose(t *testing.T) {
 	time.Sleep(time.Millisecond)
 
 	// call healthcheck
-	resp, err := http.Get("http://localhost" + testAddr + "/healthcheck")
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		resp, err = http.Get("http://localhost" + testAddr + "/healthcheck")
+		return err == nil
+	}, time.Second, time.Millisecond)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
@@ -100,7 +104,11 @@ func TestHTTPHealthCheckServeAndCloseMethodNotAllowed(t *testing.T) {
 	time.Sleep(time.Millisecond)
 
 	// make disallowed method type http request
-	resp, err := http.Post("http://localhost"+testAddr+"/healthcheck", "application/json", http.NoBody)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		resp, err = http.Post("http://localhost"+testAddr+"/healthcheck", "application/json", http.NoBody)
+		return err == nil
+	}, time.Second, time.Millisecond)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 

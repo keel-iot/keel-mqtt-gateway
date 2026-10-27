@@ -23,7 +23,7 @@ func startFailoverTestRedis(t *testing.T, addr, password string) string {
 	_, port, err := net.SplitHostPort(addr)
 	require.NoError(t, err)
 	out, err := exec.Command("docker", "run", "--pull=never", "--detach", "--rm", "--network", "host",
-		"redis:7.4-alpine", "redis-server", "--bind", "127.0.0.1", "--port", port,
+		"redis:7.4.12-alpine", "redis-server", "--bind", "127.0.0.1", "--port", port,
 		"--appendonly", "no", "--save", "", "--requirepass", password, "--masterauth", password).CombinedOutput()
 	require.NoError(t, err, "%s", out)
 	id := strings.TrimSpace(string(out))
