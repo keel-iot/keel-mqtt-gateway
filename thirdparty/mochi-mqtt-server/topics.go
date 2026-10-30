@@ -660,6 +660,27 @@ func (x *TopicsIndex) SubscriberIDs(topic, localSharedMember string) []string {
 	return out
 }
 
+// SubscriberRoutingPlan is the ID-only query with the exact shared-filter
+// choices retained for inter-node forwarding metadata, including local choices.
+func (x *TopicsIndex) SubscriberRoutingPlan(topic, localSharedMember string) ([]string, map[string]string) {
+	routing := &routingSubscribers{nodes: make(map[string]struct{}), choices: make(map[string]routingSharedChoice), local: localSharedMember}
+	x.scanSubscribers(topic, 0, nil, &Subscribers{routing: routing})
+	shared := make(map[string]string, len(routing.choices))
+	for filter, choice := range routing.choices {
+		if choice.local {
+			shared[filter] = localSharedMember
+		} else {
+			shared[filter] = choice.client
+			routing.nodes[choice.client] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(routing.nodes))
+	for client := range routing.nodes {
+		out = append(out, client)
+	}
+	return out, shared
+}
+
 // scanSubscribers returns a list of client subscriptions matching an indexed topic address.
 func (x *TopicsIndex) scanSubscribers(topic string, d int, n *particle, subs *Subscribers) *Subscribers {
 	if n == nil {

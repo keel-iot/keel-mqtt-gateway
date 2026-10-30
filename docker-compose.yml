@@ -28,7 +28,7 @@ services:
       retries: 15
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.12-alpine
     ports:
       - "16379:6379"
 

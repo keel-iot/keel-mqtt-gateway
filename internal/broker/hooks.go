@@ -27,6 +27,7 @@ import (
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/dataplane"
 	keelraft "github.com/keel-iot/keel-mqtt-gateway/internal/cluster/raft"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/redisrouter"
+	"github.com/keel-iot/keel-mqtt-gateway/internal/cluster/routing"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/connector"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/forwarder"
 	"github.com/keel-iot/keel-mqtt-gateway/internal/session"
@@ -209,7 +210,7 @@ func (h *keelHook) Init(_ any) error {
 // OnSelectSubscribers keeps disconnected sessions out of live delivery.
 // In Redis-backed clusters Keel owns offline enqueueing for ordinary as well
 // as shared subscriptions; Mochi must not persist a second local copy.
-func (h *keelHook) OnSelectSubscribers(subs *mqtt.Subscribers, _ packets.Packet) *mqtt.Subscribers {
+func (h *keelHook) OnSelectSubscribers(subs *mqtt.Subscribers, pk packets.Packet) *mqtt.Subscribers {
 	if h.clusterRegistry == nil || h.server == nil {
 		return subs
 	}
@@ -221,7 +222,16 @@ func (h *keelHook) OnSelectSubscribers(subs *mqtt.Subscribers, _ packets.Packet)
 			}
 		}
 	}
+	allowed := make(map[string]struct{}, len(pk.SharedFilters))
+	for _, filter := range pk.SharedFilters {
+		allowed[filter] = struct{}{}
+	}
 	for filter, members := range subs.Shared {
+		if _, ok := allowed[filter]; pk.SharedFilters != nil && !ok {
+			delete(subs.Shared, filter)
+			continue
+		}
+
 		for clientID := range members {
 			cl, ok := h.server.Clients.Get(clientID)
 			if !ok || cl.Closed() || (!cl.Net.Inline && cl.Net.Conn == nil) {
@@ -893,7 +903,7 @@ func (h *keelHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet
 	)
 	defer span.End()
 
-	h.forwardToClusterSubscribers(ctx, info, pk)
+	pk.SharedFilters = h.forwardToClusterSubscribers(ctx, info, pk)
 
 	// Per-tenant daily data-volume quota gates only the OutputConnector fan-out
 	// (the Redpanda/plugin-facing side effects), never real MQTT subscriber
@@ -1273,9 +1283,9 @@ func (h *keelHook) OnUnsubscribed(cl *mqtt.Client, pk packets.Packet) {
 // identifies this MQTT PUBLISH event, not its content, so DeliverOffline
 // can dedup a delivery attempt that reaches the same session twice (see
 // OfflineOwnership.Place's handoff window).
-func (h *keelHook) forwardToClusterSubscribers(ctx context.Context, info *auth.DeviceInfo, pk packets.Packet) {
+func (h *keelHook) forwardToClusterSubscribers(ctx context.Context, info *auth.DeviceInfo, pk packets.Packet) []string {
 	if h.clusterRegistry == nil {
-		return
+		return nil
 	}
 
 	publishID, err := uuid.NewV7()
@@ -1288,13 +1298,14 @@ func (h *keelHook) forwardToClusterSubscribers(ctx context.Context, info *auth.D
 	// self-addressed Forward call below.
 	DeliverOffline(ctx, h.clusterRegistry, h.offlineDeliveryStore, h.clusterNodeID, publishID, pk.TopicName, pk.Payload, pk.FixedHeader.Qos, h.offlineDedupTTL, h.log)
 
+	nodes, sharedNodes := h.fanOutPlan(pk.TopicName)
+	localShared := sharedFiltersForNode(sharedNodes, h.clusterNodeID)
 	if h.clusterFwd == nil {
-		return
+		return localShared
 	}
-	nodes := h.fanOutNodes(pk.TopicName)
 	if len(nodes) == 0 {
 		telemetry.RoutingPublishes.WithLabelValues("no_targets").Inc()
-		return
+		return localShared
 	}
 	telemetry.RoutingPublishes.WithLabelValues("targets_found").Inc()
 	for _, nodeID := range nodes {
@@ -1312,13 +1323,27 @@ func (h *keelHook) forwardToClusterSubscribers(ctx context.Context, info *auth.D
 		QoS:          pk.FixedHeader.Qos,
 		PublishID:    publishID,
 	}
-	forwardClusterTargets(ctx, h.clusterFwd, h.clusterNodeID, nodes, msg, pk.TopicName, h.log, pk.FixedHeader.Qos)
+	forwardClusterTargets(ctx, h.clusterFwd, h.clusterNodeID, nodes, msg, pk.TopicName, h.log, pk.FixedHeader.Qos, sharedNodes)
+	return localShared
+}
+
+func sharedFiltersForNode(selected map[string]string, nodeID string) []string {
+	if selected == nil {
+		return nil // legacy Registry without a per-filter plan
+	}
+	filters := make([]string, 0)
+	for filter, target := range selected {
+		if target == nodeID {
+			filters = append(filters, filter)
+		}
+	}
+	return filters
 }
 
 // forwardClusterTargets sends all targets concurrently under one fan-out
 // budget. A failed target is best-effort and must not affect other targets or
 // turn the MQTT publish into a fatal error.
-func forwardClusterTargets(ctx context.Context, f dataplane.Forwarder, self string, nodes []string, msg *dataplane.Message, topic string, log *slog.Logger, qos byte) {
+func forwardClusterTargets(ctx context.Context, f dataplane.Forwarder, self string, nodes []string, msg *dataplane.Message, topic string, log *slog.Logger, qos byte, sharedNodes map[string]string) {
 	ctx, cancel := context.WithTimeout(ctx, clusterFanoutTimeout)
 	defer cancel()
 
@@ -1331,7 +1356,11 @@ func forwardClusterTargets(ctx context.Context, f dataplane.Forwarder, self stri
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := f.Forward(ctx, nodeID, msg); err != nil {
+			targetMsg := *msg
+			if sharedNodes != nil {
+				targetMsg.SharedFilters = sharedFiltersForNode(sharedNodes, nodeID)
+			}
+			if err := f.Forward(ctx, nodeID, &targetMsg); err != nil {
 				telemetry.ClusterForwardAttempts.WithLabelValues("failure").Inc()
 				log.Error("cluster: forward publish failed", "target_node", nodeID, "topic", topic, "error", err)
 				return
@@ -1348,10 +1377,26 @@ func forwardClusterTargets(ctx context.Context, f dataplane.Forwarder, self stri
 // indices (see keelraft.Registry's doc), combined here only for this
 // forward's target list, never merged in the registry itself.
 func (h *keelHook) fanOutNodes(topic string) []string {
-	live := h.clusterRegistry.NodesFor(topic, h.clusterNodeID)
+	nodes, _ := h.fanOutPlan(topic)
+	return nodes
+}
+
+type liveDeliveryPlanner interface {
+	LiveDeliveryPlan(topic, localNodeID string) routing.LivePlan
+}
+
+func (h *keelHook) fanOutPlan(topic string) ([]string, map[string]string) {
+	var live []string
+	var sharedNodes map[string]string
+	if planner, ok := h.clusterRegistry.(liveDeliveryPlanner); ok {
+		plan := planner.LiveDeliveryPlan(topic, h.clusterNodeID)
+		live, sharedNodes = plan.Nodes, plan.SharedNodes
+	} else {
+		live = h.clusterRegistry.NodesFor(topic, h.clusterNodeID)
+	}
 	offline := h.clusterRegistry.OfflineNodesFor(topic)
 	if len(offline) == 0 {
-		return live
+		return live, sharedNodes
 	}
 	seen := make(map[string]struct{}, len(live)+len(offline))
 	out := make([]string, 0, len(live)+len(offline))
@@ -1367,7 +1412,7 @@ func (h *keelHook) fanOutNodes(topic string) []string {
 			out = append(out, n)
 		}
 	}
-	return out
+	return out, sharedNodes
 }
 
 // forwardToOutputConnector fans a device publish out to every configured

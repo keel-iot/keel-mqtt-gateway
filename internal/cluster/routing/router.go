@@ -256,9 +256,22 @@ func (r *Router) publish(ctx context.Context, ev routeEvent) error {
 // than once per member node. localNodeID may be "" to disable this local
 // preference (e.g. no node ID is meaningful).
 func (r *Router) NodesFor(topic, localNodeID string) []string {
+	return r.LiveDeliveryPlan(topic, localNodeID).Nodes
+}
+
+// LivePlan records one shared node per exact group/filter, alongside the
+// ordinary fan-out targets. A forward must carry this decision so a node
+// reached for an unrelated subscription cannot elect another shared member.
+type LivePlan struct {
+	Nodes       []string
+	SharedNodes map[string]string
+}
+
+func (r *Router) LiveDeliveryPlan(topic, localNodeID string) LivePlan {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.index.SubscriberIDs(topic, localNodeID)
+	nodes, sharedNodes := r.index.SubscriberRoutingPlan(topic, localNodeID)
+	return LivePlan{Nodes: nodes, SharedNodes: sharedNodes}
 }
 
 // offlineRoutePrefix namespaces the Offline Routing Index from the Live

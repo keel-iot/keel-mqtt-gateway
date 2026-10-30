@@ -22,4 +22,8 @@ type Message struct {
 	// (see internal/broker's offline-delivery dedup), not an MQTT
 	// protocol field, not a Packet ID, not an application message ID.
 	PublishID uuid.UUID
+	// SharedFilters preserves the source's exact shared-group selection for
+	// this target. Nil identifies an older sender with no routing metadata;
+	// an empty non-nil slice means ordinary/offline delivery only.
+	SharedFilters []string
 }

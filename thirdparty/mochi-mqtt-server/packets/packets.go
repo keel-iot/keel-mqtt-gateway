@@ -139,6 +139,10 @@ type Packet struct {
 	ReservedBit     byte          // reserved, do not use (except in testing)
 	Ignore          bool          // if true, do not perform any message forwarding operations
 	InboundFlow     bool          // internal: PacketID belongs to a flow started by the client
+	// SharedFilters is internal delivery metadata, never an MQTT property.
+	// Nil keeps ordinary broker selection; a non-nil list authorizes only
+	// these exact shared group/filters, with an empty list authorizing none.
+	SharedFilters []string `json:"-"`
 }
 
 // Mods specifies certain values required for certain mqtt v5 compliance within packet encoding/decoding.
@@ -219,6 +223,9 @@ func (pk *Packet) Copy(allowTransfer bool) Packet {
 
 	if allowTransfer {
 		p.PacketID = pk.PacketID
+	}
+	if pk.SharedFilters != nil {
+		p.SharedFilters = append(make([]string, 0, len(pk.SharedFilters)), pk.SharedFilters...)
 	}
 
 	if len(pk.Connect.ProtocolName) > 0 {

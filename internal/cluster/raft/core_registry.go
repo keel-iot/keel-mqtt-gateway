@@ -65,6 +65,10 @@ func (c *CoreRegistry) NodesFor(topic, localNodeID string) []string {
 	return c.router.NodesFor(topic, localNodeID)
 }
 
+func (c *CoreRegistry) LiveDeliveryPlan(topic, localNodeID string) routing.LivePlan {
+	return c.router.LiveDeliveryPlan(topic, localNodeID)
+}
+
 func (c *CoreRegistry) OfflineNodesFor(topic string) []string {
 	return c.router.OfflineNodesFor(topic)
 }

@@ -61,6 +61,15 @@ func (e *EdgeRegistry) NodesFor(topic, localNodeID string) []string {
 	return e.router.NodesFor(topic, localNodeID)
 }
 
+func (e *EdgeRegistry) LiveDeliveryPlan(topic, localNodeID string) routing.LivePlan {
+	e.routerMu.RLock()
+	defer e.routerMu.RUnlock()
+	if e.router == nil {
+		return routing.LivePlan{SharedNodes: map[string]string{}}
+	}
+	return e.router.LiveDeliveryPlan(topic, localNodeID)
+}
+
 func (e *EdgeRegistry) OfflineNodesFor(topic string) []string {
 	e.routerMu.RLock()
 	defer e.routerMu.RUnlock()

@@ -1,4 +1,4 @@
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.10-alpine3.24 AS builder
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -23,7 +23,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # ── Runtime image ─────────────────────────────────────────────────────────────
 # Alpine (not distroless) so docker-compose can `docker exec ... drain` and so
 # the raft data dir volume mount is writable by a non-root user we control.
-FROM alpine:3.20
+FROM alpine:3.24.3
 RUN addgroup -S keel && adduser -S -G keel keel \
     && mkdir -p /data/raft && chown -R keel:keel /data
 COPY --from=builder /keel-mqtt-gateway /usr/local/bin/keel-mqtt-gateway

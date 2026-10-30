@@ -1,5 +1,10 @@
 # Keel MQTT Gateway
 
+> **Do not deploy v0.2.41–v0.2.45.** These versions contain known shared-
+> subscription delivery bugs that can duplicate deliveries and accumulate
+> excessive Redis inflight state. Use **v0.3.3**; see the
+> [release and rollout notes](docs/releases/0.3.3.md).
+
 [Website](https://keel-iot.eu) ·
 [Documentation](https://keel-iot.eu/docs.html) ·
 [Integrations](https://keel-iot.eu/integrations.html) ·

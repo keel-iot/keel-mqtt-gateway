@@ -46,7 +46,7 @@ services:
   # being deterministically preferred at first bootstrap (see
   # membership.bootstrapRedisPrimary's doc).
   redis-core-1:
-    image: redis:7-alpine
+    image: redis:7.4.12-alpine
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis-core-1-data:/data
@@ -54,7 +54,7 @@ services:
       - "16379:6379"
 
   redis-core-2:
-    image: redis:7-alpine
+    image: redis:7.4.12-alpine
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis-core-2-data:/data
@@ -62,7 +62,7 @@ services:
       - "16380:6379"
 
   redis-core-3:
-    image: redis:7-alpine
+    image: redis:7.4.12-alpine
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis-core-3-data:/data

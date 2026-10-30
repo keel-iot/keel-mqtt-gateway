@@ -253,3 +253,13 @@ No hook/default standalone behavior changes: Mochi still persists ordinary
 offline QoS state when no external-cluster filtering hook removes that target.
 Connected and inline clients remain eligible. Existing ordinary offline and
 disconnect-during-persistence tests continue to cover the default behavior.
+
+## Distributed shared-subscription selection (v0.2.46)
+
+`packets.Packet.SharedFilters` and `Server.PublishWithSharedFilters` carry
+internal per-publish routing metadata. Nil preserves ordinary broker
+selection; an explicit empty slice suppresses shared delivery on a node
+reached only for ordinary/offline subscriptions. The Keel subscriber hook
+filters shared groups before Mochi selects a local member. This metadata is
+not an MQTT property and is not transmitted to devices. Packet copies
+preserve the nil/empty distinction.
