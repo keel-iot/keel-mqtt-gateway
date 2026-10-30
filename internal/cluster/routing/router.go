@@ -270,28 +270,8 @@ type LivePlan struct {
 func (r *Router) LiveDeliveryPlan(topic, localNodeID string) LivePlan {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	subs := r.index.Subscribers(topic)
-	sharedNodes := make(map[string]string, len(subs.Shared))
-	seen := make(map[string]struct{}, len(subs.Subscriptions))
-	for nodeID := range subs.Subscriptions {
-		seen[nodeID] = struct{}{}
-	}
-	for filter, members := range subs.Shared {
-		if _, ok := members[localNodeID]; ok {
-			sharedNodes[filter] = localNodeID
-			continue
-		}
-		for nodeID := range members {
-			sharedNodes[filter] = nodeID
-			seen[nodeID] = struct{}{}
-			break
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for nodeID := range seen {
-		out = append(out, nodeID)
-	}
-	return LivePlan{Nodes: out, SharedNodes: sharedNodes}
+	nodes, sharedNodes := r.index.SubscriberRoutingPlan(topic, localNodeID)
+	return LivePlan{Nodes: nodes, SharedNodes: sharedNodes}
 }
 
 // offlineRoutePrefix namespaces the Offline Routing Index from the Live
@@ -362,6 +342,9 @@ func (r *Router) OfflineSharedClientsFor(topic, nodeID string) map[string]string
 }
 
 func (r *Router) offlineSharedSelectionsLocked(topic string) map[string]offlineSharedSelection {
+	if len(r.offlineShared) == 0 {
+		return nil
+	}
 	selected := make(map[string]offlineSharedSelection)
 	liveShared := r.index.Subscribers(topic).Shared
 	for filter, sharedIndex := range r.offlineShared {

@@ -134,6 +134,8 @@ type Config struct {
 	RedisAddr string
 	// RedisPassword is the optional authentication password for Redis.
 	RedisPassword string
+	// RedisIFMSchema selects auto, 1, or 2 without activating a migration.
+	RedisIFMSchema string
 
 	// RedisConnectRetryInterval and RedisConnectMaxAttempts bound how long
 	// the initial Redis connection at startup retries before giving up
@@ -278,6 +280,13 @@ func Load() (*Config, error) {
 		dbTimeout = d
 	}
 
+	redisIFMSchema := os.Getenv("REDIS_IFM_SCHEMA")
+	if redisIFMSchema == "" {
+		redisIFMSchema = "auto"
+	}
+	if redisIFMSchema != "auto" && redisIFMSchema != "1" && redisIFMSchema != "2" {
+		return nil, fmt.Errorf("invalid REDIS_IFM_SCHEMA %q: expected auto, 1, or 2", redisIFMSchema)
+	}
 	var brokers []string
 	if v := os.Getenv("REDPANDA_BROKERS"); v != "" {
 		for _, b := range strings.Split(v, ",") {
@@ -431,6 +440,7 @@ func Load() (*Config, error) {
 		MaxKeepAlive:              maxKeepAlive,
 		RedisAddr:                 os.Getenv("REDIS_ADDR"),
 		RedisPassword:             os.Getenv("REDIS_PASSWORD"),
+		RedisIFMSchema:            redisIFMSchema,
 		RedisConnectRetryInterval: redisConnectRetryInterval,
 		RedisConnectMaxAttempts:   redisConnectMaxAttempts,
 		AuthBackend:               os.Getenv("AUTH_BACKEND"),

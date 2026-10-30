@@ -15,10 +15,16 @@
 
 image:
   repository: ghcr.io/keel-iot/keel-mqtt-gateway
-  tag: "0.3.2" # defaults to the gateway release matching this chart
+  tag: "0.3.3" # defaults to the gateway release matching this chart
+  digest: "" # immutable sha256 digest; takes precedence over tag
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
+# Deployment-level compatibility contract for Redis IFM schema activation.
+# Redis remains the semantic authority; this value is only consumed by the
+# admission guard and GitOps review process.
+ifm:
+  schemaRequired: "1"
 
 nameOverride: ""
 fullnameOverride: ""
@@ -152,6 +158,7 @@ core:
     resources: {}
     # Replication history in RAM on every core; size for write rate x outage
     # duration, with headroom under the container memory limit. Redis units.
+    ifmSchema: "auto" # auto follows activation; "1"/"2" pin an existing storage schema
     replBacklogSize: "1mb" # compatibility default; e.g. "128mb" for a busy fleet
     password: "" # optional — same password shared by every co-located instance; empty = no auth
 
@@ -186,7 +193,8 @@ core:
 edge:
   replicaCount: 3
 
-  image: {} # overrides top-level `image` for edge only, if set
+  image: {} # overrides top-level `image` for edge only, if set (including digest)
+  ifmSchemaMax: "2" # capability declared by compatibility/future Edge releases
   resources: {}
   podAnnotations: {}
   podLabels: {}

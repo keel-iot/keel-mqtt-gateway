@@ -404,9 +404,6 @@ func (s *Server) EstablishConnection(listener string, c net.Conn) error {
 // attachClient validates an incoming client connection and if viable, attaches the client
 // to the server, performs session housekeeping, and reads incoming packets.
 func (s *Server) attachClient(cl *Client, listener string) error {
-	defer s.Listeners.ClientsWg.Done()
-	s.Listeners.ClientsWg.Add(1)
-
 	go cl.WriteLoop()
 	defer cl.Stop(nil)
 
@@ -520,10 +517,20 @@ func (s *Server) readConnectionPacket(cl *Client) (pk packets.Packet, err error)
 func (s *Server) receivePacket(cl *Client, pk packets.Packet) error {
 	err := s.processPacket(cl, pk)
 	if err != nil {
-		if code, ok := err.(packets.Code); ok &&
+		code, refused := err.(packets.Code)
+		if refused &&
 			cl.Properties.ProtocolVersion == 5 &&
 			code.Code >= packets.ErrUnspecifiedError.Code {
 			_ = s.DisconnectClient(cl, code)
+		}
+		if refused {
+			s.Log.Debug("packet refused",
+				"code", code.Code,
+				"reason", code.Reason,
+				"client", cl.ID,
+				"listener", cl.Net.Listener,
+				"type", pk.FixedHeader.Type)
+			return err
 		}
 
 		s.Log.Warn("error processing packet", "error", err, "client", cl.ID, "listener", cl.Net.Listener, "pk", pk)
@@ -716,11 +723,11 @@ func (s *Server) processPacket(cl *Client, pk packets.Packet) error {
 		return err
 	}
 
-	if cl.State.Inflight.Len() > 0 && atomic.LoadInt32(&cl.State.Inflight.sendQuota) > 0 {
+	if cl.State.Inflight.LenOutbound() > 0 && atomic.LoadInt32(&cl.State.Inflight.sendQuota) > 0 {
 		next, ok := cl.State.Inflight.NextImmediate()
 		if ok {
 			_ = cl.WritePacket(next)
-			if ok := cl.State.Inflight.Delete(next.PacketID); ok {
+			if ok := cl.State.Inflight.DeleteOutbound(next.PacketID); ok {
 				atomic.AddInt64(&s.Info.Inflight, -1)
 			}
 			cl.State.Inflight.DecreaseSendQuota()
@@ -899,12 +906,12 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 	}
 
 	if !cl.Net.Inline {
-		if pki, ok := cl.State.Inflight.Get(pk.PacketID); ok {
+		if pki, ok := cl.State.Inflight.GetInbound(pk.PacketID); ok {
 			if pki.FixedHeader.Type == packets.Pubrec { // [MQTT-4.3.3-10]
 				ack := s.buildAck(pk.PacketID, packets.Pubrec, 0, pk.Properties, packets.ErrPacketIdentifierInUse)
 				return cl.WritePacket(ack)
 			}
-			if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.2-5]
+			if ok := cl.State.Inflight.DeleteInbound(pk.PacketID); ok { // [MQTT-4.3.2-5]
 				atomic.AddInt64(&s.Info.Inflight, -1)
 			}
 		}
@@ -912,6 +919,26 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 
 	if pk.Properties.TopicAliasFlag && pk.Properties.TopicAlias > 0 { // [MQTT-3.3.2-11]
 		pk.TopicName = cl.State.TopicAliases.Inbound.Set(pk.Properties.TopicAlias, pk.TopicName)
+
+		// Section 3.3.2.3.4 case 3a: an alias this connection never
+		// registered, carrying no topic name of its own, is a Protocol
+		// Error and the answer is a DISCONNECT.
+		//
+		// PublishValidate cannot catch it. It refuses an absent topic only
+		// when there is no alias either, and it runs against the decoded
+		// packet, which is the one place that does not know which aliases
+		// this connection has registered.
+		//
+		// Reaching this is ordinary rather than hostile: [MQTT-3.3.2-7]
+		// discards every mapping when the network connection goes, so any
+		// client that reconnects and keeps using an alias lands here. It
+		// has to be told. Falling through publishes to the empty string,
+		// which reaches no subscriber and which [MQTT-4.7.3-1] says is not
+		// a topic name at all - and a QoS 1 or 2 client is then sent an
+		// acknowledgement saying the message was delivered.
+		if pk.TopicName == "" {
+			return s.DisconnectClient(cl, packets.ErrProtocolViolationNoTopic)
+		}
 	}
 
 	if pk.FixedHeader.Qos > s.Options.Capabilities.MaximumQos {
@@ -925,7 +952,7 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 		return nil
 	} else if errors.Is(err, packets.CodeSuccessIgnore) {
 		pk.Ignore = true
-	} else if cl.Properties.ProtocolVersion == 5 && pk.FixedHeader.Qos > 0 && errors.As(err, new(packets.Code)) {
+	} else if refusal := (packets.Code{}); cl.Properties.ProtocolVersion == 5 && pk.FixedHeader.Qos > 0 && errors.As(err, &refusal) {
 		// KEEL PATCH (thirdparty/mochi-mqtt-server/PATCH.md): a QoS 2
 		// publish rejected by an OnPublish hook must get a PUBREC, not a
 		// PUBACK — see the ACL-deny branch above, which already gets this
@@ -934,7 +961,7 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 		if pk.FixedHeader.Qos == 2 {
 			ackType = packets.Pubrec
 		}
-		err = cl.WritePacket(s.buildAck(pk.PacketID, ackType, 0, pk.Properties, err.(packets.Code)))
+		err = cl.WritePacket(s.buildAck(pk.PacketID, ackType, 0, pk.Properties, refusal))
 		if err != nil {
 			return err
 		}
@@ -955,14 +982,18 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 	}
 
 	cl.State.Inflight.DecreaseReceiveQuota()
-	ack := s.buildAck(pk.PacketID, packets.Puback, 0, pk.Properties, packets.QosCodes[pk.FixedHeader.Qos]) // [MQTT-4.3.2-4]
+	ack := s.buildAck(pk.PacketID, packets.Puback, 0, pk.Properties, packets.CodeSuccess) // [MQTT-4.3.2-4] [MQTT-3.4.2-1]
 	if pk.FixedHeader.Qos == 2 {
 		ack = s.buildAck(pk.PacketID, packets.Pubrec, 0, pk.Properties, packets.CodeSuccess) // [MQTT-3.3.4-1] [MQTT-4.3.3-8]
 	}
+	ack.InboundFlow = true
 
-	if ok := cl.State.Inflight.Set(ack); ok {
-		atomic.AddInt64(&s.Info.Inflight, 1)
-		s.hooks.OnQosPublish(cl, ack, ack.Created, 0)
+	// PUBREC waits for PUBREL; PUBACK ends the flow without stored state.
+	if pk.FixedHeader.Qos == 2 {
+		if ok := cl.State.Inflight.SetInbound(ack); ok {
+			atomic.AddInt64(&s.Info.Inflight, 1)
+			s.hooks.OnQosPublish(cl, ack, ack.Created, 0)
+		}
 	}
 
 	err = cl.WritePacket(ack)
@@ -971,9 +1002,6 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 	}
 
 	if pk.FixedHeader.Qos == 1 {
-		if ok := cl.State.Inflight.Delete(ack.PacketID); ok {
-			atomic.AddInt64(&s.Info.Inflight, -1)
-		}
 		cl.State.Inflight.IncreaseReceiveQuota()
 		s.hooks.OnQosComplete(cl, ack)
 	}
@@ -1015,12 +1043,18 @@ func (s *Server) publishToSubscribers(pk packets.Packet) {
 	}
 
 	subscribers := s.Topics.Subscribers(pk.TopicName)
+	// Hooks may delegate ordinary offline delivery to an external clustered
+	// store, even when no shared subscription matches this topic.
+	subscribers = s.hooks.OnSelectSubscribers(subscribers, pk)
+	sharedClients := map[string]bool{}
 	if len(subscribers.Shared) > 0 {
-		subscribers = s.hooks.OnSelectSubscribers(subscribers, pk)
 		if len(subscribers.SharedSelected) == 0 {
 			subscribers.SelectShared()
 		}
 		subscribers.MergeSharedSelected()
+		if len(subscribers.SharedSelectedGroups) > 0 {
+			sharedClients = s.publishSharedToSubscribers(subscribers, pk)
+		}
 	}
 
 	for _, inlineSubscription := range subscribers.InlineSubscriptions {
@@ -1028,6 +1062,9 @@ func (s *Server) publishToSubscribers(pk packets.Packet) {
 	}
 
 	for id, subs := range subscribers.Subscriptions {
+		if sharedClients[id] {
+			continue
+		}
 		if cl, ok := s.Clients.Get(id); ok {
 			_, err := s.publishToClient(cl, subs, pk)
 			if err != nil {
@@ -1037,7 +1074,203 @@ func (s *Server) publishToSubscribers(pk packets.Packet) {
 	}
 }
 
+// publishSharedToSubscribers delivers each shared group to one member. The
+// first member is the existing SelectShared choice; only failures that occur
+// before a delivery is accepted may advance to another member. A client is
+// attempted at most once for the whole publish, which also preserves the
+// existing one-message behavior when several shared filters select it.
+func (s *Server) publishSharedToSubscribers(subscribers *Subscribers, pk packets.Packet) map[string]bool {
+	// The usual publish selects one client for one shared group. Do not copy
+	// every fallback candidate and allocate the fallback plan until it is needed.
+	if len(subscribers.SharedSelected) == 1 && len(subscribers.SharedSelectedGroups) == len(subscribers.Shared) {
+		for client := range subscribers.SharedSelected {
+			allSelected := len(subscribers.Shared) > 0
+			for filter, selected := range subscribers.SharedSelectedGroups {
+				if selected != client {
+					allSelected = false
+					break
+				}
+				if _, member := subscribers.Shared[filter][client]; !member {
+					allSelected = false
+					break
+				}
+			}
+			if sub, ok := subscribers.Subscriptions[client]; ok && allSelected {
+				// Preserve the fallback planner's merge even for custom hook selections.
+				for filter := range subscribers.SharedSelectedGroups {
+					sub = sub.Merge(subscribers.Shared[filter][client])
+				}
+				err := s.publishSharedToClient(client, sub, pk)
+				if err == nil {
+					return map[string]bool{client: true}
+				}
+				if !isSafeSharedDeliveryFailure(err) {
+					s.Log.Debug("shared delivery stopped after ambiguous failure", "error", err, "client", client, "packet", pk)
+					return map[string]bool{client: true}
+				}
+				return s.publishSharedWithFallback(subscribers, pk, client, err)
+			}
+		}
+	}
+	return s.publishSharedWithFallback(subscribers, pk, "", nil)
+}
+
+// publishSharedToClient distinguishes No Local from a successful acceptance.
+func (s *Server) publishSharedToClient(client string, sub packets.Subscription, pk packets.Packet) error {
+	cl, ok := s.Clients.Get(client)
+	if !ok || (sub.NoLocal && pk.Origin == client) {
+		return packets.CodeDisconnect
+	}
+	_, err := s.publishToClientMode(cl, sub, pk, true)
+	return err
+}
+
+// initialClient already failed before the fallback plan was built. Reuse that
+// result rather than attempting it twice (including its persistence hooks).
+func (s *Server) publishSharedWithFallback(subscribers *Subscribers, pk packets.Packet, initialClient string, initialError error) map[string]bool {
+
+	type candidate struct {
+		client string
+		sub    packets.Subscription
+	}
+	type group struct {
+		candidates []candidate
+		cursor     int
+		delivered  bool
+	}
+
+	groups := make(map[string]*group, len(subscribers.Shared))
+	plan := make(map[string][]string)
+	for filter, members := range subscribers.Shared {
+		g := &group{}
+		selectedIndex := -1
+		for client, sub := range members {
+			g.candidates = append(g.candidates, candidate{client: client, sub: sub})
+			if client == subscribers.SharedSelectedGroups[filter] {
+				selectedIndex = len(g.candidates) - 1
+			}
+		}
+		selected := subscribers.SharedSelectedGroups[filter]
+		// Keep the member chosen by SelectShared first. The remaining
+		// candidates retain map-derived order, which is not a fairness
+		// contract but is sufficient for bounded fallback.
+		if selectedIndex > 0 {
+			g.candidates[0], g.candidates[selectedIndex] = g.candidates[selectedIndex], g.candidates[0]
+			selectedIndex = 0
+		}
+		if selectedIndex == 0 {
+			g.cursor = 1
+		}
+		groups[filter] = g
+		plan[selected] = append(plan[selected], filter)
+	}
+
+	clients := make(map[string]bool)
+	attempted := make(map[string]bool)
+	accepted := make(map[string]bool)
+	queued := make(map[string]bool)
+	queue := make([]string, 0, len(subscribers.SharedSelected))
+	for client := range subscribers.SharedSelected {
+		queued[client] = true
+		queue = append(queue, client)
+	}
+
+	for len(queue) > 0 {
+		client := queue[0]
+		queue = queue[1:]
+		if attempted[client] {
+			continue
+		}
+		attempted[client] = true
+		clients[client] = true
+
+		sub, exists := subscribers.Subscriptions[client]
+		for _, filter := range plan[client] {
+			for _, c := range groups[filter].candidates {
+				if c.client != client {
+					continue
+				}
+				if !exists {
+					sub = c.sub
+					exists = true
+				} else {
+					sub = sub.Merge(c.sub)
+				}
+				break
+			}
+		}
+
+		var err error
+		if client == initialClient {
+			err = initialError
+		} else {
+			err = s.publishSharedToClient(client, sub, pk)
+		}
+		if err == nil {
+			accepted[client] = true
+			for _, filter := range plan[client] {
+				groups[filter].delivered = true
+			}
+			continue
+		}
+		if !isSafeSharedDeliveryFailure(err) {
+			s.Log.Debug("shared delivery stopped after ambiguous failure", "error", err, "client", client, "packet", pk)
+			continue
+		}
+
+		for _, filter := range plan[client] {
+			g := groups[filter]
+			advanced := false
+			for g.cursor < len(g.candidates) {
+				next := g.candidates[g.cursor]
+				g.cursor++
+				if accepted[next.client] {
+					// The client already accepted this publish for another
+					// matching shared group. Keep the existing one-packet
+					// behavior for overlapping subscriptions rather than
+					// delivering the same application message twice.
+					g.delivered = true
+					advanced = true
+					break
+				}
+				if attempted[next.client] {
+					continue
+				}
+				plan[next.client] = append(plan[next.client], filter)
+				if !queued[next.client] {
+					queued[next.client] = true
+					queue = append(queue, next.client)
+				}
+				advanced = true
+				break
+			}
+			if !advanced && !g.delivered {
+				s.Log.Debug("shared delivery exhausted", "filter", filter, "packet", pk)
+			}
+		}
+	}
+
+	return clients
+}
+
+// A shared member may be replaced only when no delivery has been accepted.
+// ErrPendingClientWritesExceeded is safe because publishToClient rolls back
+// its inflight/quota/hook state before returning it. Other errors can reflect
+// an accepted transaction or an ambiguous transport boundary.
+func isSafeSharedDeliveryFailure(err error) bool {
+	return errors.Is(err, packets.ErrQuotaExceeded) ||
+		errors.Is(err, packets.ErrNotAuthorized) ||
+		errors.Is(err, packets.ErrPendingClientWritesExceeded) ||
+		errors.Is(err, packets.CodeDisconnect)
+}
+
 func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packets.Packet) (packets.Packet, error) {
+	return s.publishToClientMode(cl, sub, pk, false)
+}
+
+// Shared fallback must undo a disconnected candidate's tentative delivery.
+// Ordinary subscriptions keep that state for the persistent session instead.
+func (s *Server) publishToClientMode(cl *Client, sub packets.Subscription, pk packets.Packet, sharedAttempt bool) (packets.Packet, error) {
 	if sub.NoLocal && pk.Origin == cl.ID {
 		return pk, nil // [MQTT-3.8.3-3]
 	}
@@ -1066,19 +1299,8 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 		out.FixedHeader.Qos = s.Options.Capabilities.MaximumQos // [MQTT-3.2.2-9]
 	}
 
-	if cl.Properties.Props.TopicAliasMaximum > 0 {
-		var aliasExists bool
-		out.Properties.TopicAlias, aliasExists = cl.State.TopicAliases.Outbound.Set(pk.TopicName)
-		if out.Properties.TopicAlias > 0 {
-			out.Properties.TopicAliasFlag = true
-			if aliasExists {
-				out.TopicName = ""
-			}
-		}
-	}
-
 	if out.FixedHeader.Qos > 0 {
-		if cl.State.Inflight.Len() >= int(s.Options.Capabilities.MaximumInflight) {
+		if cl.State.Inflight.LenOutbound() >= int(s.Options.Capabilities.MaximumInflight) {
 			// add hook?
 			atomic.AddInt64(&s.Info.InflightDropped, 1)
 			s.Log.Warn("client store quota reached", "client", cl.ID, "listener", cl.Net.Listener)
@@ -1096,32 +1318,76 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 		out.PacketID = uint16(i) // [MQTT-2.2.1-4]
 		sentQuota := atomic.LoadInt32(&cl.State.Inflight.sendQuota)
 
-		if ok := cl.State.Inflight.Set(out); ok { // [MQTT-4.3.2-3] [MQTT-4.3.3-3]
+		if ok := cl.State.Inflight.SetOutbound(out); ok { // [MQTT-4.3.2-3] [MQTT-4.3.3-3]
 			atomic.AddInt64(&s.Info.Inflight, 1)
-			s.hooks.OnQosPublish(cl, out, out.Created, 0)
+			if err := s.hooks.OnQosPublishResult(cl, out, out.Created, 0); err != nil {
+				// Redis may have committed the state while the response was lost.
+				// Roll back only local state and stop this shared attempt; another
+				// member must not receive an ambiguously persisted delivery.
+				if cl.State.Inflight.DeleteOutbound(out.PacketID) {
+					atomic.AddInt64(&s.Info.Inflight, -1)
+					cl.State.Inflight.IncreaseSendQuota()
+				}
+				return out, fmt.Errorf("qos persistence failed: %w", err)
+			}
 			cl.State.Inflight.DecreaseSendQuota()
 		}
 
 		if sentQuota == 0 && atomic.LoadInt32(&cl.State.Inflight.maximumSendQuota) > 0 {
 			out.Expiry = -1
-			cl.State.Inflight.Set(out)
+			cl.State.Inflight.SetOutbound(out)
 			return out, nil
 		}
 	}
 
+	cl.State.outboundMu.Lock()
+	defer cl.State.outboundMu.Unlock()
+
 	if cl.Net.Conn == nil || cl.Closed() {
+		if sharedAttempt && out.FixedHeader.Qos > 0 {
+			if cl.State.Inflight.DeleteOutbound(out.PacketID) {
+				atomic.AddInt64(&s.Info.Inflight, -1)
+				cl.State.Inflight.IncreaseSendQuota()
+				if err := s.hooks.OnQosDroppedResult(cl, out); err != nil {
+					return out, fmt.Errorf("qos persistence cleanup failed: %w", err)
+				}
+			}
+		}
 		return out, packets.CodeDisconnect
 	}
 
-	select {
-	case cl.State.outbound <- &out:
-		atomic.AddInt32(&cl.State.outboundQty, 1)
-	default:
+	// Reserve the topic alias immediately before enqueue, under the same
+	// per-client lock as other publishers. If the nonblocking enqueue fails,
+	// the alias can be removed without racing another publisher's reservation.
+	if cl.Properties.Props.TopicAliasMaximum > 0 {
+		var aliasExists bool
+		out.Properties.TopicAlias, aliasExists = cl.State.TopicAliases.Outbound.Set(pk.TopicName)
+		if out.Properties.TopicAlias > 0 {
+			out.Properties.TopicAliasFlag = true
+			if aliasExists {
+				out.TopicName = ""
+			}
+		}
+	}
+
+	// Count before making the packet visible to WriteLoop, which can consume
+	// it immediately (including with an explicitly unbuffered queue).
+	atomic.AddInt32(&cl.State.outboundQty, 1)
+	if !cl.State.outbound.tryPush(&out) {
+		atomic.AddInt32(&cl.State.outboundQty, -1)
+		if out.Properties.TopicAlias > 0 {
+			cl.State.TopicAliases.Outbound.Delete(pk.TopicName, out.Properties.TopicAlias)
+		}
 		atomic.AddInt64(&s.Info.MessagesDropped, 1)
 		cl.ops.hooks.OnPublishDropped(cl, pk)
 		if out.FixedHeader.Qos > 0 {
-			cl.State.Inflight.Delete(out.PacketID) // packet was dropped due to irregular circumstances, so rollback inflight.
-			cl.State.Inflight.IncreaseSendQuota()
+			if cl.State.Inflight.DeleteOutbound(out.PacketID) { // packet was dropped before enqueue; rollback inflight.
+				atomic.AddInt64(&s.Info.Inflight, -1)
+				cl.State.Inflight.IncreaseSendQuota()
+				if err := s.hooks.OnQosDroppedResult(cl, out); err != nil {
+					return out, fmt.Errorf("qos persistence cleanup failed: %w", err)
+				}
+			}
 		}
 		return out, packets.ErrPendingClientWritesExceeded
 	}
@@ -1175,11 +1441,11 @@ func (s *Server) buildAck(packetID uint16, pkt, qos byte, properties packets.Pro
 
 // processPuback processes a Puback packet, denoting completion of a QOS 1 packet sent from the server.
 func (s *Server) processPuback(cl *Client, pk packets.Packet) error {
-	if _, ok := cl.State.Inflight.Get(pk.PacketID); !ok {
+	if _, ok := cl.State.Inflight.GetOutbound(pk.PacketID); !ok {
 		return nil // omit, but would be packets.ErrPacketIdentifierNotFound
 	}
 
-	if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.2-5]
+	if ok := cl.State.Inflight.DeleteOutbound(pk.PacketID); ok { // [MQTT-4.3.2-5]
 		cl.State.Inflight.IncreaseSendQuota()
 		atomic.AddInt64(&s.Info.Inflight, -1)
 		s.hooks.OnQosComplete(cl, pk)
@@ -1190,32 +1456,33 @@ func (s *Server) processPuback(cl *Client, pk packets.Packet) error {
 
 // processPubrec processes a Pubrec packet, denoting receipt of a QOS 2 packet sent from the server.
 func (s *Server) processPubrec(cl *Client, pk packets.Packet) error {
-	if _, ok := cl.State.Inflight.Get(pk.PacketID); !ok { // [MQTT-4.3.3-7] [MQTT-4.3.3-13]
+	pki, ok := cl.State.Inflight.GetOutbound(pk.PacketID)
+	if !ok { // [MQTT-4.3.3-7] [MQTT-4.3.3-13]
 		return cl.WritePacket(s.buildAck(pk.PacketID, packets.Pubrel, 1, pk.Properties, packets.ErrPacketIdentifierNotFound))
 	}
 
 	if pk.ReasonCode >= packets.ErrUnspecifiedError.Code || !pk.ReasonCodeValid() { // [MQTT-4.3.3-4]
-		if ok := cl.State.Inflight.Delete(pk.PacketID); ok {
+		if ok := cl.State.Inflight.DeleteOutbound(pk.PacketID); ok {
 			atomic.AddInt64(&s.Info.Inflight, -1)
 		}
-		cl.ops.hooks.OnQosDropped(cl, pk)
+		cl.ops.hooks.OnQosDropped(cl, pki)
 		return nil // as per MQTT5 Section 4.13.2 paragraph 2
 	}
 
 	ack := s.buildAck(pk.PacketID, packets.Pubrel, 1, pk.Properties, packets.CodeSuccess) // [MQTT-4.3.3-4] ![MQTT-4.3.3-6]
 	cl.State.Inflight.DecreaseReceiveQuota()                                              // -1 RECV QUOTA
-	cl.State.Inflight.Set(ack)                                                            // [MQTT-4.3.3-5]
+	cl.State.Inflight.SetOutbound(ack)                                                    // [MQTT-4.3.3-5]
 	return cl.WritePacket(ack)
 }
 
 // processPubrel processes a Pubrel packet, denoting completion of a QOS 2 packet sent from the client.
 func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
-	if _, ok := cl.State.Inflight.Get(pk.PacketID); !ok { // [MQTT-4.3.3-7] [MQTT-4.3.3-13]
+	if _, ok := cl.State.Inflight.GetInbound(pk.PacketID); !ok { // [MQTT-4.3.3-7] [MQTT-4.3.3-13]
 		return cl.WritePacket(s.buildAck(pk.PacketID, packets.Pubcomp, 0, pk.Properties, packets.ErrPacketIdentifierNotFound))
 	}
 
 	if pk.ReasonCode >= packets.ErrUnspecifiedError.Code || !pk.ReasonCodeValid() { // [MQTT-4.3.3-9]
-		if ok := cl.State.Inflight.Delete(pk.PacketID); ok {
+		if ok := cl.State.Inflight.DeleteInbound(pk.PacketID); ok {
 			atomic.AddInt64(&s.Info.Inflight, -1)
 		}
 		cl.ops.hooks.OnQosDropped(cl, pk)
@@ -1223,16 +1490,16 @@ func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
 	}
 
 	ack := s.buildAck(pk.PacketID, packets.Pubcomp, 0, pk.Properties, packets.CodeSuccess) // [MQTT-4.3.3-11]
-	cl.State.Inflight.Set(ack)
+	cl.State.Inflight.SetInbound(ack)
 
 	err := cl.WritePacket(ack)
 	if err != nil {
 		return err
 	}
 
-	cl.State.Inflight.IncreaseReceiveQuota()             // +1 RECV QUOTA
-	cl.State.Inflight.IncreaseSendQuota()                // +1 SENT QUOTA
-	if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.3-12]
+	cl.State.Inflight.IncreaseReceiveQuota()                    // +1 RECV QUOTA
+	cl.State.Inflight.IncreaseSendQuota()                       // +1 SENT QUOTA
+	if ok := cl.State.Inflight.DeleteInbound(pk.PacketID); ok { // [MQTT-4.3.3-12]
 		atomic.AddInt64(&s.Info.Inflight, -1)
 		s.hooks.OnQosComplete(cl, pk)
 	}
@@ -1245,7 +1512,7 @@ func (s *Server) processPubcomp(cl *Client, pk packets.Packet) error {
 	// regardless of whether the pubcomp is a success or failure, we end the qos flow, delete inflight, and restore the quotas.
 	cl.State.Inflight.IncreaseReceiveQuota() // +1 RECV QUOTA
 	cl.State.Inflight.IncreaseSendQuota()    // +1 SENT QUOTA
-	if ok := cl.State.Inflight.Delete(pk.PacketID); ok {
+	if ok := cl.State.Inflight.DeleteOutbound(pk.PacketID); ok {
 		atomic.AddInt64(&s.Info.Inflight, -1)
 		s.hooks.OnQosComplete(cl, pk)
 	}
@@ -1257,7 +1524,7 @@ func (s *Server) processPubcomp(cl *Client, pk packets.Packet) error {
 func (s *Server) processSubscribe(cl *Client, pk packets.Packet) error {
 	pk = s.hooks.OnSubscribe(cl, pk)
 	code := packets.CodeSuccess
-	if _, ok := cl.State.Inflight.Get(pk.PacketID); ok {
+	if _, ok := cl.State.Inflight.GetInbound(pk.PacketID); ok {
 		code = packets.ErrPacketIdentifierInUse
 	}
 
@@ -1331,7 +1598,7 @@ func (s *Server) processSubscribe(cl *Client, pk packets.Packet) error {
 // processUnsubscribe processes an unsubscribe packet.
 func (s *Server) processUnsubscribe(cl *Client, pk packets.Packet) error {
 	code := packets.CodeSuccess
-	if _, ok := cl.State.Inflight.Get(pk.PacketID); ok {
+	if _, ok := cl.State.Inflight.GetInbound(pk.PacketID); ok {
 		code = packets.ErrPacketIdentifierInUse
 	}
 
@@ -1440,10 +1707,26 @@ func (s *Server) DisconnectClient(cl *Client, code packets.Code) error {
 		out.Properties.ReasonString = code.Reason //  // [MQTT-3.14.2-1]
 	}
 
+	// The server-to-client Disconnect packet was introduced in MQTT v5. In
+	// v3.1.1 and v3.1 it flows client to server only, so a v3 client is
+	// closed without one rather than being sent a packet type its own
+	// specification does not define in that direction.
+	//
 	// We already have a code we are using to disconnect the client, so we are not
 	// interested if the write packet fails due to a closed connection (as we are closing it).
-	err := cl.WritePacket(out)
-	if !s.Options.Capabilities.Compatibilities.PassiveClientDisconnect {
+	var err error
+	told := cl.Properties.ProtocolVersion >= 5
+	if told {
+		err = cl.WritePacket(out)
+	}
+
+	// PassiveClientDisconnect means "the client was sent a DISCONNECT and
+	// will close the connection itself, so do not force it". A v3 client is
+	// sent nothing, because that packet does not exist in that direction, so
+	// there is nothing for it to act on: honouring the option there would
+	// make DisconnectClient do nothing at all - no packet, no close - and
+	// leave the connection open after the server decided to end it.
+	if !told || !s.Options.Capabilities.Compatibilities.PassiveClientDisconnect {
 		cl.Stop(code)
 		if code.Code >= packets.ErrUnspecifiedError.Code {
 			return code

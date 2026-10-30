@@ -153,6 +153,8 @@ spec:
               value: {{ .Values.database.minConns | quote }}
             - name: DB_TIMEOUT
               value: {{ .Values.database.timeout | quote }}
+            - name: REDIS_IFM_SCHEMA
+              value: {{ .Values.core.redis.ifmSchema | default "auto" | quote }}
             - name: REDIS_ADDR
               value: "$(POD_NAME).{{ $svc }}:6379"
             {{- if .Values.core.redis.password }}

@@ -138,6 +138,7 @@ type Packet struct {
 	ReasonCode      byte          // reason code for a packet response (acks, etc)
 	ReservedBit     byte          // reserved, do not use (except in testing)
 	Ignore          bool          // if true, do not perform any message forwarding operations
+	InboundFlow     bool          // internal: PacketID belongs to a flow started by the client
 	// SharedFilters is internal delivery metadata, never an MQTT property.
 	// Nil keeps ordinary broker selection; a non-nil list authorizes only
 	// these exact shared group/filters, with an empty list authorizing none.
@@ -498,6 +499,18 @@ func (pk *Packet) ConnectValidate() Code {
 
 	if !pk.Connect.WillFlag && pk.Connect.WillRetain {
 		return ErrProtocolViolationWillFlagSurplusRetain // [MQTT-3.1.2-13]
+	}
+
+	// 3.1.2.11.3 It is a Protocol Error to include the Receive Maximum value
+	// more than once or for it to have the value 0.
+	if pk.Properties.ReceiveMaximumFlag && pk.Properties.ReceiveMaximum == 0 {
+		return ErrProtocolViolationZeroReceiveMaximum
+	}
+
+	// 3.1.2.11.4 It is a Protocol Error to include the Maximum Packet Size
+	// more than once, or for the value to be set to zero.
+	if pk.Properties.MaximumPacketSizeFlag && pk.Properties.MaximumPacketSize == 0 {
+		return ErrProtocolViolationZeroMaximumPacketSize
 	}
 
 	return CodeSuccess
@@ -962,14 +975,13 @@ func (pk *Packet) SubscribeDecode(buf []byte) error {
 			Filter: filter,
 		}
 
+		option, offset, err = decodeByte(buf, offset)
+		if err != nil {
+			return ErrMalformedQos
+		}
 		if pk.ProtocolVersion == 5 {
-			sub.decode(buf[offset])
-			offset += 1
+			sub.decode(option)
 		} else {
-			option, offset, err = decodeByte(buf, offset)
-			if err != nil {
-				return ErrMalformedQos
-			}
 			sub.Qos = option
 		}
 
@@ -1000,6 +1012,16 @@ func (pk *Packet) SubscribeValidate() Code {
 	for _, v := range pk.Filters {
 		if v.Identifier > 268435455 { // 3.3.2.3.8 The Subscription Identifier can have the value of 1 to 268,435,455.
 			return ErrProtocolViolationOversizeSubID //
+		}
+	}
+
+	// The property rather than the filters: a filter's Identifier is 0 both
+	// when the property was absent and when it was sent as 0, and only the
+	// second is the error. 3.8.2.1.2 It is a Protocol Error if the
+	// Subscription Identifier has a value of 0.
+	for _, v := range pk.Properties.SubscriptionIdentifier {
+		if v == 0 {
+			return ErrProtocolViolationZeroSubID
 		}
 	}
 

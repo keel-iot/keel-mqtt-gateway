@@ -3,6 +3,7 @@
 package broker
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
@@ -99,7 +100,8 @@ type Config struct {
 	// When non-nil, a RedisSessionHook is installed to persist sessions,
 	// subscriptions, and in-flight messages across broker restarts.
 	// When nil the broker uses in-memory session state only.
-	RedisClient *redisrouter.Router
+	RedisClient    *redisrouter.Router
+	RedisIFMSchema string
 
 	// ClusterRegistry and ClusterForwarder wire this node into a keel MQTT
 	// cluster (see internal/cluster): subscribe/unsubscribe/publish hooks
@@ -244,6 +246,9 @@ func New(cfg Config, provider auth.AuthProvider, log *slog.Logger) (*mqtt.Server
 	var retainedStore *RetainedStore
 	if cfg.RedisClient != nil {
 		redisHook = NewRedisSessionHook(cfg.RedisClient, log)
+		if err := redisHook.ConfigureIFMSchema(context.Background(), cfg.RedisIFMSchema); err != nil {
+			return nil, nil, fmt.Errorf("configure Redis IFM schema: %w", err)
+		}
 		redisHook.SetLiveStats(cfg.LiveStats)
 		if err := server.AddHook(redisHook, nil); err != nil {
 			return nil, nil, fmt.Errorf("add redis session hook: %w", err)

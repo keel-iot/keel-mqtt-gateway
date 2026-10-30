@@ -42,7 +42,27 @@ type Listener interface {
 type Listeners struct {
 	ClientsWg sync.WaitGroup      // a waitgroup that waits for all clients in all listeners to finish.
 	internal  map[string]Listener // a map of active listeners.
+	shutdown  sync.RWMutex        // guards closed; taken for writing while shutdown latches.
+	closed    bool                // once set, no further client is registered.
 	sync.RWMutex
+}
+
+// track wraps an establish function so that every connection it serves is
+// registered before CloseAll can wait for it, and refused once shutdown has
+// begun. Add and Wait on a WaitGroup must not race.
+func (l *Listeners) track(establish EstablishFn) EstablishFn {
+	return func(id string, c net.Conn) error {
+		l.shutdown.RLock()
+		if l.closed {
+			l.shutdown.RUnlock()
+			return c.Close()
+		}
+		l.ClientsWg.Add(1)
+		l.shutdown.RUnlock()
+
+		defer l.ClientsWg.Done()
+		return establish(id, c)
+	}
 }
 
 // New returns a new instance of Listeners.
@@ -88,7 +108,7 @@ func (l *Listeners) Serve(id string, establisher EstablishFn) {
 	listener := l.internal[id]
 
 	go func(e EstablishFn) {
-		listener.Serve(e)
+		listener.Serve(l.track(e))
 	}(establisher)
 }
 
@@ -119,6 +139,10 @@ func (l *Listeners) Close(id string, closer CloseFn) {
 
 // CloseAll iterates and closes all registered listeners.
 func (l *Listeners) CloseAll(closer CloseFn) {
+	l.shutdown.Lock()
+	l.closed = true
+	l.shutdown.Unlock()
+
 	l.RLock()
 	i := 0
 	ids := make([]string, len(l.internal))

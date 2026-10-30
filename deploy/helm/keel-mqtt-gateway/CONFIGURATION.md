@@ -407,3 +407,21 @@ kubectl exec <release>-core-0 -- \
   typical volumes, a known bottleneck at tens of thousands of unique
   retained topics. Retained backfill from Redis is also QoS 0 only,
   regardless of the subscriber's requested QoS.
+
+### Inflight storage schema selection
+
+`core.redis.ifmSchema` sets `REDIS_IFM_SCHEMA` on both cores and edges:
+
+```yaml
+core:
+  redis:
+    ifmSchema: "auto"
+```
+
+The default, `"auto"`, follows the Redis IFM marker and supports live schema
+activation. `"1"` or `"2"` explicitly select an existing storage schema.
+Startup fails if the Redis marker disagrees; an absent marker means schema 1.
+Explicit selection never changes the marker or migrates the cluster.
+Pinned processes reject inflight mutations if the marker changes underneath
+them. Use `"auto"` throughout a schema transition, then optionally pin the
+schema after activation has completed. Keep cores and edges consistent.

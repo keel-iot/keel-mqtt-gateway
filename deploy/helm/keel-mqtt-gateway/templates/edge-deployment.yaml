@@ -4,6 +4,15 @@
 {{- range $i := until $coreReplicas }}
 {{- $corePeers = append $corePeers (printf "%s-%d.%s:7946" $coreSvc $i $coreSvc) }}
 {{- end }}
+{{- if eq (.Values.ifm.schemaRequired | toString) "2" }}
+{{- if ne (.Values.edge.ifmSchemaMax | toString) "2" }}
+{{- fail "ifm.schemaRequired=2 requires an Edge image declaring keel.io/ifm-schema-max=2" }}
+{{- end }}
+{{- $edgeDigest := .Values.edge.image.digest | default .Values.image.digest -}}
+{{- if not $edgeDigest }}
+{{- fail "ifm.schemaRequired=2 requires an immutable Edge image digest" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,6 +31,7 @@ spec:
     metadata:
       labels:
         {{- include "keel.edge.selectorLabels" . | nindent 8 }}
+        keel.io/ifm-schema-max: {{ .Values.edge.ifmSchemaMax | quote }}
         {{- with .Values.edge.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -132,6 +142,8 @@ spec:
             # primary within one poll interval of startup, same as the
             # docker-compose deployment (see docker-compose.core-edge-split.yml's
             # comment on this exact env var).
+            - name: REDIS_IFM_SCHEMA
+              value: {{ .Values.core.redis.ifmSchema | default "auto" | quote }}
             - name: REDIS_ADDR
               value: {{ printf "%s-0.%s:6379" $coreSvc $coreSvc | quote }}
             {{- if .Values.core.redis.password }}

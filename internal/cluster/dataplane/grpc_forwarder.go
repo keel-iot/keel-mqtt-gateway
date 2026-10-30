@@ -20,6 +20,9 @@ import (
 
 const forwardTimeout = 3 * time.Second
 
+// Resolve only before the RPC: retrying after an ambiguous response can duplicate delivery.
+const membershipResolveInterval = 25 * time.Millisecond
+
 var errUnknownNode = errors.New("dataplane: unknown node")
 
 // GRPCForwarder is the phase-1 Forwarder implementation: direct
@@ -152,16 +155,18 @@ func (f *GRPCForwarder) Forward(ctx context.Context, targetNodeID string, msg *M
 		}
 	}()
 
-	addr, ok := f.resolve(targetNodeID)
-	if !ok {
-		return fmt.Errorf("%w %q", errUnknownNode, targetNodeID)
+	// Resolution and RPC share the original end-to-end budget (or the
+	// caller's shorter fan-out budget). Known nodes incur no polling delay.
+	ctx, cancel := context.WithTimeout(ctx, forwardTimeout)
+	defer cancel()
+	addr, err := f.resolveForwardTarget(ctx, targetNodeID)
+	if err != nil {
+		return err
 	}
 	client, err := f.clientFor(addr)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, forwardTimeout)
-	defer cancel()
 	_, err = client.Forward(ctx, &pb.ForwardRequest{
 		SourceNodeId:     msg.SourceNodeID,
 		TenantId:         msg.TenantID,
@@ -176,6 +181,34 @@ func (f *GRPCForwarder) Forward(ctx context.Context, targetNodeID string, msg *M
 		return fmt.Errorf("dataplane: forward to %s (%s): %w", targetNodeID, addr, err)
 	}
 	return nil
+}
+
+// A routing update can arrive through Olric before gossip has installed the
+// target address locally. Wait only while no RPC has been issued. A genuinely
+// absent node remains a bounded best-effort failure; other fan-out targets run
+// concurrently and do not wait on this resolver.
+func (f *GRPCForwarder) resolveForwardTarget(ctx context.Context, nodeID string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if addr, ok := f.resolve(nodeID); ok && addr != "" {
+		return addr, nil
+	}
+	ticker := time.NewTicker(membershipResolveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("%w %q: waiting for membership: %w", errUnknownNode, nodeID, ctx.Err())
+		case <-ticker.C:
+			if err := ctx.Err(); err != nil {
+				return "", fmt.Errorf("%w %q: waiting for membership: %w", errUnknownNode, nodeID, err)
+			}
+			if addr, ok := f.resolve(nodeID); ok && addr != "" {
+				return addr, nil
+			}
+		}
+	}
 }
 
 // Subscribe registers the local handler invoked for every message another

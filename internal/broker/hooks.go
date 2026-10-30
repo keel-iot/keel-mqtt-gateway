@@ -207,12 +207,20 @@ func (h *keelHook) Init(_ any) error {
 	return nil
 }
 
-// OnSelectSubscribers keeps disconnected persistent sessions out of the live
-// shared election. Their delivery is handled by the cluster's exact offline
-// selection, not by mochi's local shared selection as well.
+// OnSelectSubscribers keeps disconnected sessions out of live delivery.
+// In Redis-backed clusters Keel owns offline enqueueing for ordinary as well
+// as shared subscriptions; Mochi must not persist a second local copy.
 func (h *keelHook) OnSelectSubscribers(subs *mqtt.Subscribers, pk packets.Packet) *mqtt.Subscribers {
 	if h.clusterRegistry == nil || h.server == nil {
 		return subs
+	}
+	if h.offlineDeliveryStore != nil {
+		for clientID := range subs.Subscriptions {
+			cl, ok := h.server.Clients.Get(clientID)
+			if !ok || cl.Closed() || (!cl.Net.Inline && cl.Net.Conn == nil) {
+				delete(subs.Subscriptions, clientID)
+			}
+		}
 	}
 	allowed := make(map[string]struct{}, len(pk.SharedFilters))
 	for _, filter := range pk.SharedFilters {
@@ -223,6 +231,7 @@ func (h *keelHook) OnSelectSubscribers(subs *mqtt.Subscribers, pk packets.Packet
 			delete(subs.Shared, filter)
 			continue
 		}
+
 		for clientID := range members {
 			cl, ok := h.server.Clients.Get(clientID)
 			if !ok || cl.Closed() || (!cl.Net.Inline && cl.Net.Conn == nil) {
@@ -900,7 +909,9 @@ func (h *keelHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet
 	// (the Redpanda/plugin-facing side effects), never real MQTT subscriber
 	// delivery above — a noisy tenant over quota still gets normal MQTT
 	// service, it just stops feeding downstream systems until the next day.
-	if h.withinDataVolumeLimit(ctx, tenantStr, len(pk.Payload)) {
+	// Without connectors there is no output quota to enforce or account for;
+	// MQTT byte/message metrics below remain independent of this counter.
+	if len(h.outputConnectors) > 0 && h.withinDataVolumeLimit(ctx, tenantStr, len(pk.Payload)) {
 		h.forwardToOutputConnector(ctx, info, pk)
 	}
 
@@ -1412,6 +1423,9 @@ func (h *keelHook) fanOutPlan(topic string) ([]string, map[string]string) {
 // subscriber delivery (forwardToClusterSubscribers) is separate and comes
 // first — this call must never be able to affect it.
 func (h *keelHook) forwardToOutputConnector(ctx context.Context, info *auth.DeviceInfo, pk packets.Packet) {
+	if len(h.outputConnectors) == 0 {
+		return
+	}
 	connector.FanOut(ctx, h.log, info.ID.String(), h.outputConnectors, &connector.ForwardRequest{
 		Topic:      pk.TopicName,
 		Payload:    pk.Payload,
@@ -1430,6 +1444,9 @@ func (h *keelHook) forwardToOutputConnector(ctx context.Context, info *auth.Devi
 // happen outside the publish hot path, but it shares the exact same
 // fan-out/isolation semantics.
 func (h *keelHook) forwardConnectionEvent(info *auth.DeviceInfo, state string) {
+	if len(h.outputConnectors) == 0 {
+		return
+	}
 	payload, err := json.Marshal(map[string]string{"state": state})
 	if err != nil {
 		return // unreachable: static map, Marshal never fails

@@ -7,6 +7,7 @@ package mqtt
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -76,6 +77,32 @@ func (h *DenyHook) OnACLCheck(cl *Client, topic string, write bool) bool     { r
 type DelayHook struct {
 	HookBase
 	DisconnectDelay time.Duration
+}
+
+type qosResultHook struct {
+	HookBase
+	publishErr   error
+	droppedErr   error
+	publishCalls int
+	droppedCalls int
+}
+
+func (h *qosResultHook) ID() string { return "qos-result-test-hook" }
+
+func (h *qosResultHook) Provides(b byte) bool {
+	return b == OnQosPublish || b == OnQosDropped
+}
+
+func (h *qosResultHook) OnQosPublishResult(_ *Client, _ packets.Packet, _ int64, _ int) error {
+	h.publishCalls++
+	return h.publishErr
+}
+
+func (h *qosResultHook) OnQosCompleteResult(_ *Client, _ packets.Packet) error { return nil }
+
+func (h *qosResultHook) OnQosDroppedResult(_ *Client, _ packets.Packet) error {
+	h.droppedCalls++
+	return h.droppedErr
 }
 
 func (h *DelayHook) SetOpts(l *slog.Logger, opts *HookOptions) {
@@ -850,7 +877,8 @@ func TestEstablishConnectionInheritExistingClean(t *testing.T) {
 	require.ErrorIs(t, retrievedCl.StopCause(), packets.CodeDisconnect) // true error is disconnect
 
 	require.Equal(t, packets.TPacketData[packets.Connack].Get(packets.TConnackAcceptedNoSession).RawBytes, <-recv)
-	require.Equal(t, packets.TPacketData[packets.Disconnect].Get(packets.TDisconnect).RawBytes, <-takeover)
+	// MQTT 3.1.1 takeover closes the old connection without a server DISCONNECT.
+	require.Empty(t, <-takeover)
 
 	require.True(t, cl.IsTakenOver())
 
@@ -1727,6 +1755,7 @@ func TestServerProcessPublishACLCheckDeny(t *testing.T) {
 			}()
 
 			buf, err := io.ReadAll(r)
+			wg.Wait()
 			require.NoError(t, err)
 
 			if tx.expectReponse != nil {
@@ -1734,7 +1763,6 @@ func TestServerProcessPublishACLCheckDeny(t *testing.T) {
 			}
 
 			require.Equal(t, tx.expectDisconnect, cl.Closed())
-			wg.Wait()
 		})
 	}
 }
@@ -1771,7 +1799,7 @@ func TestServerProcessPacketPublishQos0(t *testing.T) {
 	require.Equal(t, []byte{}, buf)
 }
 
-func TestServerProcessPacketPublishQos1PacketIDInUse(t *testing.T) {
+func TestServerProcessPacketPublishQos1MayMatchOutboundPublish(t *testing.T) {
 	s := newServer()
 	cl, r, w := newTestClient()
 	cl.State.Inflight.Set(packets.Packet{PacketID: 7, FixedHeader: packets.FixedHeader{Type: packets.Publish}})
@@ -1786,7 +1814,11 @@ func TestServerProcessPacketPublishQos1PacketIDInUse(t *testing.T) {
 	buf, err := io.ReadAll(r)
 	require.NoError(t, err)
 	require.Equal(t, packets.TPacketData[packets.Puback].Get(packets.TPuback).RawBytes, buf)
-	require.Equal(t, int64(0), atomic.LoadInt64(&s.Info.Inflight))
+	// The outbound PUBLISH uses an independent Packet Identifier domain and
+	// must survive the inbound QoS1 PUBLISH with the same numeric ID.
+	require.Equal(t, int64(1), atomic.LoadInt64(&s.Info.Inflight))
+	_, ok := cl.State.Inflight.GetOutbound(7)
+	require.True(t, ok)
 }
 
 func TestServerProcessPacketPublishQos2PacketIDInUse(t *testing.T) {
@@ -1806,6 +1838,38 @@ func TestServerProcessPacketPublishQos2PacketIDInUse(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, packets.TPacketData[packets.Pubrec].Get(packets.TPubrecMqtt5IDInUse).RawBytes, buf)
 	require.Equal(t, int64(1), atomic.LoadInt64(&s.Info.Inflight))
+}
+
+func TestServerProcessPublishQos2SameIDAsOutboundPublish(t *testing.T) {
+	s := newServer()
+	cl, r, w := newTestClient()
+	cl.Properties.ProtocolVersion = 5
+	outbound := packets.Packet{
+		PacketID:    7,
+		TopicName:   "server/topic",
+		Payload:     []byte("outbound"),
+		FixedHeader: packets.FixedHeader{Type: packets.Publish, Qos: 1},
+	}
+	cl.State.Inflight.SetOutbound(outbound)
+	atomic.StoreInt64(&s.Info.Inflight, 1)
+
+	inbound := *packets.TPacketData[packets.Publish].Get(packets.TPublishQos2Mqtt5).Packet
+	inbound.PacketID = 7
+	go func() {
+		err := s.processPacket(cl, inbound)
+		require.NoError(t, err)
+		_ = w.Close()
+	}()
+
+	buf, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.Equal(t, packets.TPacketData[packets.Pubrec].Get(packets.TPubrecMqtt5).RawBytes, buf)
+
+	gotOutbound, ok := cl.State.Inflight.GetOutbound(7)
+	require.True(t, ok)
+	require.Equal(t, outbound, gotOutbound)
+	_, ok = cl.State.Inflight.GetInbound(7)
+	require.True(t, ok)
 }
 
 func TestServerProcessPacketPublishQos1(t *testing.T) {
@@ -1938,6 +2002,415 @@ func TestPublishToSubscribers(t *testing.T) {
 		ok = true
 	}
 	require.True(t, ok)
+}
+
+func TestPublishSharedFallbackFromSaturatedMember(t *testing.T) {
+	s := newServer()
+	s.Options.Capabilities.MaximumInflight = 1
+
+	a, _, aw := newTestClient()
+	a.ID = "shared-a"
+	b, br, bw := newTestClient()
+	b.ID = "shared-b"
+	s.Clients.Add(a)
+	s.Clients.Add(b)
+	go func() { _, _ = io.Copy(io.Discard, br) }()
+	t.Cleanup(func() { _ = aw.Close(); _ = bw.Close() })
+
+	a.State.Inflight.SetOutbound(packets.Packet{PacketID: 1, FixedHeader: packets.FixedHeader{Type: packets.Publish, Qos: 1}})
+	subs := &Subscribers{
+		Shared: map[string]map[string]packets.Subscription{
+			"$SHARE/group/topic": {
+				"shared-a": {Filter: "$SHARE/group/topic", Qos: 1},
+				"shared-b": {Filter: "$SHARE/group/topic", Qos: 1},
+			},
+		},
+		SharedSelected: map[string]packets.Subscription{
+			"shared-a": {Filter: "$SHARE/group/topic", Qos: 1},
+		},
+		SharedSelectedGroups: map[string]string{"$SHARE/group/topic": "shared-a"},
+		Subscriptions:        map[string]packets.Subscription{},
+	}
+	subs.MergeSharedSelected()
+
+	clients := s.publishSharedToSubscribers(subs, *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet)
+	require.True(t, clients["shared-a"])
+	require.True(t, clients["shared-b"])
+	require.Equal(t, 1, b.State.Inflight.LenOutbound())
+	require.Equal(t, 1, a.State.Inflight.LenOutbound())
+}
+
+func TestPublishSharedFallbackSkipsMultipleSaturatedMembers(t *testing.T) {
+	s := newServer()
+	s.Options.Capabilities.MaximumInflight = 1
+	clients := make(map[string]*Client)
+	for _, id := range []string{"shared-a", "shared-b", "shared-c"} {
+		cl, r, w := newTestClient()
+		cl.ID = id
+		s.Clients.Add(cl)
+		clients[id] = cl
+		go func() { _, _ = io.Copy(io.Discard, r) }()
+		t.Cleanup(func() { _ = w.Close() })
+	}
+	for _, id := range []string{"shared-a", "shared-b"} {
+		clients[id].State.Inflight.SetOutbound(packets.Packet{PacketID: 1, FixedHeader: packets.FixedHeader{Type: packets.Publish, Qos: 1}})
+	}
+
+	subs := &Subscribers{
+		Shared: map[string]map[string]packets.Subscription{"$SHARE/group/topic": {
+			"shared-a": {Filter: "$SHARE/group/topic", Qos: 1},
+			"shared-b": {Filter: "$SHARE/group/topic", Qos: 1},
+			"shared-c": {Filter: "$SHARE/group/topic", Qos: 1},
+		}},
+		SharedSelected:       map[string]packets.Subscription{"shared-a": {Filter: "$SHARE/group/topic", Qos: 1}},
+		SharedSelectedGroups: map[string]string{"$SHARE/group/topic": "shared-a"},
+		Subscriptions:        map[string]packets.Subscription{},
+	}
+	subs.MergeSharedSelected()
+
+	s.publishSharedToSubscribers(subs, *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet)
+	require.Equal(t, 1, clients["shared-a"].State.Inflight.LenOutbound())
+	require.Equal(t, 1, clients["shared-b"].State.Inflight.LenOutbound())
+	require.Equal(t, 1, clients["shared-c"].State.Inflight.LenOutbound())
+}
+
+func TestPublishSharedFallbackExhaustsEachMemberOnce(t *testing.T) {
+	s := newServer()
+	s.Options.Capabilities.MaximumInflight = 1
+	subscribers := map[string]*Client{}
+	shared := map[string]packets.Subscription{}
+	for _, id := range []string{"shared-a", "shared-b", "shared-c"} {
+		cl, r, w := newTestClient()
+		cl.ID = id
+		cl.State.Inflight.SetOutbound(packets.Packet{PacketID: 1, FixedHeader: packets.FixedHeader{Type: packets.Publish, Qos: 1}})
+		s.Clients.Add(cl)
+		subscribers[id] = cl
+		shared[id] = packets.Subscription{Filter: "$SHARE/group/topic", Qos: 1}
+		go func() { _, _ = io.Copy(io.Discard, r) }()
+		t.Cleanup(func() { _ = w.Close() })
+	}
+
+	subs := &Subscribers{
+		Shared:               map[string]map[string]packets.Subscription{"$SHARE/group/topic": shared},
+		SharedSelected:       map[string]packets.Subscription{"shared-a": shared["shared-a"]},
+		SharedSelectedGroups: map[string]string{"$SHARE/group/topic": "shared-a"},
+		Subscriptions:        map[string]packets.Subscription{},
+	}
+	subs.MergeSharedSelected()
+	before := atomic.LoadInt64(&s.Info.InflightDropped)
+	s.publishSharedToSubscribers(subs, *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet)
+
+	require.Equal(t, int64(3), atomic.LoadInt64(&s.Info.InflightDropped)-before)
+	for _, cl := range subscribers {
+		require.Equal(t, 1, cl.State.Inflight.LenOutbound())
+	}
+}
+
+func TestPublishSharedFallbackDisconnectedMemberRollsBack(t *testing.T) {
+	s := newServer()
+	a, ar, aw := newTestClient()
+	a.ID = "shared-a"
+	a.Net.Conn = nil
+	_ = ar.Close()
+	_ = aw.Close()
+	b, br, bw := newTestClient()
+	b.ID = "shared-b"
+	s.Clients.Add(a)
+	s.Clients.Add(b)
+	go func() { _, _ = io.Copy(io.Discard, br) }()
+	t.Cleanup(func() { _ = bw.Close() })
+
+	subs := &Subscribers{
+		Shared: map[string]map[string]packets.Subscription{"$SHARE/group/topic": {
+			"shared-a": {Filter: "$SHARE/group/topic", Qos: 1},
+			"shared-b": {Filter: "$SHARE/group/topic", Qos: 1},
+		}},
+		SharedSelected:       map[string]packets.Subscription{"shared-a": {Filter: "$SHARE/group/topic", Qos: 1}},
+		SharedSelectedGroups: map[string]string{"$SHARE/group/topic": "shared-a"},
+		Subscriptions:        map[string]packets.Subscription{},
+	}
+	subs.MergeSharedSelected()
+
+	s.publishSharedToSubscribers(subs, *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet)
+	require.Equal(t, 0, a.State.Inflight.LenOutbound())
+	require.Equal(t, 1, b.State.Inflight.LenOutbound())
+}
+
+func TestPublishSharedFallbackNoLocalMember(t *testing.T) {
+	s := newServer()
+	a, _, aw := newTestClient()
+	a.ID = "shared-a"
+	b, br, bw := newTestClient()
+	b.ID = "shared-b"
+	s.Clients.Add(a)
+	s.Clients.Add(b)
+	go func() { _, _ = io.Copy(io.Discard, br) }()
+	t.Cleanup(func() { _ = aw.Close(); _ = bw.Close() })
+
+	subs := &Subscribers{
+		Shared: map[string]map[string]packets.Subscription{"$SHARE/group/topic": {
+			"shared-a": {Filter: "$SHARE/group/topic", Qos: 1, NoLocal: true},
+			"shared-b": {Filter: "$SHARE/group/topic", Qos: 1},
+		}},
+		SharedSelected:       map[string]packets.Subscription{"shared-a": {Filter: "$SHARE/group/topic", Qos: 1, NoLocal: true}},
+		SharedSelectedGroups: map[string]string{"$SHARE/group/topic": "shared-a"},
+		Subscriptions:        map[string]packets.Subscription{},
+	}
+	subs.MergeSharedSelected()
+
+	pk := *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet
+	pk.Origin = "shared-a"
+	s.publishSharedToSubscribers(subs, pk)
+	require.Equal(t, 1, b.State.Inflight.LenOutbound())
+}
+
+func TestPublishSharedFallbackRollsBackPendingQueueFailure(t *testing.T) {
+	s := newServer()
+	s.Options.Capabilities.MaximumInflight = 1
+
+	serverConn, clientConn := net.Pipe()
+	a := newClient(serverConn, &ops{
+		info:  new(system.Info),
+		hooks: new(Hooks),
+		log:   logger,
+		options: &Options{Capabilities: &Capabilities{
+			MaximumClientWritesPending: 1,
+			maximumPacketID:            10,
+		}},
+	})
+	a.ID = "shared-a"
+	a.Properties.Props.TopicAliasMaximum = 1
+	a.State.Inflight.ResetSendQuota(5)
+	require.True(t, a.State.outbound.tryPush(new(packets.Packet)))
+	atomic.StoreInt32(&a.State.outboundQty, 1)
+
+	b, br, bw := newTestClient()
+	b.ID = "shared-b"
+	s.Clients.Add(a)
+	s.Clients.Add(b)
+	go func() { _, _ = io.Copy(io.Discard, br) }()
+	t.Cleanup(func() { _ = clientConn.Close(); _ = bw.Close() })
+
+	subs := &Subscribers{
+		Shared: map[string]map[string]packets.Subscription{"$SHARE/group/topic": {
+			"shared-a": {Filter: "$SHARE/group/topic", Qos: 1},
+			"shared-b": {Filter: "$SHARE/group/topic", Qos: 1},
+		}},
+		SharedSelected:       map[string]packets.Subscription{"shared-a": {Filter: "$SHARE/group/topic", Qos: 1}},
+		SharedSelectedGroups: map[string]string{"$SHARE/group/topic": "shared-a"},
+		Subscriptions:        map[string]packets.Subscription{},
+	}
+	subs.MergeSharedSelected()
+
+	beforeInflight := atomic.LoadInt64(&s.Info.Inflight)
+	s.publishSharedToSubscribers(subs, *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet)
+
+	require.Equal(t, 0, a.State.Inflight.LenOutbound())
+	require.Equal(t, int32(5), atomic.LoadInt32(&a.State.Inflight.sendQuota))
+	require.Equal(t, beforeInflight+1, atomic.LoadInt64(&s.Info.Inflight))
+	require.Empty(t, a.State.TopicAliases.Outbound.internal)
+	require.Equal(t, 1, b.State.Inflight.LenOutbound())
+}
+
+func TestPublishSharedPersistenceFailureStopsFallback(t *testing.T) {
+	s := newServer()
+	s.Options.Capabilities.MaximumInflight = 1
+	hook := &qosResultHook{droppedErr: errors.New("redis rollback ambiguous")}
+	require.NoError(t, s.AddHook(hook, nil))
+
+	serverConn, clientConn := net.Pipe()
+	a := newClient(serverConn, &ops{
+		info:  new(system.Info),
+		hooks: new(Hooks),
+		log:   logger,
+		options: &Options{Capabilities: &Capabilities{
+			MaximumClientWritesPending: 1,
+			maximumPacketID:            10,
+		}},
+	})
+	a.ID = "shared-a"
+	require.True(t, a.State.outbound.tryPush(new(packets.Packet)))
+	atomic.StoreInt32(&a.State.outboundQty, 1)
+	b, br, bw := newTestClient()
+	b.ID = "shared-b"
+	s.Clients.Add(a)
+	s.Clients.Add(b)
+	go func() { _, _ = io.Copy(io.Discard, br) }()
+	t.Cleanup(func() { _ = clientConn.Close(); _ = bw.Close() })
+
+	subs := &Subscribers{
+		Shared: map[string]map[string]packets.Subscription{"$SHARE/group/topic": {
+			"shared-a": {Filter: "$SHARE/group/topic", Qos: 1},
+			"shared-b": {Filter: "$SHARE/group/topic", Qos: 1},
+		}},
+		SharedSelected:       map[string]packets.Subscription{"shared-a": {Filter: "$SHARE/group/topic", Qos: 1}},
+		SharedSelectedGroups: map[string]string{"$SHARE/group/topic": "shared-a"},
+		Subscriptions:        map[string]packets.Subscription{},
+	}
+	subs.MergeSharedSelected()
+
+	// The queue rejects A after its QoS state has been created. The cleanup
+	// hook reports an ambiguous Redis outcome, so B must not be attempted.
+	s.publishSharedToSubscribers(subs, *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet)
+	require.Equal(t, 0, b.State.Inflight.LenOutbound())
+	require.Equal(t, 1, hook.publishCalls)
+	require.Equal(t, 1, hook.droppedCalls)
+}
+
+func TestPublishSharedPersistenceWriteFailureStopsFallback(t *testing.T) {
+	s := newServer()
+	hook := &qosResultHook{publishErr: errors.New("redis write unavailable")}
+	require.NoError(t, s.AddHook(hook, nil))
+
+	a, ar, aw := newTestClient()
+	a.ID = "shared-a"
+	b, br, bw := newTestClient()
+	b.ID = "shared-b"
+	s.Clients.Add(a)
+	s.Clients.Add(b)
+	go func() { _, _ = io.Copy(io.Discard, br) }()
+	t.Cleanup(func() { _ = ar.Close(); _ = aw.Close(); _ = bw.Close() })
+
+	subs := &Subscribers{
+		Shared: map[string]map[string]packets.Subscription{"$SHARE/group/topic": {
+			"shared-a": {Filter: "$SHARE/group/topic", Qos: 1},
+			"shared-b": {Filter: "$SHARE/group/topic", Qos: 1},
+		}},
+		SharedSelected:       map[string]packets.Subscription{"shared-a": {Filter: "$SHARE/group/topic", Qos: 1}},
+		SharedSelectedGroups: map[string]string{"$SHARE/group/topic": "shared-a"},
+		Subscriptions:        map[string]packets.Subscription{},
+	}
+	subs.MergeSharedSelected()
+
+	s.publishSharedToSubscribers(subs, *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet)
+	require.Equal(t, 0, b.State.Inflight.LenOutbound())
+	require.Equal(t, 0, a.State.Inflight.LenOutbound())
+	require.Equal(t, 1, hook.publishCalls)
+}
+
+func TestPublishSharedAcceptedMemberDoesNotFallbackAfterTransportFailure(t *testing.T) {
+	s := newServer()
+	a, ar, aw := newTestClient()
+	a.ID = "shared-a"
+	b, br, bw := newTestClient()
+	b.ID = "shared-b"
+	s.Clients.Add(a)
+	s.Clients.Add(b)
+	go func() { _, _ = io.Copy(io.Discard, br) }()
+	t.Cleanup(func() { _ = ar.Close(); _ = aw.Close(); _ = bw.Close() })
+
+	subs := &Subscribers{
+		Shared: map[string]map[string]packets.Subscription{"$SHARE/group/topic": {
+			"shared-a": {Filter: "$SHARE/group/topic", Qos: 1},
+			"shared-b": {Filter: "$SHARE/group/topic", Qos: 1},
+		}},
+		SharedSelected:       map[string]packets.Subscription{"shared-a": {Filter: "$SHARE/group/topic", Qos: 1}},
+		SharedSelectedGroups: map[string]string{"$SHARE/group/topic": "shared-a"},
+		Subscriptions:        map[string]packets.Subscription{},
+	}
+	subs.MergeSharedSelected()
+
+	clients := s.publishSharedToSubscribers(subs, *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet)
+	require.True(t, clients["shared-a"])
+	require.NotContains(t, clients, "shared-b")
+	require.Equal(t, 1, a.State.Inflight.LenOutbound())
+	require.Equal(t, 0, b.State.Inflight.LenOutbound())
+
+	// WriteLoop observes this transport failure asynchronously. It must not
+	// cause a second shared member to be selected after acceptance.
+	require.NoError(t, ar.Close())
+}
+
+func TestPublishSharedFallbackKeepsGroupsIndependent(t *testing.T) {
+	s := newServer()
+	s.Options.Capabilities.MaximumInflight = 1
+	clients := make(map[string]*Client)
+	for _, id := range []string{"shared-a", "shared-b", "shared-c"} {
+		cl, r, w := newTestClient()
+		cl.ID = id
+		s.Clients.Add(cl)
+		clients[id] = cl
+		go func() { _, _ = io.Copy(io.Discard, r) }()
+		t.Cleanup(func() { _ = w.Close() })
+	}
+	clients["shared-a"].State.Inflight.SetOutbound(packets.Packet{PacketID: 1, FixedHeader: packets.FixedHeader{Type: packets.Publish, Qos: 1}})
+
+	subs := &Subscribers{
+		Shared: map[string]map[string]packets.Subscription{
+			"$SHARE/group-a/topic": {
+				"shared-a": {Filter: "$SHARE/group-a/topic", Qos: 1},
+				"shared-b": {Filter: "$SHARE/group-a/topic", Qos: 1},
+			},
+			"$SHARE/group-b/topic": {
+				"shared-a": {Filter: "$SHARE/group-b/topic", Qos: 1},
+				"shared-c": {Filter: "$SHARE/group-b/topic", Qos: 1},
+			},
+		},
+		SharedSelected: map[string]packets.Subscription{
+			"shared-a": {Filter: "$SHARE/group-a/topic", Qos: 1},
+		},
+		SharedSelectedGroups: map[string]string{
+			"$SHARE/group-a/topic": "shared-a",
+			"$SHARE/group-b/topic": "shared-a",
+		},
+		Subscriptions: map[string]packets.Subscription{},
+	}
+	subs.MergeSharedSelected()
+
+	s.publishSharedToSubscribers(subs, *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet)
+	require.Equal(t, 1, clients["shared-a"].State.Inflight.LenOutbound())
+	require.Equal(t, 1, clients["shared-b"].State.Inflight.LenOutbound())
+	require.Equal(t, 1, clients["shared-c"].State.Inflight.LenOutbound())
+}
+
+func TestPublishSharedFallbackQos2(t *testing.T) {
+	s := newServer()
+	s.Options.Capabilities.MaximumInflight = 1
+	a, _, aw := newTestClient()
+	a.ID = "shared-a"
+	b, br, bw := newTestClient()
+	b.ID = "shared-b"
+	s.Clients.Add(a)
+	s.Clients.Add(b)
+	go func() { _, _ = io.Copy(io.Discard, br) }()
+	t.Cleanup(func() { _ = aw.Close(); _ = bw.Close() })
+	a.State.Inflight.SetOutbound(packets.Packet{PacketID: 1, FixedHeader: packets.FixedHeader{Type: packets.Publish, Qos: 1}})
+
+	subs := &Subscribers{
+		Shared: map[string]map[string]packets.Subscription{"$SHARE/group/topic": {
+			"shared-a": {Filter: "$SHARE/group/topic", Qos: 2},
+			"shared-b": {Filter: "$SHARE/group/topic", Qos: 2},
+		}},
+		SharedSelected:       map[string]packets.Subscription{"shared-a": {Filter: "$SHARE/group/topic", Qos: 2}},
+		SharedSelectedGroups: map[string]string{"$SHARE/group/topic": "shared-a"},
+		Subscriptions:        map[string]packets.Subscription{},
+	}
+	subs.MergeSharedSelected()
+
+	s.publishSharedToSubscribers(subs, packets.Packet{TopicName: "topic", FixedHeader: packets.FixedHeader{Type: packets.Publish, Qos: 2}})
+	got, ok := b.State.Inflight.GetOutbound(1)
+	require.True(t, ok)
+	require.Equal(t, byte(2), got.FixedHeader.Qos)
+}
+
+func TestPublishToSubscribersSharedFallback(t *testing.T) {
+	s := newServer()
+	s.Options.Capabilities.MaximumInflight = 1
+	a, _, aw := newTestClient()
+	a.ID = "shared-a"
+	b, br, bw := newTestClient()
+	b.ID = "shared-b"
+	s.Clients.Add(a)
+	s.Clients.Add(b)
+	require.True(t, s.Topics.Subscribe(a.ID, packets.Subscription{Filter: SharePrefix + "/group/a/b/c", Qos: 1}))
+	require.True(t, s.Topics.Subscribe(b.ID, packets.Subscription{Filter: SharePrefix + "/group/a/b/c", Qos: 1}))
+	a.State.Inflight.SetOutbound(packets.Packet{PacketID: 1, FixedHeader: packets.FixedHeader{Type: packets.Publish, Qos: 1}})
+	go func() { _, _ = io.Copy(io.Discard, br) }()
+	t.Cleanup(func() { _ = aw.Close(); _ = bw.Close() })
+
+	s.publishToSubscribers(*packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet)
+	require.Equal(t, 1, b.State.Inflight.LenOutbound())
+	require.Equal(t, 1, a.State.Inflight.LenOutbound())
 }
 
 func TestPublishToSubscribersMessageExpiryDelta(t *testing.T) {
@@ -2103,7 +2576,7 @@ func TestPublishToClientExceedClientWritesPending(t *testing.T) {
 	s.Clients.Add(cl)
 
 	for i := int32(0); i < cl.ops.options.Capabilities.MaximumClientWritesPending; i++ {
-		cl.State.outbound <- new(packets.Packet)
+		require.True(t, cl.State.outbound.tryPush(new(packets.Packet)))
 		atomic.AddInt32(&cl.State.outboundQty, 1)
 	}
 
@@ -2454,7 +2927,7 @@ func TestServerProcessPacketPubrec(t *testing.T) {
 	cl.State.Inflight.sendQuota = 3
 	cl.State.Inflight.receiveQuota = 3
 
-	cl.State.Inflight.Set(packets.Packet{PacketID: pID})
+	cl.State.Inflight.SetOutbound(packets.Packet{PacketID: pID})
 	atomic.AddInt64(&s.Info.Inflight, 1)
 
 	recv := make(chan []byte)
@@ -2532,7 +3005,7 @@ func TestServerProcessPacketPubrel(t *testing.T) {
 	cl.State.Inflight.sendQuota = 3
 	cl.State.Inflight.receiveQuota = 3
 
-	cl.State.Inflight.Set(packets.Packet{PacketID: pID})
+	cl.State.Inflight.SetInbound(packets.Packet{PacketID: pID})
 	atomic.AddInt64(&s.Info.Inflight, 1)
 
 	recv := make(chan []byte)
@@ -2585,7 +3058,7 @@ func TestServerProcessPacketPubrelFailure(t *testing.T) {
 	pID := uint16(7)
 	s := newServer()
 	cl, _, _ := newTestClient()
-	cl.State.Inflight.Set(packets.Packet{PacketID: pID})
+	cl.State.Inflight.SetInbound(packets.Packet{PacketID: pID})
 	cl.Stop(packets.CodeDisconnect)
 	err := s.processPacket(cl, *packets.TPacketData[packets.Pubrel].Get(packets.TPubrel).Packet)
 	require.Error(t, err)
@@ -2596,7 +3069,7 @@ func TestServerProcessPacketPubrelBadReason(t *testing.T) {
 	pID := uint16(7)
 	s := newServer()
 	cl, _, _ := newTestClient()
-	cl.State.Inflight.Set(packets.Packet{PacketID: pID})
+	cl.State.Inflight.SetInbound(packets.Packet{PacketID: pID})
 	err := s.processPacket(cl, *packets.TPacketData[packets.Pubrel].Get(packets.TPubrelInvalidReason).Packet)
 	require.NoError(t, err)
 	require.Equal(t, int64(-1), atomic.LoadInt64(&s.Info.Inflight))
@@ -2797,7 +3270,7 @@ func TestServerProcessPacketSubscribe(t *testing.T) {
 	require.Equal(t, packets.TPacketData[packets.Suback].Get(packets.TSubackMqtt5).RawBytes, buf)
 }
 
-func TestServerProcessPacketSubscribePacketIDInUse(t *testing.T) {
+func TestServerProcessPacketSubscribePacketIDMayMatchOutboundPublish(t *testing.T) {
 	s := newServer()
 	cl, r, w := newTestClient()
 	cl.Properties.ProtocolVersion = 5
@@ -2813,7 +3286,7 @@ func TestServerProcessPacketSubscribePacketIDInUse(t *testing.T) {
 
 	buf, err := io.ReadAll(r)
 	require.NoError(t, err)
-	require.Equal(t, packets.TPacketData[packets.Suback].Get(packets.TSubackPacketIDInUse).RawBytes, buf)
+	require.Equal(t, packets.TPacketData[packets.Suback].Get(packets.TSubackMqtt5).RawBytes, buf)
 }
 
 func TestServerProcessPacketSubscribeInvalid(t *testing.T) {
@@ -3048,7 +3521,7 @@ func TestServerProcessPacketUnsubscribe(t *testing.T) {
 	require.Equal(t, int64(-1), atomic.LoadInt64(&s.Info.Subscriptions))
 }
 
-func TestServerProcessPacketUnsubscribePackedIDInUse(t *testing.T) {
+func TestServerProcessPacketUnsubscribePacketIDMayMatchOutboundPublish(t *testing.T) {
 	s := newServer()
 	cl, r, w := newTestClient()
 	cl.Properties.ProtocolVersion = 5
@@ -3061,7 +3534,7 @@ func TestServerProcessPacketUnsubscribePackedIDInUse(t *testing.T) {
 
 	buf, err := io.ReadAll(r)
 	require.NoError(t, err)
-	require.Equal(t, packets.TPacketData[packets.Unsuback].Get(packets.TUnsubackPacketIDInUse).RawBytes, buf)
+	require.NotEqual(t, packets.TPacketData[packets.Unsuback].Get(packets.TUnsubackPacketIDInUse).RawBytes, buf)
 	require.Equal(t, int64(0), atomic.LoadInt64(&s.Info.Subscriptions))
 }
 
@@ -3103,6 +3576,7 @@ func TestServerRecievePacketDisconnectClientZeroNonZero(t *testing.T) {
 func TestServerRecievePacketDisconnectClient(t *testing.T) {
 	s := newServer()
 	cl, r, w := newTestClient()
+	cl.Properties.ProtocolVersion = 5
 
 	go func() {
 		err := s.DisconnectClient(cl, packets.CodeDisconnect)
@@ -3112,7 +3586,7 @@ func TestServerRecievePacketDisconnectClient(t *testing.T) {
 
 	buf, err := io.ReadAll(r)
 	require.NoError(t, err)
-	require.Equal(t, packets.TPacketData[packets.Disconnect].Get(packets.TDisconnect).RawBytes, buf)
+	require.Equal(t, []byte{packets.Disconnect << 4, 2, packets.CodeDisconnect.Code, 0}, buf)
 }
 
 func TestServerProcessPacketDisconnect(t *testing.T) {

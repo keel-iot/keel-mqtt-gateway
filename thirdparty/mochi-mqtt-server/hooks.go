@@ -116,6 +116,15 @@ type Hook interface {
 	StoredSysInfo() (storage.SystemInfo, error)
 }
 
+// QosHookResult is an optional extension for persistence hooks that need to
+// report whether a QoS state mutation completed. The historical Hook contract
+// remains unchanged for existing hooks.
+type QosHookResult interface {
+	OnQosPublishResult(cl *Client, pk packets.Packet, sent int64, resends int) error
+	OnQosCompleteResult(cl *Client, pk packets.Packet) error
+	OnQosDroppedResult(cl *Client, pk packets.Packet) error
+}
+
 // HookOptions contains values which are inherited from the server on initialisation.
 type HookOptions struct {
 	Capabilities *Capabilities
@@ -272,7 +281,7 @@ func (h *Hooks) OnPacketRead(cl *Client, pk packets.Packet) (pkx packets.Packet,
 		if hook.Provides(OnPacketRead) {
 			npk, err := hook.OnPacketRead(cl, pkx)
 			if err != nil && errors.Is(err, packets.ErrRejectPacket) {
-				h.Log.Debug("packet rejected", "hook", hook.ID(), "packet", pkx)
+				h.Log.Debug("packet rejected", "hook", hook.ID())
 				return pk, err
 			} else if err != nil {
 				continue
@@ -402,10 +411,17 @@ func (h *Hooks) OnPublish(cl *Client, pk packets.Packet) (pkx packets.Packet, er
 				if errors.Is(err, packets.ErrRejectPacket) {
 					h.Log.Debug("publish packet rejected",
 						"error", err,
-						"hook", hook.ID(),
-						"packet", pkx)
+						"hook", hook.ID())
 					return pk, err
 				} else if errors.Is(err, packets.CodeSuccessIgnore) {
+					return pk, err
+				}
+				var code packets.Code
+				if errors.As(err, &code) {
+					h.Log.Debug("publish packet refused by hook",
+						"code", code.Code,
+						"reason", code.Reason,
+						"hook", hook.ID())
 					return pk, err
 				}
 				h.Log.Error("publish packet error",
@@ -489,6 +505,59 @@ func (h *Hooks) OnQosDropped(cl *Client, pk packets.Packet) {
 			hook.OnQosDropped(cl, pk)
 		}
 	}
+}
+
+// OnQosPublishResult dispatches the optional result-aware QoS persistence
+// callback. Hooks without the extension retain the legacy fire-and-forget
+// behavior. The first error stops dispatch so the caller can fail closed.
+func (h *Hooks) OnQosPublishResult(cl *Client, pk packets.Packet, sent int64, resends int) error {
+	for _, hook := range h.GetAll() {
+		if !hook.Provides(OnQosPublish) {
+			continue
+		}
+		if resultHook, ok := hook.(QosHookResult); ok {
+			if err := resultHook.OnQosPublishResult(cl, pk, sent, resends); err != nil {
+				return fmt.Errorf("hook %s OnQosPublish: %w", hook.ID(), err)
+			}
+			continue
+		}
+		hook.OnQosPublish(cl, pk, sent, resends)
+	}
+	return nil
+}
+
+// OnQosCompleteResult dispatches optional result-aware completion callbacks.
+func (h *Hooks) OnQosCompleteResult(cl *Client, pk packets.Packet) error {
+	for _, hook := range h.GetAll() {
+		if !hook.Provides(OnQosComplete) {
+			continue
+		}
+		if resultHook, ok := hook.(QosHookResult); ok {
+			if err := resultHook.OnQosCompleteResult(cl, pk); err != nil {
+				return fmt.Errorf("hook %s OnQosComplete: %w", hook.ID(), err)
+			}
+			continue
+		}
+		hook.OnQosComplete(cl, pk)
+	}
+	return nil
+}
+
+// OnQosDroppedResult dispatches optional result-aware drop callbacks.
+func (h *Hooks) OnQosDroppedResult(cl *Client, pk packets.Packet) error {
+	for _, hook := range h.GetAll() {
+		if !hook.Provides(OnQosDropped) {
+			continue
+		}
+		if resultHook, ok := hook.(QosHookResult); ok {
+			if err := resultHook.OnQosDroppedResult(cl, pk); err != nil {
+				return fmt.Errorf("hook %s OnQosDropped: %w", hook.ID(), err)
+			}
+			continue
+		}
+		hook.OnQosDropped(cl, pk)
+	}
+	return nil
 }
 
 // OnPacketIDExhausted is called when the client runs out of unused packet ids to
