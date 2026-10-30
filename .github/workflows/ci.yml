@@ -26,5 +26,9 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Test Mochi fork
+        working-directory: thirdparty/mochi-mqtt-server
+        run: go test ./...
+
       - name: Check known Go vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...
