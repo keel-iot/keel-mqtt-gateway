@@ -239,3 +239,17 @@ and integration review. The existing Go dependency versions are preserved.
 - Tests cover wildcard/system routing, shared-filter independence, local
   preference, concurrent membership changes and custom-hook property merging.
   Existing shared failure/rollback tests exercise the lazy fallback path.
+
+### Ordinary offline enqueue ownership in Keel clusters (2026-10-30)
+
+Run `OnSelectSubscribers` for ordinary-only matches as well as shared matches.
+The hook already documents subscriber filtering before shared selection; it now
+also runs when no shared filter matches. Keel uses this to exclude disconnected
+ordinary local sessions when its Redis-backed distributed offline dispatcher is
+enabled. This prevents the inline forwarded publish from persisting one Mochi
+copy before Keel queues another copy for the same client.
+
+No hook/default standalone behavior changes: Mochi still persists ordinary
+offline QoS state when no external-cluster filtering hook removes that target.
+Connected and inline clients remain eligible. Existing ordinary offline and
+disconnect-during-persistence tests continue to cover the default behavior.

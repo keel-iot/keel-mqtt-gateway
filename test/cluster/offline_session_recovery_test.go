@@ -3,15 +3,19 @@
 package cluster
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/redis/go-redis/v9"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // TestOfflineSession_QueuedQoS1Delivery_ReconnectOnDifferentEdge is Phase 3
@@ -42,9 +46,35 @@ import (
 // boundary — this test observes the MQTT-level consequence only, not each
 // Core's private computation).
 func TestOfflineSession_QueuedQoS1Delivery_ReconnectOnDifferentEdge(t *testing.T) {
-	h := NewHarness(t, 3, 2, []string{deviceAID})
+	testOfflineSessionRecovery(t, "")
+}
 
-	const subscriberID = "offline-recovery-subscriber"
+// This ID's rendezvous owner with edge-1/edge-2 is edge-1: the edge that
+// retains the disconnected Mochi session. It deterministically exercises the
+// formerly duplicated local-Mochi plus distributed-offline enqueue paths.
+func TestOfflineSession_OriginalEdgeOwnerDoesNotDuplicate(t *testing.T) {
+	testOfflineSessionRecovery(t, "offline-recovery-2")
+}
+
+func testOfflineSessionRecovery(t *testing.T, fixedClientID string) {
+	h := NewHarness(t, 3, 2, []string{deviceAID})
+	if fixedClientID != "" {
+		for i, edge := range h.Edges {
+			peer := h.Edges[1-i]
+			joined := wait.ForLog(`"msg":"membership: node joined","node_id":"` + peer.ID + `"`).WithStartupTimeout(20 * time.Second)
+			if err := joined.WaitUntilReady(context.Background(), edge.Container); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	subscriberID := "offline-recovery-subscriber"
+	if v := os.Getenv("KEEL_TEST_OFFLINE_CLIENT_ID"); v != "" {
+		subscriberID = v
+	}
+	if fixedClientID != "" {
+		subscriberID = fixedClientID
+	}
 	const filter = "telemetry/#"
 
 	// 1. Persistent session on edge-1: CleanSession=false so the broker
@@ -76,6 +106,21 @@ func TestOfflineSession_QueuedQoS1Delivery_ReconnectOnDifferentEdge(t *testing.T
 		t.Fatal("offline-ownership record for the disconnected session never became observable via GET /api/cluster/routes")
 	}
 
+	if fixedClientID != "" {
+		ownerFound := false
+		for key, nodes := range fetchRoutes(t, h, 0) {
+			if decodedClientIDMatches(key, subscriberID) {
+				ownerFound = true
+				if len(nodes) != 1 || nodes[0] != "edge-1" {
+					t.Fatalf("regression requires original edge owner, got %v", nodes)
+				}
+			}
+		}
+		if !ownerFound {
+			t.Fatal("offline ownership disappeared")
+		}
+	}
+
 	// 4. Publish from edge-2 while the subscriber is offline — exercises
 	// DeliverOffline's forward-to-rendezvous-owner path regardless of
 	// whether the computed owner happens to be edge-1 or edge-2 (both are
@@ -87,6 +132,22 @@ func TestOfflineSession_QueuedQoS1Delivery_ReconnectOnDifferentEdge(t *testing.T
 	pubToken := publisher.Publish(publishTopicFor(deviceAID), 1, false, payload)
 	if !pubToken.WaitTimeout(10*time.Second) || pubToken.Error() != nil {
 		t.Fatalf("publish while subscriber offline: %v", pubToken.Error())
+	}
+
+	// Capture persisted packet identities before reconnect. Two Redis records
+	// here distinguish duplicate enqueue from a legitimate QoS1 retransmission.
+	rdb := redis.NewClient(&redis.Options{Addr: h.RedisAddr(0)})
+	defer rdb.Close()
+	t.Logf("offline ownership before reconnect: %v", fetchRoutes(t, h, 0))
+	records, err := rdb.HGetAll(context.Background(), redisInflightKeyFor(subscriberID)).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixedClientID != "" && len(records) != 1 {
+		t.Fatalf("offline publish persisted %d records before reconnect, want exactly one: %v", len(records), records)
+	}
+	for field, raw := range records {
+		t.Logf("persisted before reconnect field=%s record=%s", field, raw)
 	}
 
 	// 5. Reconnect on edge-2 — deliberately the OTHER Edge from where this
@@ -106,6 +167,7 @@ func TestOfflineSession_QueuedQoS1Delivery_ReconnectOnDifferentEdge(t *testing.T
 		SetConnectTimeout(15 * time.Second).
 		SetAutoReconnect(false).
 		SetDefaultPublishHandler(func(_ mqtt.Client, msg mqtt.Message) {
+			t.Logf("offline receive packet_id=%d dup=%v qos=%d payload=%q", msg.MessageID(), msg.Duplicate(), msg.Qos(), msg.Payload())
 			received <- string(msg.Payload())
 		})
 	reconnected := mqtt.NewClient(reconnectOpts)

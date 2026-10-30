@@ -1035,9 +1035,11 @@ func (s *Server) publishToSubscribers(pk packets.Packet) {
 	}
 
 	subscribers := s.Topics.Subscribers(pk.TopicName)
+	// Hooks may delegate ordinary offline delivery to an external clustered
+	// store, even when no shared subscription matches this topic.
+	subscribers = s.hooks.OnSelectSubscribers(subscribers, pk)
 	sharedClients := map[string]bool{}
 	if len(subscribers.Shared) > 0 {
-		subscribers = s.hooks.OnSelectSubscribers(subscribers, pk)
 		if len(subscribers.SharedSelected) == 0 {
 			subscribers.SelectShared()
 		}

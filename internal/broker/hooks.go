@@ -206,12 +206,20 @@ func (h *keelHook) Init(_ any) error {
 	return nil
 }
 
-// OnSelectSubscribers keeps disconnected persistent sessions out of the live
-// shared election. Their delivery is handled by the cluster's exact offline
-// selection, not by mochi's local shared selection as well.
+// OnSelectSubscribers keeps disconnected sessions out of live delivery.
+// In Redis-backed clusters Keel owns offline enqueueing for ordinary as well
+// as shared subscriptions; Mochi must not persist a second local copy.
 func (h *keelHook) OnSelectSubscribers(subs *mqtt.Subscribers, _ packets.Packet) *mqtt.Subscribers {
 	if h.clusterRegistry == nil || h.server == nil {
 		return subs
+	}
+	if h.offlineDeliveryStore != nil {
+		for clientID := range subs.Subscriptions {
+			cl, ok := h.server.Clients.Get(clientID)
+			if !ok || cl.Closed() || (!cl.Net.Inline && cl.Net.Conn == nil) {
+				delete(subs.Subscriptions, clientID)
+			}
+		}
 	}
 	for filter, members := range subs.Shared {
 		for clientID := range members {
