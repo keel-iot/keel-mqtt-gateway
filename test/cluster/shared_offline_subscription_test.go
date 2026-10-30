@@ -29,7 +29,7 @@ func TestOfflineSharedSubscription_QueuesExactlyOneMember(t *testing.T) {
 	}
 
 	for i, clientID := range clientIDs {
-		c := connectPersistentClient(t, h.MQTTAddr(i%2), clientID, consumerUsername, consumerPassword)
+		c := connectSharedPersistentClient(t, h.MQTTAddr(i%2), clientID, consumerUsername, consumerPassword)
 		token := c.Subscribe(sharedOfflineFilter, 1, nil)
 		if !token.WaitTimeout(10*time.Second) || token.Error() != nil {
 			t.Fatalf("subscribe %s: %v", clientID, token.Error())
@@ -96,7 +96,7 @@ func TestOfflineSharedSubscription_LiveMemberSuppressesOfflineQueue(t *testing.T
 	h := NewHarness(t, 3, 2, []string{deviceAID})
 
 	offlineID := "shared-live-offline"
-	offline := connectPersistentClient(t, h.MQTTAddr(0), offlineID, consumerUsername, consumerPassword)
+	offline := connectSharedPersistentClient(t, h.MQTTAddr(0), offlineID, consumerUsername, consumerPassword)
 	if token := offline.Subscribe(sharedOfflineFilter, 1, nil); !token.WaitTimeout(10*time.Second) || token.Error() != nil {
 		t.Fatalf("offline member subscribe: %v", token.Error())
 	}
@@ -144,6 +144,24 @@ func TestOfflineSharedSubscription_LiveMemberSuppressesOfflineQueue(t *testing.T
 type receivedSharedMessage struct {
 	clientID string
 	payload  string
+}
+
+func connectSharedPersistentClient(t *testing.T, broker, clientID, username, password string) mqtt.Client {
+	t.Helper()
+	opts := mqtt.NewClientOptions().
+		AddBroker("tcp://" + broker).
+		SetClientID(clientID).
+		SetUsername(username).
+		SetPassword(password).
+		SetCleanSession(false).
+		SetConnectTimeout(15 * time.Second).
+		SetAutoReconnect(false)
+	c := mqtt.NewClient(opts)
+	if token := c.Connect(); !token.WaitTimeout(20*time.Second) || token.Error() != nil {
+		t.Fatalf("connect %s to %s: %v", clientID, broker, token.Error())
+	}
+	t.Cleanup(func() { c.Disconnect(250) })
+	return c
 }
 
 func connectClientWithHandler(t *testing.T, broker, clientID string, handler mqtt.MessageHandler) mqtt.Client {

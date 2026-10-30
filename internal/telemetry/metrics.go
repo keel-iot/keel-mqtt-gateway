@@ -140,6 +140,15 @@ var (
 		Help:      "QoS1/2 messages whose inflight delivery expired or was abandoned — real message loss, by QoS level.",
 	}, []string{"qos"})
 
+	// RedisIFMConflicts counts deterministic legacy/directional IFM overlaps
+	// found while schema-2 rehydration migrates a client. The label is a
+	// bounded category, never a client ID or packet ID.
+	RedisIFMConflicts = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "keel_gateway",
+		Name:      "redis_ifm_schema_conflicts_total",
+		Help:      "Legacy and directional Redis inflight representations overlapped during schema migration.",
+	}, []string{"kind"})
+
 	// RaftApplyDuration measures a single raft.Apply call on the leader
 	// (internal/cluster/raft.LocalRegistry.apply), separate from
 	// end-to-end connect latency (auth, gossip, network hops). result is

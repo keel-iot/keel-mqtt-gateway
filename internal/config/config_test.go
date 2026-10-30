@@ -187,3 +187,25 @@ func TestLoad_DatabasePool_MinCannotExceedMax(t *testing.T) {
 		t.Fatal("expected DB_MIN_CONNS greater than DB_MAX_CONNS to be rejected")
 	}
 }
+
+func TestLoadRedisIFMSchema(t *testing.T) {
+	for _, mode := range []string{"", "auto", "1", "2", "3", "legacy"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("REDIS_IFM_SCHEMA", mode)
+			cfg, err := Load()
+			valid := mode == "" || mode == "auto" || mode == "1" || mode == "2"
+			if (err == nil) != valid {
+				t.Fatalf("Load REDIS_IFM_SCHEMA=%q: %v", mode, err)
+			}
+			if valid {
+				want := mode
+				if want == "" {
+					want = "auto"
+				}
+				if cfg.RedisIFMSchema != want {
+					t.Fatalf("schema %q, want %q", cfg.RedisIFMSchema, want)
+				}
+			}
+		})
+	}
+}

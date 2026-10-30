@@ -47,6 +47,14 @@ type InboundTopicAliases struct {
 }
 
 // Set sets a new alias for a specific topic.
+//
+// A zero length topic is not a registration, it is a request for the topic
+// this alias already stands for. That mapping exists only if it was made on
+// this same network connection, because [MQTT-3.3.2-7] forbids carrying one
+// across connections, so a client that reconnects and goes on using its
+// aliases arrives here with nothing to resolve. Set returns the empty string
+// to say so, and never stores it: an alias bound to no topic is what section
+// 3.3.2.3.4 case 3a calls a Protocol Error, and the caller is what raises it.
 func (a *InboundTopicAliases) Set(id uint16, topic string) string {
 	a.Lock()
 	defer a.Unlock()
@@ -55,8 +63,8 @@ func (a *InboundTopicAliases) Set(id uint16, topic string) string {
 		return topic // ?
 	}
 
-	if existing, ok := a.internal[id]; ok && topic == "" {
-		return existing
+	if topic == "" {
+		return a.internal[id] // empty when this connection never registered one
 	}
 
 	a.internal[id] = topic
@@ -102,6 +110,16 @@ func (a *OutboundTopicAliases) Set(topic string) (uint16, bool) {
 	a.internal[topic] = uint16(i) + 1
 	atomic.StoreUint32(&a.cursor, i+1)
 	return uint16(i) + 1, false
+}
+
+// Delete removes an alias only when it still maps topic to id. It is used to
+// roll back an alias reserved for a packet which was not accepted for enqueue.
+func (a *OutboundTopicAliases) Delete(topic string, id uint16) {
+	a.Lock()
+	defer a.Unlock()
+	if current, ok := a.internal[topic]; ok && current == id {
+		delete(a.internal, topic)
+	}
 }
 
 // SharedSubscriptions contains a map of subscriptions to a shared filter,
@@ -310,17 +328,25 @@ type InlineSubscription struct {
 
 // Subscribers contains the shared and non-shared subscribers matching a topic.
 type Subscribers struct {
-	Shared              map[string]map[string]packets.Subscription
-	SharedSelected      map[string]packets.Subscription
-	Subscriptions       map[string]packets.Subscription
-	InlineSubscriptions map[int]InlineSubscription
+	routing        *routingSubscribers // internal ID-only query; ordinary snapshots stay caller-owned
+	Shared         map[string]map[string]packets.Subscription
+	SharedSelected map[string]packets.Subscription
+	// SharedSelectedGroups records the initial member selected for each
+	// shared filter. It lets the server retain all candidates for safe
+	// pre-acceptance fallback without changing the selected-member
+	// representation used by hooks and callers.
+	SharedSelectedGroups map[string]string
+	Subscriptions        map[string]packets.Subscription
+	InlineSubscriptions  map[int]InlineSubscription
 }
 
 // SelectShared returns one subscriber for each shared subscription group.
 func (s *Subscribers) SelectShared() {
 	s.SharedSelected = map[string]packets.Subscription{}
-	for _, subs := range s.Shared {
+	s.SharedSelectedGroups = map[string]string{}
+	for group, subs := range s.Shared {
 		for client, sub := range subs {
+			s.SharedSelectedGroups[group] = client
 			cls, ok := s.SharedSelected[client]
 			if !ok {
 				cls = sub
@@ -551,8 +577,13 @@ func (x *TopicsIndex) scanMessages(filter string, d int, n *particle, pks []pack
 			}
 
 			if !hasNext {
-				if adjacent.retainPath != "" {
-					if pk, ok := x.Retained.Get(adjacent.retainPath); ok {
+				// retainPath is written by RetainMessage under the particle
+				// lock; read it under the same lock (#200).
+				adjacent.Lock()
+				retainPath := adjacent.retainPath
+				adjacent.Unlock()
+				if retainPath != "" {
+					if pk, ok := x.Retained.Get(retainPath); ok {
 						pks = append(pks, pk)
 					}
 				}
@@ -570,7 +601,10 @@ func (x *TopicsIndex) scanMessages(filter string, d int, n *particle, pks []pack
 			return x.scanMessages(filter, d+1, particle, pks)
 		}
 
-		if pk, ok := x.Retained.Get(particle.retainPath); ok {
+		particle.Lock()
+		retainPath := particle.retainPath
+		particle.Unlock()
+		if pk, ok := x.Retained.Get(retainPath); ok {
 			pks = append(pks, pk)
 		}
 	}
@@ -587,6 +621,43 @@ func (x *TopicsIndex) Subscribers(topic string) *Subscribers {
 		Subscriptions:       map[string]packets.Subscription{},
 		InlineSubscriptions: map[int]InlineSubscription{},
 	})
+}
+
+// routingSubscribers collects node IDs without copying subscription metadata.
+// Choices are keyed by the full shared filter, as in the ordinary selection.
+type routingSharedChoice struct {
+	client string
+	local  bool
+}
+
+type routingSubscribers struct {
+	nodes   map[string]struct{}
+	choices map[string]routingSharedChoice
+	local   string
+}
+
+// SubscriberIDs returns matching ordinary members plus one member per shared
+// filter. If localSharedMember belongs to a group, that group adds no target:
+// the caller delivers locally. Ordinary routes to that member are retained.
+// This read-only query avoids allocating full, mutable subscription snapshots;
+// callers needing subscription properties or hooks must use Subscribers.
+func (x *TopicsIndex) SubscriberIDs(topic, localSharedMember string) []string {
+	routing := &routingSubscribers{
+		nodes:   make(map[string]struct{}),
+		choices: make(map[string]routingSharedChoice),
+		local:   localSharedMember,
+	}
+	x.scanSubscribers(topic, 0, nil, &Subscribers{routing: routing})
+	for _, choice := range routing.choices {
+		if !choice.local {
+			routing.nodes[choice.client] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(routing.nodes))
+	for client := range routing.nodes {
+		out = append(out, client)
+	}
+	return out
 }
 
 // scanSubscribers returns a list of client subscriptions matching an indexed topic address.
@@ -629,6 +700,18 @@ func (x *TopicsIndex) scanSubscribers(topic string, d int, n *particle, subs *Su
 
 // gatherSubscriptions collects any matching subscriptions, and gathers any identifiers or highest qos values.
 func (x *TopicsIndex) gatherSubscriptions(topic string, particle *particle, subs *Subscribers) {
+	if subs.routing != nil {
+		particle.subscriptions.RLock()
+		defer particle.subscriptions.RUnlock()
+		for client, sub := range particle.subscriptions.internal {
+			if len(sub.Filter) > 0 && topic[0] == '$' && (sub.Filter[0] == '+' || sub.Filter[0] == '#') {
+				continue
+			}
+			subs.routing.nodes[client] = struct{}{}
+		}
+		return
+	}
+
 	if subs.Subscriptions == nil {
 		subs.Subscriptions = map[string]packets.Subscription{}
 	}
@@ -649,11 +732,30 @@ func (x *TopicsIndex) gatherSubscriptions(topic string, particle *particle, subs
 
 // gatherSharedSubscriptions gathers all shared subscriptions for a particle.
 func (x *TopicsIndex) gatherSharedSubscriptions(particle *particle, subs *Subscribers) {
+	if subs.routing != nil {
+		particle.shared.RLock()
+		defer particle.shared.RUnlock()
+		for _, shares := range particle.shared.internal {
+			for client, sub := range shares {
+				if subs.routing.local != "" && client == subs.routing.local {
+					subs.routing.choices[sub.Filter] = routingSharedChoice{local: true}
+				} else if _, chosen := subs.routing.choices[sub.Filter]; !chosen {
+					subs.routing.choices[sub.Filter] = routingSharedChoice{client: client}
+				}
+			}
+		}
+		return
+	}
+
 	if subs.Shared == nil {
 		subs.Shared = map[string]map[string]packets.Subscription{}
 	}
 
-	for _, shares := range particle.shared.GetAll() {
+	// Build the caller-owned snapshot directly under the subscription lock.
+	// GetAll would copy every member into an intermediate map first.
+	particle.shared.RLock()
+	defer particle.shared.RUnlock()
+	for _, shares := range particle.shared.internal {
 		for client, sub := range shares {
 			if _, ok := subs.Shared[sub.Filter]; !ok {
 				subs.Shared[sub.Filter] = map[string]packets.Subscription{}
@@ -666,6 +768,10 @@ func (x *TopicsIndex) gatherSharedSubscriptions(particle *particle, subs *Subscr
 
 // gatherSharedSubscriptions gathers all inline subscriptions for a particle.
 func (x *TopicsIndex) gatherInlineSubscriptions(particle *particle, subs *Subscribers) {
+	if subs.routing != nil {
+		return
+	}
+
 	if subs.InlineSubscriptions == nil {
 		subs.InlineSubscriptions = map[int]InlineSubscription{}
 	}

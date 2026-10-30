@@ -140,6 +140,32 @@ class ClassifyAndExitCodeTests(unittest.TestCase):
         self.assertNotEqual(run_report.exit_code_for(failed), 0)
 
 
+class SubscriptionBarrierClassificationTests(unittest.TestCase):
+    def test_proved_missing_message_trace_is_harness(self):
+        for name, fragments in run_report.HARNESS_FAILURE_SIGNATURES.items():
+            with self.subTest(name=name):
+                failed, harness = run_report.classify({name}, failure_details={name: "\n".join(fragments)})
+                self.assertEqual(failed, [])
+                self.assertEqual(harness, [name])
+
+    def test_other_assertions_or_missing_trace_remain_failures(self):
+        for name, fragments in run_report.HARNESS_FAILURE_SIGNATURES.items():
+            for trace in ["", fragments[0], fragments[1], "\n".join(fragments).replace("0 != 1", "2 != 1")]:
+                with self.subTest(name=name, trace=trace):
+                    failed, harness = run_report.classify({name}, failure_details={name: trace})
+                    self.assertEqual(failed, [name])
+                    self.assertEqual(harness, [])
+
+    def test_signature_without_evidence_remains_failure(self):
+        with tempfile.TemporaryDirectory() as missing_evidence:
+            for name, fragments in run_report.HARNESS_FAILURE_SIGNATURES.items():
+                failed, harness = run_report.classify(
+                    {name}, base_dir=missing_evidence, failure_details={name: "\n".join(fragments)}
+                )
+                self.assertEqual(failed, [name])
+                self.assertEqual(harness, [])
+
+
 class UnresolvedFlakeIsNeverHarnessTests(unittest.TestCase):
     """KNOWN_UNRESOLVED_FLAKES is an internal triage note only — it must
     never let classify()/exit_code_for() treat a flaky-but-unproven

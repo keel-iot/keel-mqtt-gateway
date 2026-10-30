@@ -52,7 +52,7 @@ func TestDeadEdgeForwarding_DocumentedLossConfirmed(t *testing.T) {
 	// surviving an edge's death — using a clean session here would silently
 	// test the wrong thing (a documented, correct cleanup path) and could
 	// misreport it as the C4 gap.
-	victim := connectPersistentClient(t, h.MQTTAddr(0), "dead-edge-victim-subscriber", consumerUsername, consumerPassword)
+	victim := connectSharedPersistentClient(t, h.MQTTAddr(0), "dead-edge-victim-subscriber", consumerUsername, consumerPassword)
 	subToken := victim.Subscribe(filter, 1, func(_ mqtt.Client, _ mqtt.Message) {})
 	if !subToken.WaitTimeout(10*time.Second) || subToken.Error() != nil {
 		t.Fatalf("victim subscribe on edge-1: %v", subToken.Error())

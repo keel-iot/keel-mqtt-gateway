@@ -12,7 +12,7 @@
 //	keel:gw:CL:<client>      — storage.Client value
 //	keel:gw:LASTSEEN:<client> — UTC timestamp of the last persistent disconnect
 //	keel:gw:SUB:<client>     — HASH of storage.Subscription (field: filter)
-//	keel:gw:IFM:<client>     — HASH of storage.Message (field: packet ID)
+//	keel:gw:IFM:<client>     — HASH of storage.Message (field: in:<id> or out:<id>)
 //	keel:gw:PKID:<client>    — offline packet-ID counter
 //
 // <client> is base64url encoded. Keeping each session in its own Redis keys
@@ -27,7 +27,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +50,9 @@ const (
 	redisKeyPrefix       = "keel:gw:"
 	redisClientIndex     = redisKeyPrefix + "CLIENTS"
 	redisMigrationLock   = redisKeyPrefix + "MIGRATE:V2"
+	redisIFMSchemaKey    = redisKeyPrefix + "IFM:SCHEMA"
+	redisIFMSchemaLegacy = 1
+	redisIFMSchemaV2     = 2
 	redisScanCount       = int64(256)
 	legacyClientHash     = redisKeyPrefix + storage.ClientKey
 	legacySubHash        = redisKeyPrefix + storage.SubscriptionKey
@@ -87,7 +92,14 @@ type RedisSessionHook struct {
 	mqtt.HookBase
 	router *redisrouter.Router
 	log    *slog.Logger
-	liveStats   *telemetry.LiveStats
+	// ifmSchema caches redisIFMSchemaKey. Auto-mode reads refresh it; hot-path
+	// mutations use it as a hint and refresh only on a rejected fence. Explicit
+	// mode fixes the schema at startup. The atomic Redis fence prevents a stale
+	// hint from committing a schema-1 mutation after activation.
+	ifmSchemaMu         sync.RWMutex
+	ifmSchema           int
+	configuredIFMSchema int // immutable after startup; zero follows the Redis marker
+	liveStats           *telemetry.LiveStats
 
 	// offlineLocks serializes QueueOfflineInflight calls for the same client
 	// within one edge. The Redis WATCH transaction still protects against a
@@ -99,8 +111,8 @@ type RedisSessionHook struct {
 }
 
 type offlineClientLock struct {
-	mu   sync.Mutex
-	refs int
+	token chan struct{}
+	refs  int
 }
 
 // NewRedisSessionHook creates a hook using a pre-initialised Redis router
@@ -111,32 +123,72 @@ func NewRedisSessionHook(router *redisrouter.Router, log *slog.Logger) *RedisSes
 	return &RedisSessionHook{router: router, log: log, offlineLocks: make(map[string]*offlineClientLock)}
 }
 
+// ConfigureIFMSchema selects auto (the default), 1, or 2 before the hook is
+// used. Explicit selection validates existing storage; it never activates a
+// migration. Hot-path inflight mutations remain fenced against the Redis marker.
+func (h *RedisSessionHook) ConfigureIFMSchema(ctx context.Context, mode string) error {
+	switch mode {
+	case "", "auto":
+		h.configuredIFMSchema = 0
+	case "1":
+		h.configuredIFMSchema = redisIFMSchemaLegacy
+	case "2":
+		h.configuredIFMSchema = redisIFMSchemaV2
+	default:
+		return fmt.Errorf("invalid REDIS_IFM_SCHEMA %q: expected auto, 1, or 2", mode)
+	}
+	schema, err := h.readIFMSchema(ctx)
+	if err != nil {
+		return err
+	}
+	h.setSchemaVersion(schema)
+	return nil
+}
+
+func (h *RedisSessionHook) validateIFMSchema(schema int) error {
+	if h.configuredIFMSchema != 0 && schema != h.configuredIFMSchema {
+		return fmt.Errorf("Redis IFM schema %d conflicts with configured schema %d", schema, h.configuredIFMSchema)
+	}
+	return nil
+}
+
 // lockOfflineClient returns a release function for the per-client offline
 // enqueue lock. Entries are removed when the last waiter leaves, keeping the
 // map bounded by currently active enqueue operations rather than by the
 // lifetime of the client fleet.
-func (h *RedisSessionHook) lockOfflineClient(clientID string) func() {
+func (h *RedisSessionHook) lockOfflineClient(ctx context.Context, clientID string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	h.offlineLocksMu.Lock()
 	if h.offlineLocks == nil {
 		h.offlineLocks = make(map[string]*offlineClientLock)
 	}
 	lock := h.offlineLocks[clientID]
 	if lock == nil {
-		lock = &offlineClientLock{}
+		lock = &offlineClientLock{token: make(chan struct{}, 1)}
 		h.offlineLocks[clientID] = lock
 	}
 	lock.refs++
 	h.offlineLocksMu.Unlock()
 
-	lock.mu.Lock()
-	return func() {
-		lock.mu.Unlock()
+	releaseRef := func() {
 		h.offlineLocksMu.Lock()
 		lock.refs--
 		if lock.refs == 0 {
 			delete(h.offlineLocks, clientID)
 		}
 		h.offlineLocksMu.Unlock()
+	}
+	select {
+	case lock.token <- struct{}{}:
+		return func() {
+			<-lock.token
+			releaseRef()
+		}, nil
+	case <-ctx.Done():
+		releaseRef()
+		return nil, ctx.Err()
 	}
 }
 
@@ -179,10 +231,95 @@ func (h *RedisSessionHook) Init(_ any) error {
 	if err := h.router.Client().Ping(ctx).Err(); err != nil {
 		return fmt.Errorf("redis session hook: ping failed: %w", err)
 	}
+	schema, err := h.readIFMSchema(ctx)
+	if err != nil {
+		return fmt.Errorf("redis session hook: read IFM schema: %w", err)
+	}
+	h.setSchemaVersion(schema)
 	if err := h.migrateLegacySchema(ctx); err != nil {
 		return fmt.Errorf("redis session hook: migrate v1 schema: %w", err)
 	}
-	h.log.Info("mqtt-gateway: Redis session hook ready")
+	mode := "auto"
+	if h.configuredIFMSchema != 0 {
+		mode = strconv.Itoa(h.configuredIFMSchema)
+	}
+	h.log.Info("mqtt-gateway: Redis session hook ready", "ifm_schema", schema, "ifm_schema_mode", mode)
+	return nil
+}
+
+func (h *RedisSessionHook) readIFMSchema(ctx context.Context) (int, error) {
+	raw, err := h.router.Client().Get(ctx, redisIFMSchemaKey).Result()
+	if errors.Is(err, redis.Nil) {
+		// Absence is the compatibility interpretation for existing clusters.
+		return redisIFMSchemaLegacy, h.validateIFMSchema(redisIFMSchemaLegacy)
+	}
+	if err != nil {
+		return 0, err
+	}
+	schema, err := strconv.Atoi(raw)
+	if err != nil || (schema != redisIFMSchemaLegacy && schema != redisIFMSchemaV2) {
+		return 0, fmt.Errorf("invalid IFM schema marker %q", raw)
+	}
+	return schema, h.validateIFMSchema(schema)
+}
+
+func (h *RedisSessionHook) schemaVersion() int {
+	h.ifmSchemaMu.RLock()
+	schema := h.ifmSchema
+	h.ifmSchemaMu.RUnlock()
+	if schema == redisIFMSchemaV2 {
+		return redisIFMSchemaV2
+	}
+	return redisIFMSchemaLegacy
+}
+
+func (h *RedisSessionHook) setSchemaVersion(schema int) {
+	h.ifmSchemaMu.Lock()
+	h.ifmSchema = schema
+	h.ifmSchemaMu.Unlock()
+}
+
+// refreshSchemaVersion makes activation visible to already-running
+// compatibility processes. Writers still use the atomic schema-fenced Redis
+// operation below, so a marker change between this read and the write cannot
+// allow a legacy mutation to commit.
+func (h *RedisSessionHook) refreshSchemaVersion(ctx context.Context) (int, error) {
+	if h.configuredIFMSchema != 0 {
+		return h.configuredIFMSchema, nil
+	}
+
+	schema, err := h.readIFMSchema(ctx)
+	if err != nil {
+		return 0, err
+	}
+	h.setSchemaVersion(schema)
+	return schema, nil
+}
+
+// ActivateDirectionalSchema performs the one-way, explicit 1 -> 2 barrier.
+// Production orchestration should call this only after every Redis-writing
+// Edge has been upgraded to the compatibility binary and old writers have
+// been removed.  A restart/rollout of that binary after activation loads the
+// marker and switches all writes to directional fields.
+func (h *RedisSessionHook) ActivateDirectionalSchema(ctx context.Context) error {
+	if h.configuredIFMSchema != 0 {
+		return errors.New("IFM schema activation requires REDIS_IFM_SCHEMA=auto")
+	}
+
+	current, err := h.router.Client().Get(ctx, redisIFMSchemaKey).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return errors.New("cannot activate IFM schema: marker is absent; set it to 1 explicitly first")
+		}
+		return err
+	}
+	if current != strconv.Itoa(redisIFMSchemaLegacy) {
+		return fmt.Errorf("cannot activate IFM schema from %q; only schema 1 may transition to 2", current)
+	}
+	if err := h.router.Client().Set(ctx, redisIFMSchemaKey, redisIFMSchemaV2, 0).Err(); err != nil {
+		return fmt.Errorf("activate IFM schema: %w", err)
+	}
+	h.setSchemaVersion(redisIFMSchemaV2)
 	return nil
 }
 
@@ -190,9 +327,11 @@ func (h *RedisSessionHook) Init(_ any) error {
 // per-client v2 keys. HSCAN bounds every Redis reply; a distributed lock keeps
 // concurrently starting gateway nodes from duplicating the migration.
 //
-// The migration is intended for a coordinated gateway restart. Mixed binaries
-// cannot safely share the two schemas because a v1 node has no knowledge of
-// the v2 keys.
+// The fleet-wide migration remains compatible with schema 1 and schema 2:
+// legacy inflight values are written as numeric fields while schema 1 is
+// active, and as directional fields after the explicit schema-2 barrier.
+// The IFM field migration for already per-client hashes is handled lazily and
+// atomically by migrateLegacyInflightFields.
 func (h *RedisSessionHook) migrateLegacySchema(ctx context.Context) error {
 	rdb := h.router.Client()
 	legacy, err := rdb.Exists(ctx, legacyClientHash, legacySubHash, legacyInflightHash).Result()
@@ -257,7 +396,12 @@ func (h *RedisSessionHook) migrateLegacySchema(ctx context.Context) error {
 		if err := msg.UnmarshalBinary([]byte(raw)); err != nil {
 			return fmt.Errorf("unmarshal legacy inflight: %w", err)
 		}
-		pipe.HSet(ctx, redisInflightKey(msg.Client), strconv.FormatUint(uint64(msg.PacketID), 10), raw)
+		packet := msg.ToPacket()
+		field := packet.FormatID()
+		if h.schemaVersion() == redisIFMSchemaV2 {
+			field = inflightFieldKey(nil, packet)
+		}
+		pipe.HSet(ctx, redisInflightKey(msg.Client), field, raw)
 		pipe.SAdd(ctx, redisClientIndex, msg.Client)
 		migratedClients[msg.Client] = struct{}{}
 		return nil
@@ -315,7 +459,232 @@ func (h *RedisSessionHook) migrateLegacyHash(ctx context.Context, key string, ad
 // ── write helpers ─────────────────────────────────────────────────────────────
 
 func inflightFieldKey(cl *mqtt.Client, pk packets.Packet) string {
-	return pk.FormatID()
+	direction := "out:"
+	switch pk.FixedHeader.Type {
+	case packets.Puback, packets.Pubrec, packets.Pubcomp:
+		direction = "in:"
+	}
+	return direction + pk.FormatID()
+}
+
+func isInboundInflightPacket(pk packets.Packet) bool {
+	switch pk.FixedHeader.Type {
+	case packets.Puback, packets.Pubrec, packets.Pubrel, packets.Pubcomp:
+		return true
+	default:
+		return false
+	}
+}
+
+func inflightCompletionFieldKey(pk packets.Packet) string {
+	// PUBACK/PUBREC/PUBCOMP are acknowledgements received for a
+	// server-to-client transaction. PUBREL completes a client-to-server
+	// transaction.
+	direction := "out:"
+	if pk.FixedHeader.Type == packets.Pubrel {
+		direction = "in:"
+	}
+	return direction + pk.FormatID()
+}
+
+func inflightDroppedFieldKey(pk packets.Packet) string {
+	// OnQosDropped receives the stored packet itself, rather than the
+	// acknowledgement that caused completion. In that callback Publish/Pubrel
+	// are outbound state; Pubrec/Pubcomp/Puback are inbound state.
+	direction := "out:"
+	if isInboundInflightPacket(pk) {
+		direction = "in:"
+	}
+	return direction + pk.FormatID()
+}
+
+func (h *RedisSessionHook) inflightWriteField(pk packets.Packet) string {
+	if h.schemaVersion() == redisIFMSchemaLegacy {
+		return pk.FormatID()
+	}
+	return inflightFieldKey(nil, pk)
+}
+
+func (h *RedisSessionHook) inflightDeleteFields(pk packets.Packet) []string {
+	if h.schemaVersion() == redisIFMSchemaLegacy {
+		return []string{pk.FormatID()}
+	}
+	return []string{inflightCompletionFieldKey(pk), pk.FormatID()}
+}
+
+// migrateLegacyInflightFields converts numeric fields in one per-client IFM
+// hash.  The Lua operation is atomic per field: a directional field wins if
+// it already exists, otherwise the legacy value is copied, and the numeric
+// field is removed.  Retrying after a crash is therefore safe and does not
+// depend on HGETALL ordering.
+var migrateLegacyInflightFieldScript = redis.NewScript(`
+local value = redis.call("HGET", KEYS[1], ARGV[1])
+if not value then return 0 end
+if redis.call("HEXISTS", KEYS[1], ARGV[2]) == 0 then
+  redis.call("HSET", KEYS[1], ARGV[2], value)
+end
+redis.call("HDEL", KEYS[1], ARGV[1])
+return 1
+`)
+
+var schemaFencedHSetScript = redis.NewScript(`
+local schema = redis.call("GET", KEYS[1])
+if not schema then schema = "1" end
+if schema ~= ARGV[1] then return 0 end
+redis.call("HSET", KEYS[2], ARGV[2], ARGV[3])
+return 1
+`)
+
+var schemaFencedHSetNXScript = redis.NewScript(`
+local schema = redis.call("GET", KEYS[1])
+if not schema then schema = "1" end
+if schema ~= ARGV[1] then return -1 end
+return redis.call("HSETNX", KEYS[2], ARGV[2], ARGV[3])
+`)
+
+var errIFMSchemaChanged = errors.New("redis IFM schema changed during write")
+
+func (h *RedisSessionHook) fencedHSet(ctx context.Context, hash, field string, value []byte, schema int) error {
+	n, err := schemaFencedHSetScript.Run(ctx, h.router.Client(), []string{redisIFMSchemaKey, hash}, strconv.Itoa(schema), field, value).Int64()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return h.schemaMismatchError()
+	}
+	return nil
+}
+
+func (h *RedisSessionHook) fencedHSetNX(ctx context.Context, hash, field string, value []byte, schema int) (bool, error) {
+	n, err := schemaFencedHSetNXScript.Run(ctx, h.router.Client(), []string{redisIFMSchemaKey, hash}, strconv.Itoa(schema), field, value).Int64()
+	if err != nil {
+		return false, err
+	}
+	if n < 0 {
+		return false, h.schemaMismatchError()
+	}
+	return n == 1, nil
+}
+
+func (h *RedisSessionHook) schemaMismatchError() error {
+	if h.configuredIFMSchema != 0 {
+		return fmt.Errorf("Redis IFM marker no longer matches configured schema %d", h.configuredIFMSchema)
+	}
+	return errIFMSchemaChanged
+}
+
+var schemaFencedHDelScript = redis.NewScript(`
+local schema = redis.call("GET", KEYS[1])
+if not schema then schema = "1" end
+if schema ~= ARGV[1] then return 0 end
+redis.call("HDEL", KEYS[2], unpack(ARGV, 2))
+return 1
+`)
+
+// A rejected fence has not deleted anything. Auto mode refreshes and retries
+// with the new field format; explicit mode fails without following a migration.
+func (h *RedisSessionHook) deleteInflight(ctx context.Context, clientID string, pk packets.Packet, dropped bool) error {
+	schema := h.schemaVersion()
+	for attempt := 0; attempt < 2; attempt++ {
+		fields := []string{pk.FormatID()}
+		if schema == redisIFMSchemaV2 {
+			field := inflightCompletionFieldKey(pk)
+			if dropped {
+				field = inflightDroppedFieldKey(pk)
+			}
+			fields = []string{field, pk.FormatID()}
+		}
+		args := make([]any, 1, 1+len(fields))
+		args[0] = strconv.Itoa(schema)
+		for _, field := range fields {
+			args = append(args, field)
+		}
+		n, err := schemaFencedHDelScript.Run(ctx, h.router.Client(), []string{redisIFMSchemaKey, redisInflightKey(clientID)}, args...).Int64()
+		if err != nil {
+			return err
+		}
+		if n == 1 {
+			return nil
+		}
+		if err := h.schemaMismatchError(); !errors.Is(err, errIFMSchemaChanged) {
+			return err
+		}
+		schema, err = h.refreshSchemaVersion(ctx)
+		if err != nil {
+			return fmt.Errorf("read IFM schema: %w", err)
+		}
+	}
+	return fmt.Errorf("IFM schema changed repeatedly during delete for client %q", clientID)
+}
+
+func (h *RedisSessionHook) migrateLegacyInflightFields(ctx context.Context, clientID string) error {
+	if h.schemaVersion() != redisIFMSchemaV2 {
+		return nil
+	}
+	rdb := h.router.Client()
+	key := redisInflightKey(clientID)
+	rows, err := rdb.HGetAll(ctx, key).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return fmt.Errorf("read inflight fields for %s: %w", clientID, err)
+	}
+	for field, raw := range rows {
+		if strings.HasPrefix(field, "in:") || strings.HasPrefix(field, "out:") {
+			continue
+		}
+		var msg storage.Message
+		if err := msg.UnmarshalBinary([]byte(raw)); err != nil {
+			return fmt.Errorf("cannot migrate legacy inflight field %s for %s: %w", field, clientID, err)
+		}
+		target := inflightFieldKey(nil, msg.ToPacket())
+		if existing, ok := rows[target]; ok {
+			if existing != raw {
+				telemetry.RedisIFMConflicts.WithLabelValues("legacy_directional").Inc()
+				if h.log != nil {
+					h.log.Warn("redis session: directional IFM wins legacy conflict", "client_id", clientID, "field", field, "directional", target)
+				}
+			}
+		}
+		if _, err := migrateLegacyInflightFieldScript.Run(ctx, rdb, []string{key}, field, target).Result(); err != nil {
+			return fmt.Errorf("migrate inflight field %s for %s: %w", field, clientID, err)
+		}
+	}
+	return nil
+}
+
+func (h *RedisSessionHook) storedInflightForClient(ctx context.Context, clientID string) ([]storage.Message, error) {
+	if _, err := h.refreshSchemaVersion(ctx); err != nil {
+		return nil, fmt.Errorf("read IFM schema: %w", err)
+	}
+	if err := h.migrateLegacyInflightFields(ctx, clientID); err != nil {
+		return nil, err
+	}
+	rows, err := h.router.Client().HGetAll(ctx, redisInflightKey(clientID)).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return nil, fmt.Errorf("HGetAll inflight for %s: %w", clientID, err)
+	}
+	fields := make([]string, 0, len(rows))
+	for field := range rows {
+		if h.schemaVersion() == redisIFMSchemaLegacy && (strings.HasPrefix(field, "in:") || strings.HasPrefix(field, "out:")) {
+			continue
+		}
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	out := make([]storage.Message, 0, len(fields))
+	for _, field := range fields {
+		var m storage.Message
+		if err := m.UnmarshalBinary([]byte(rows[field])); err != nil {
+			return nil, fmt.Errorf("unmarshal inflight field %s for %s: %w", field, clientID, err)
+		}
+		if h.schemaVersion() == redisIFMSchemaV2 && (strings.HasPrefix(field, "in:") || strings.HasPrefix(field, "out:")) {
+			expected := inflightFieldKey(nil, m.ToPacket())
+			if field != expected {
+				return nil, fmt.Errorf("directional inflight field %s disagrees with packet %s for %s", field, expected, clientID)
+			}
+		}
+		out = append(out, m)
+	}
+	return out, nil
 }
 
 func subFieldKey(cl *mqtt.Client, filter string) string {
@@ -468,12 +837,24 @@ func (h *RedisSessionHook) OnUnsubscribed(cl *mqtt.Client, pk packets.Packet) {
 
 // OnQosPublish persists an in-flight QoS≥1 message.
 func (h *RedisSessionHook) OnQosPublish(cl *mqtt.Client, pk packets.Packet, sent int64, resends int) {
+	if err := h.OnQosPublishResult(cl, pk, sent, resends); err != nil {
+		h.log.Error("redis session: persist inflight", "error", err)
+	}
+}
+
+// OnQosPublishResult is the result-aware form used by delivery paths that
+// must not fall back after persistence becomes uncertain. The legacy void
+// callback remains available for Mochi paths that cannot act on an error.
+func (h *RedisSessionHook) OnQosPublishResult(cl *mqtt.Client, pk packets.Packet, sent int64, resends int) error {
+	if pk.InboundFlow && pk.FixedHeader.Type == packets.Puback {
+		return nil // A client's QoS1 flow has no state waiting for another ACK.
+	}
 	if resends > 0 {
 		telemetry.RedeliveriesTotal.WithLabelValues(strconv.Itoa(int(pk.FixedHeader.Qos))).Inc()
 	}
 	props := pk.Properties.Copy(false)
 	in := &storage.Message{
-		ID:          inflightFieldKey(cl, pk),
+		ID:          pk.FormatID(),
 		T:           storage.InflightKey,
 		Client:      cl.ID,
 		Origin:      pk.Origin,
@@ -494,28 +875,67 @@ func (h *RedisSessionHook) OnQosPublish(cl *mqtt.Client, pk packets.Packet, sent
 			User:                   props.User,
 		},
 	}
-	data, err := in.MarshalBinary()
-	if err != nil {
-		h.log.Error("redis session: marshal inflight", "error", err)
-		return
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	// The script checks the marker atomically with HSET. A separate GET on
+	// every write adds a round trip without closing any additional race.
+	// Refresh only when the script rejects our cached schema hint.
+	schema := h.schemaVersion()
+	for attempt := 0; attempt < 2; attempt++ {
+		field := pk.FormatID()
+		if schema == redisIFMSchemaV2 {
+			field = inflightFieldKey(nil, pk)
+		}
+		in.ID = field
+		data, err := in.MarshalBinary()
+		if err != nil {
+			return fmt.Errorf("marshal inflight: %w", err)
+		}
+		err = h.fencedHSet(ctx, redisInflightKey(cl.ID), field, data, schema)
+		if !errors.Is(err, errIFMSchemaChanged) {
+			return err
+		}
+		var refreshErr error
+		schema, refreshErr = h.refreshSchemaVersion(ctx)
+		if refreshErr != nil {
+			return fmt.Errorf("read IFM schema: %w", refreshErr)
+		}
 	}
-	if err := h.router.Client().HSet(context.Background(), redisInflightKey(cl.ID), inflightFieldKey(cl, pk), data).Err(); err != nil {
-		h.log.Error("redis session: hset inflight", "error", err)
-	}
+	return fmt.Errorf("IFM schema changed repeatedly during write for client %q", cl.ID)
 }
 
 // OnQosComplete removes a successfully acknowledged in-flight message.
 func (h *RedisSessionHook) OnQosComplete(cl *mqtt.Client, pk packets.Packet) {
-	if err := h.router.Client().HDel(context.Background(), redisInflightKey(cl.ID), inflightFieldKey(cl, pk)).Err(); err != nil {
+	if err := h.OnQosCompleteResult(cl, pk); err != nil {
 		h.log.Error("redis session: hdel inflight", "error", err)
 	}
+}
+
+func (h *RedisSessionHook) OnQosCompleteResult(cl *mqtt.Client, pk packets.Packet) error {
+	if pk.InboundFlow && pk.FixedHeader.Type == packets.Puback {
+		return nil // This callback must not delete the server's equal-numbered delivery.
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return h.deleteInflight(ctx, cl.ID, pk, false)
 }
 
 // OnQosDropped removes an expired in-flight message — real message loss,
 // not just a delay (see telemetry.QosDropped's doc).
 func (h *RedisSessionHook) OnQosDropped(cl *mqtt.Client, pk packets.Packet) {
+	if err := h.OnQosDroppedResult(cl, pk); err != nil {
+		h.log.Error("redis session: hdel dropped inflight", "error", err)
+	}
+}
+
+func (h *RedisSessionHook) OnQosDroppedResult(cl *mqtt.Client, pk packets.Packet) error {
 	telemetry.QosDropped.WithLabelValues(strconv.Itoa(int(pk.FixedHeader.Qos))).Inc()
-	h.OnQosComplete(cl, pk)
+	if h.liveStats != nil {
+		h.liveStats.RecordDrop()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return h.deleteInflight(ctx, cl.ID, pk, true)
 }
 
 // ── restore on startup ────────────────────────────────────────────────────────
@@ -596,6 +1016,15 @@ func (h *RedisSessionHook) indexedClientIDs(ctx context.Context) ([]string, erro
 // in bounded pages and each page fetches exact per-client keys through a
 // pipeline. No command returns or scans the fleet's complete session payload.
 func (h *RedisSessionHook) OfflineInventory() ([]session.OfflineSession, error) {
+	return h.OfflineInventoryExcept(nil)
+}
+
+// OfflineInventoryExcept skips clients already claimed by a live connection
+// before fetching their persisted records, subscriptions and last-seen data.
+// The caller supplies an immutable Raft snapshot and should filter against a
+// fresh snapshot after the scan to discard clients that connected meanwhile.
+// A client that disconnects during the scan is picked up on the next pass.
+func (h *RedisSessionHook) OfflineInventoryExcept(liveClaimed map[string]string) ([]session.OfflineSession, error) {
 	ctx := context.Background()
 	var out []session.OfflineSession
 	var cursor uint64
@@ -603,6 +1032,23 @@ func (h *RedisSessionHook) OfflineInventory() ([]session.OfflineSession, error) 
 		ids, next, err := h.router.Client().SScan(ctx, redisClientIndex, cursor, "*", redisScanCount).Result()
 		if err != nil && !errors.Is(err, redis.Nil) {
 			return nil, fmt.Errorf("redis session: offline inventory scan: %w", err)
+		}
+
+		// Compact this page in place. SSCAN remains fleet-wide, but live
+		// clients require no payload reads or subscription deserialization.
+		candidates := ids[:0]
+		for _, clientID := range ids {
+			if _, live := liveClaimed[clientID]; !live {
+				candidates = append(candidates, clientID)
+			}
+		}
+		ids = candidates
+		if len(ids) == 0 {
+			if next == 0 {
+				return out, nil
+			}
+			cursor = next
+			continue
 		}
 
 		pipe := h.router.Client().Pipeline()
@@ -656,19 +1102,30 @@ func (h *RedisSessionHook) OfflineInventory() ([]session.OfflineSession, error) 
 	}
 }
 
-// OwnedOfflineSessions returns the OfflineSession view for exactly
-// ownedClientIDs (see keelraft.Registry.OwnedClientIDs) — one targeted
-// SubscriptionsForClient lookup per owned client, never a fleet-wide
-// scan. Used on the inbound side of offline delivery, where the set of
-// candidates is already bounded to what this node owns.
+// OwnedOfflineSessions reads only the requested clients' subscriptions in
+// bounded pipelines. This avoids one network round trip per candidate while
+// keeping the response batch bounded when a topic has many offline subscribers.
 func (h *RedisSessionHook) OwnedOfflineSessions(ownedClientIDs []string) ([]session.OfflineSession, error) {
+	ctx := context.Background()
 	out := make([]session.OfflineSession, 0, len(ownedClientIDs))
-	for _, clientID := range ownedClientIDs {
-		subs, err := h.SubscriptionsForClient(clientID)
-		if err != nil {
-			return nil, fmt.Errorf("redis session: owned offline sessions for %s: %w", clientID, err)
+	for start := 0; start < len(ownedClientIDs); start += int(redisScanCount) {
+		end := start + int(redisScanCount)
+		if end > len(ownedClientIDs) {
+			end = len(ownedClientIDs)
 		}
-		out = append(out, session.FromStorage(clientID, subs))
+		ids := ownedClientIDs[start:end]
+		pipe := h.router.Client().Pipeline()
+		cmds := make([]*redis.MapStringStringCmd, len(ids))
+		for i, clientID := range ids {
+			cmds[i] = pipe.HGetAll(ctx, redisSubKey(clientID))
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return nil, fmt.Errorf("redis session: owned offline subscriptions: %w", err)
+		}
+		for i, clientID := range ids {
+			subs := h.decodeSubscriptions(clientID, cmds[i].Val())
+			out = append(out, session.FromStorage(clientID, subs))
+		}
 	}
 	return out, nil
 }
@@ -715,6 +1172,9 @@ func (h *RedisSessionHook) InflightCount(ctx context.Context) (int64, error) {
 		pipe := h.router.Client().Pipeline()
 		cmds := make([]*redis.IntCmd, 0, len(ids))
 		for _, clientID := range ids {
+			if err := h.migrateLegacyInflightFields(ctx, clientID); err != nil {
+				return 0, fmt.Errorf("migrate inflight count for %s: %w", clientID, err)
+			}
 			cmds = append(cmds, pipe.HLen(ctx, redisInflightKey(clientID)))
 		}
 		if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
@@ -739,18 +1199,11 @@ func (h *RedisSessionHook) StoredInflightMessages() ([]storage.Message, error) {
 	}
 	var out []storage.Message
 	for _, clientID := range ids {
-		rows, err := h.router.Client().HGetAll(ctx, redisInflightKey(clientID)).Result()
-		if err != nil && !errors.Is(err, redis.Nil) {
-			return nil, fmt.Errorf("redis session: hgetall inflight for %s: %w", clientID, err)
+		messages, err := h.storedInflightForClient(ctx, clientID)
+		if err != nil {
+			return nil, fmt.Errorf("redis session: inflight for %s: %w", clientID, err)
 		}
-		for _, raw := range rows {
-			var m storage.Message
-			if err := m.UnmarshalBinary([]byte(raw)); err != nil {
-				h.log.Error("redis session: unmarshal inflight", "error", err)
-				continue
-			}
-			out = append(out, m)
-		}
+		out = append(out, messages...)
 	}
 	return out, nil
 }
@@ -777,6 +1230,10 @@ func (h *RedisSessionHook) SubscriptionsForClient(clientID string) ([]storage.Su
 	if err != nil {
 		return nil, fmt.Errorf("redis session: HGetAll subscriptions for %s: %w", clientID, err)
 	}
+	return h.decodeSubscriptions(clientID, rows), nil
+}
+
+func (h *RedisSessionHook) decodeSubscriptions(clientID string, rows map[string]string) []storage.Subscription {
 	out := make([]storage.Subscription, 0, len(rows))
 	for _, raw := range rows {
 		var s storage.Subscription
@@ -786,25 +1243,12 @@ func (h *RedisSessionHook) SubscriptionsForClient(clientID string) ([]storage.Su
 		}
 		out = append(out, s)
 	}
-	return out, nil
+	return out
 }
 
 // InflightForClient returns clientID's persisted in-flight QoS1/2 messages.
 func (h *RedisSessionHook) InflightForClient(clientID string) ([]storage.Message, error) {
-	rows, err := h.router.Client().HGetAll(context.Background(), redisInflightKey(clientID)).Result()
-	if err != nil {
-		return nil, fmt.Errorf("redis session: HGetAll inflight for %s: %w", clientID, err)
-	}
-	out := make([]storage.Message, 0, len(rows))
-	for _, raw := range rows {
-		var m storage.Message
-		if err := m.UnmarshalBinary([]byte(raw)); err != nil {
-			h.log.Error("redis session: unmarshal inflight", "error", err, "client_id", clientID)
-			continue
-		}
-		out = append(out, m)
-	}
-	return out, nil
+	return h.storedInflightForClient(context.Background(), clientID)
 }
 
 // ── offline session delivery ────────────────────────────────────────────────
@@ -834,15 +1278,36 @@ func (h *RedisSessionHook) EnqueueOfflineInflight(ctx context.Context, clientID 
 	if err != nil {
 		return err
 	}
-	field := strconv.FormatUint(uint64(packetID), 10)
-	inserted, err := h.router.Client().HSetNX(ctx, redisInflightKey(clientID), field, data).Result()
+	schema, err := h.refreshSchemaVersion(ctx)
 	if err != nil {
-		return fmt.Errorf("redis session: hsetnx offline inflight: %w", err)
+		return fmt.Errorf("read IFM schema: %w", err)
 	}
-	if !inserted {
-		return fmt.Errorf("redis session: packet id %d already in use for %s", packetID, clientID)
+	field := "out:" + strconv.FormatUint(uint64(packetID), 10)
+	if schema == redisIFMSchemaLegacy {
+		field = strconv.FormatUint(uint64(packetID), 10)
 	}
-	return nil
+	for attempt := 0; attempt < 2; attempt++ {
+		inserted, writeErr := h.fencedHSetNX(ctx, redisInflightKey(clientID), field, data, schema)
+		if errors.Is(writeErr, errIFMSchemaChanged) {
+			schema, err = h.refreshSchemaVersion(ctx)
+			if err != nil {
+				return fmt.Errorf("redis session: read IFM schema: %w", err)
+			}
+			field = "out:" + strconv.FormatUint(uint64(packetID), 10)
+			if schema == redisIFMSchemaLegacy {
+				field = strconv.FormatUint(uint64(packetID), 10)
+			}
+			continue
+		}
+		if writeErr != nil {
+			return fmt.Errorf("redis session: hsetnx offline inflight: %w", writeErr)
+		}
+		if !inserted {
+			return fmt.Errorf("redis session: packet id %d already in use for %s", packetID, clientID)
+		}
+		return nil
+	}
+	return fmt.Errorf("redis session: IFM schema changed repeatedly during offline enqueue")
 }
 
 func marshalOfflineInflight(clientID string, packetID uint16, msg session.InflightMessage) ([]byte, error) {
@@ -874,13 +1339,16 @@ var errOfflineAlreadyDelivered = errors.New("offline publish already delivered")
 // OnQosPublish touching the same per-client hash, so the transaction retries
 // instead of overwriting that live message.
 func (h *RedisSessionHook) QueueOfflineInflight(ctx context.Context, publishID uuid.UUID, clientID string, ttl time.Duration, msg session.InflightMessage) (packetID uint16, queued bool, err error) {
-	release := h.lockOfflineClient(clientID)
+	release, err := h.lockOfflineClient(ctx, clientID)
+	if err != nil {
+		return 0, false, fmt.Errorf("redis session: wait offline enqueue for %s: %w", clientID, err)
+	}
 	defer release()
 
 	rdb := h.router.Client()
 	inflightKey := redisInflightKey(clientID)
 	counterKey := redisPacketIDKey(clientID)
-	watchKeys := []string{inflightKey, counterKey}
+	watchKeys := []string{inflightKey, counterKey, redisIFMSchemaKey}
 	var dedupKey string
 	if publishID != uuid.Nil {
 		dedupKey = redisDedupKeyPrefix + publishID.String() + ":" + redisClientToken(clientID)
@@ -889,6 +1357,20 @@ func (h *RedisSessionHook) QueueOfflineInflight(ctx context.Context, publishID u
 
 	for attempt := 0; attempt < 32; attempt++ {
 		err = rdb.Watch(ctx, func(tx *redis.Tx) error {
+			schema := redisIFMSchemaLegacy
+			marker, markerErr := tx.Get(ctx, redisIFMSchemaKey).Result()
+			if markerErr == nil {
+				schema, markerErr = strconv.Atoi(marker)
+				if schema != redisIFMSchemaLegacy && schema != redisIFMSchemaV2 {
+					return fmt.Errorf("invalid IFM schema marker %q", marker)
+				}
+			} else if !errors.Is(markerErr, redis.Nil) {
+				return markerErr
+			}
+			if err := h.validateIFMSchema(schema); err != nil {
+				return err
+			}
+			h.setSchemaVersion(schema)
 			if dedupKey != "" {
 				exists, err := tx.Exists(ctx, dedupKey).Result()
 				if err != nil {
@@ -906,22 +1388,18 @@ func (h *RedisSessionHook) QueueOfflineInflight(ctx context.Context, publishID u
 				return err
 			}
 
-			var nextCounter int64
-			for offset := int64(0); offset < 65535; offset++ {
-				candidate := uint16((counter+offset)%65535) + 1
-				used, err := tx.HExists(ctx, inflightKey, strconv.FormatUint(uint64(candidate), 10)).Result()
-				if err != nil {
-					return err
-				}
-				if !used {
-					packetID = candidate
-					nextCounter = counter + offset + 1
-					break
-				}
+			prefix := "out:"
+			if schema == redisIFMSchemaLegacy {
+				prefix = ""
 			}
-			if packetID == 0 {
+			nextCounter, err := nextOfflinePacketCounter(ctx, tx, inflightKey, counter, prefix)
+			if err != nil {
+				return err
+			}
+			if nextCounter == 0 {
 				return packets.ErrQuotaExceeded
 			}
+			packetID = uint16((nextCounter-1)%65535) + 1
 
 			data, err := marshalOfflineInflight(clientID, packetID, msg)
 			if err != nil {
@@ -929,7 +1407,11 @@ func (h *RedisSessionHook) QueueOfflineInflight(ctx context.Context, publishID u
 			}
 			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 				pipe.Set(ctx, counterKey, nextCounter, 0)
-				pipe.HSet(ctx, inflightKey, strconv.FormatUint(uint64(packetID), 10), data)
+				field := "out:" + strconv.FormatUint(uint64(packetID), 10)
+				if schema == redisIFMSchemaLegacy {
+					field = strconv.FormatUint(uint64(packetID), 10)
+				}
+				pipe.HSet(ctx, inflightKey, field, data)
 				if dedupKey != "" {
 					pipe.Set(ctx, dedupKey, 1, ttl)
 				}

@@ -92,7 +92,10 @@ func (cl *Clients) Delete(id string) {
 func (cl *Clients) GetByListener(id string) []*Client {
 	cl.RLock()
 	defer cl.RUnlock()
-	clients := make([]*Client, 0, cl.Len())
+	// The map is already protected by the read lock held here. Calling Len
+	// would acquire RLock a second time; sync.RWMutex is not safely
+	// re-entrant when a writer is queued between the two read locks.
+	clients := make([]*Client, 0, len(cl.internal))
 	for _, client := range cl.internal {
 		if client.Net.Listener == id && !client.Closed() {
 			clients = append(clients, client)
@@ -143,20 +146,21 @@ type Will struct {
 
 // ClientState tracks the state of the client.
 type ClientState struct {
-	TopicAliases    TopicAliases         // a map of topic aliases
-	stopCause       atomic.Value         // reason for stopping
-	Inflight        *Inflight            // a map of in-flight qos messages
-	Subscriptions   *Subscriptions       // a map of the subscription filters a client maintains
-	disconnected    int64                // the time the client disconnected in unix time, for calculating expiry
-	outbound        chan *packets.Packet // queue for pending outbound packets
-	endOnce         sync.Once            // only end once
-	isTakenOver     atomic.Bool          // used to identify orphaned clients
-	packetID        uint32               // the current highest packetID
-	open            context.Context      // indicate that the client is open for packet exchange
-	cancelOpen      context.CancelFunc   // cancel function for open context
-	outboundQty     int32                // number of messages currently in the outbound queue
-	Keepalive       uint16               // the number of seconds the connection can wait
-	ServerKeepalive bool                 // keepalive was set by the server
+	TopicAliases    TopicAliases       // a map of topic aliases
+	stopCause       atomic.Value       // reason for stopping
+	Inflight        *Inflight          // a map of in-flight qos messages
+	Subscriptions   *Subscriptions     // a map of the subscription filters a client maintains
+	disconnected    int64              // the time the client disconnected in unix time, for calculating expiry
+	outbound        *packetQueue       // lazily allocated bounded outbound FIFO
+	endOnce         sync.Once          // only end once
+	isTakenOver     atomic.Bool        // used to identify orphaned clients
+	packetID        uint32             // the current highest packetID
+	open            context.Context    // indicate that the client is open for packet exchange
+	cancelOpen      context.CancelFunc // cancel function for open context
+	outboundQty     int32              // number of messages currently in the outbound queue
+	outboundMu      sync.Mutex         // serializes alias preparation and outbound enqueue
+	Keepalive       uint16             // the number of seconds the connection can wait
+	ServerKeepalive bool               // keepalive was set by the server
 }
 
 // newClient returns a new instance of Client. This is almost exclusively used by Server
@@ -171,7 +175,7 @@ func newClient(c net.Conn, o *ops) *Client {
 			open:          ctx,
 			cancelOpen:    cancel,
 			Keepalive:     defaultKeepalive,
-			outbound:      make(chan *packets.Packet, o.options.Capabilities.MaximumClientWritesPending),
+			outbound:      newPacketQueue(o.options.Capabilities.MaximumClientWritesPending),
 		},
 		Properties: ClientProperties{
 			ProtocolVersion: defaultClientProtocolVersion, // default protocol version
@@ -192,17 +196,19 @@ func newClient(c net.Conn, o *ops) *Client {
 
 // WriteLoop ranges over pending outbound messages and writes them to the client connection.
 func (cl *Client) WriteLoop() {
+	defer func() {
+		atomic.AddInt32(&cl.State.outboundQty, -int32(cl.State.outbound.close()))
+	}()
 	for {
-		select {
-		case pk := <-cl.State.outbound:
-			if err := cl.WritePacket(*pk); err != nil {
-				// TODO : Figure out what to do with error
-				cl.ops.log.Debug("failed publishing packet", "error", err, "client", cl.ID, "packet", pk)
-			}
-			atomic.AddInt32(&cl.State.outboundQty, -1)
-		case <-cl.State.open.Done():
+		pk, ok := cl.State.outbound.pop(cl.State.open.Done())
+		if !ok {
 			return
 		}
+		if err := cl.WritePacket(*pk); err != nil {
+			// TODO : Figure out what to do with error
+			cl.ops.log.Debug("failed publishing packet", "error", err, "client", cl.ID, "packet", pk)
+		}
+		atomic.AddInt32(&cl.State.outboundQty, -1)
 	}
 }
 
@@ -293,7 +299,7 @@ func (cl *Client) NextPacketID() (i uint32, err error) {
 
 		i++
 
-		if _, ok := cl.State.Inflight.Get(uint16(i)); !ok {
+		if _, ok := cl.State.Inflight.GetOutbound(uint16(i)); !ok {
 			atomic.StoreUint32(&cl.State.packetID, i)
 			return i, nil
 		}
@@ -318,7 +324,7 @@ func (cl *Client) ResendInflightMessages(force bool) error {
 		}
 
 		if tk.FixedHeader.Type == packets.Puback || tk.FixedHeader.Type == packets.Pubcomp {
-			if ok := cl.State.Inflight.Delete(tk.PacketID); ok {
+			if ok := cl.State.Inflight.DeletePacket(tk); ok {
 				cl.ops.hooks.OnQosComplete(cl, tk)
 				atomic.AddInt64(&cl.ops.info.Inflight, -1)
 			}
@@ -331,7 +337,7 @@ func (cl *Client) ResendInflightMessages(force bool) error {
 // ClearInflights deletes all inflight messages for the client, e.g. for a disconnected user with a clean session.
 func (cl *Client) ClearInflights() {
 	for _, tk := range cl.State.Inflight.GetAll(false) {
-		if ok := cl.State.Inflight.Delete(tk.PacketID); ok {
+		if ok := cl.State.Inflight.DeletePacket(tk); ok {
 			cl.ops.hooks.OnQosDropped(cl, tk)
 			atomic.AddInt64(&cl.ops.info.Inflight, -1)
 		}
@@ -349,7 +355,7 @@ func (cl *Client) ClearExpiredInflights(now, maximumExpiry int64) []uint16 {
 		enforced := maximumExpiry > 0 && now-tk.Created > maximumExpiry
 
 		if expired || enforced {
-			if ok := cl.State.Inflight.Delete(tk.PacketID); ok {
+			if ok := cl.State.Inflight.DeletePacket(tk); ok {
 				cl.ops.hooks.OnQosDropped(cl, tk)
 				atomic.AddInt64(&cl.ops.info.Inflight, -1)
 				deleted = append(deleted, tk.PacketID)
@@ -403,6 +409,9 @@ func (cl *Client) Stop(err error) {
 
 		if cl.State.cancelOpen != nil {
 			cl.State.cancelOpen()
+		}
+		if cl.State.outbound != nil {
+			atomic.AddInt32(&cl.State.outboundQty, -int32(cl.State.outbound.close()))
 		}
 
 		atomic.StoreInt64(&cl.State.disconnected, time.Now().Unix())
@@ -545,8 +554,14 @@ func (cl *Client) WritePacket(pk packets.Packet) error {
 		pk.Mods.MaxSize = cl.Properties.Props.MaximumPacketSize
 	}
 
-	if cl.Properties.Props.RequestProblemInfoFlag && cl.Properties.Props.RequestProblemInfo == 0x0 {
-		pk.Mods.DisallowProblemInfo = true // [MQTT-3.1.2-29] strict, no problem info on any packet if set
+	if cl.Properties.Props.RequestProblemInfoFlag && cl.Properties.Props.RequestProblemInfo == 0x0 &&
+		pk.FixedHeader.Type != packets.Publish {
+		// [MQTT-3.1.2-29] the server must not send a Reason String or User
+		// Properties on any packet other than PUBLISH, CONNACK or
+		// DISCONNECT. PUBLISH is exempt: its User Properties are
+		// application data forwarded from the publisher, not problem
+		// information about a failure.
+		pk.Mods.DisallowProblemInfo = true
 	}
 
 	if pk.FixedHeader.Type != packets.Connack || cl.Properties.Props.RequestResponseInfo == 0x1 || cl.ops.options.Capabilities.Compatibilities.AlwaysReturnResponseInfo {
@@ -602,7 +617,7 @@ func (cl *Client) WritePacket(pk packets.Packet) error {
 	n, err := func() (int64, error) {
 		cl.Lock()
 		defer cl.Unlock()
-		if len(cl.State.outbound) == 0 {
+		if cl.State.outbound.len() == 0 {
 			if cl.Net.outbuf == nil {
 				return buf.WriteTo(cl.Net.Conn)
 			}

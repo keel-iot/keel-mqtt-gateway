@@ -12,6 +12,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,26 @@ func credentialsYAML(deviceIDs []string) string {
 // them to report ready. deviceIDs are baked into the AUTH_BACKEND=file
 // credentials fixture every Edge gets.
 func NewHarness(t *testing.T, numCore, numEdge int, deviceIDs []string) *Harness {
+	return newHarness(t, numCore, numEdge, deviceIDs, nil, nil)
+}
+
+// NewHarnessWithEdgeEnv is NewHarness plus extra environment variables
+// merged onto every Edge container's env (e.g. SESSION_EXPIRY_INTERVAL for
+// a scenario that needs a short, deterministic expiry window) — Core
+// containers are unaffected since mochi-mqtt (and therefore session
+// expiry) only ever runs on Edge (see cmd/server/main.go's role split).
+func NewHarnessWithEdgeEnv(t *testing.T, numCore, numEdge int, deviceIDs []string, edgeEnv map[string]string) *Harness {
+	return newHarness(t, numCore, numEdge, deviceIDs, edgeEnv, nil)
+}
+
+// NewHarnessWithEdgeImages starts a mixed-version cluster using the supplied
+// image for each Edge. It is intentionally test-only: production deployment
+// policy remains outside the runtime.
+func NewHarnessWithEdgeImages(t *testing.T, numCore int, edgeImages []string, deviceIDs []string) *Harness {
+	return newHarness(t, numCore, len(edgeImages), deviceIDs, nil, edgeImages)
+}
+
+func newHarness(t *testing.T, numCore, numEdge int, deviceIDs []string, edgeEnv map[string]string, edgeImages []string) *Harness {
 	t.Helper()
 	ctx := context.Background()
 
@@ -138,7 +159,11 @@ func NewHarness(t *testing.T, numCore, numEdge int, deviceIDs []string) *Harness
 	// (see docker-compose.core-edge-split.yml's identical comment).
 	for i := 1; i <= numEdge; i++ {
 		nodeID := fmt.Sprintf("edge-%d", i)
-		h.Edges = append(h.Edges, h.startEdge(ctx, nodeID, "core-1:7946", redisAliases[0]+":6379", creds))
+		image := ""
+		if i-1 < len(edgeImages) {
+			image = edgeImages[i-1]
+		}
+		h.Edges = append(h.Edges, h.startEdge(ctx, nodeID, "core-1:7946", redisAliases[0]+":6379", creds, edgeEnv, image))
 	}
 
 	return h
@@ -187,13 +212,23 @@ func (h *Harness) startRedis(ctx context.Context, alias string) testcontainers.C
 // so this harness does it explicitly instead of rebuilding per node).
 var builtImage bool
 
-func (h *Harness) keelContainerRequest(nodeID string, env map[string]string, cmd []string) testcontainers.ContainerRequest {
+func (h *Harness) keelContainerRequest(nodeID string, env map[string]string, cmd []string, imageOverride string) testcontainers.ContainerRequest {
 	req := testcontainers.ContainerRequest{
 		Env:            env,
 		Cmd:            cmd,
 		Networks:       []string{h.network.Name},
 		NetworkAliases: map[string][]string{h.network.Name: {nodeID}},
 		ExposedPorts:   []string{"1883/tcp", "8090/tcp"},
+	}
+	if imageOverride != "" {
+		req.Image = imageOverride
+		return req
+	}
+	// An immutable/prebuilt image allows before/after diagnosis without
+	// rebuilding or changing the source tree. Per-edge overrides take priority.
+	if image := os.Getenv("KEEL_TEST_IMAGE"); image != "" {
+		req.Image = image
+		return req
 	}
 	if !builtImage {
 		req.FromDockerfile = testcontainers.FromDockerfile{
@@ -242,7 +277,7 @@ func (h *Harness) startCore(ctx context.Context, nodeID string, bootstrap bool, 
 	if bootstrap {
 		cmd = append(cmd, "--bootstrap=true")
 	}
-	req := h.keelContainerRequest(nodeID, env, cmd)
+	req := h.keelContainerRequest(nodeID, env, cmd, "")
 	req.Files = []testcontainers.ContainerFile{{
 		Reader:            strings.NewReader(credsYAML),
 		ContainerFilePath: "/etc/keel/credentials.yaml",
@@ -263,7 +298,7 @@ func (h *Harness) startCore(ctx context.Context, nodeID string, bootstrap bool, 
 	return &Node{ID: nodeID, Role: "core", Container: c}
 }
 
-func (h *Harness) startEdge(ctx context.Context, nodeID, peer, redisAddr, credsYAML string) *Node {
+func (h *Harness) startEdge(ctx context.Context, nodeID, peer, redisAddr, credsYAML string, extraEnv map[string]string, image string) *Node {
 	h.t.Helper()
 	env := map[string]string{
 		"DATABASE_URL":         "postgres://postgres:postgres@postgres:5432/keel_devices?sslmode=disable",
@@ -273,6 +308,9 @@ func (h *Harness) startEdge(ctx context.Context, nodeID, peer, redisAddr, credsY
 		"CREDENTIAL_CACHE_TTL": "5s",
 		"DEFAULT_TENANT_ID":    TenantID,
 		"LOG_LEVEL":            "info",
+	}
+	for k, v := range extraEnv {
+		env[k] = v
 	}
 	cmd := []string{
 		"--role=edge",
@@ -284,7 +322,7 @@ func (h *Harness) startEdge(ctx context.Context, nodeID, peer, redisAddr, credsY
 		"--grpc-bind=0.0.0.0:7100",
 		"--grpc-advertise=" + nodeID + ":7100",
 	}
-	req := h.keelContainerRequest(nodeID, env, cmd)
+	req := h.keelContainerRequest(nodeID, env, cmd, image)
 	req.Files = []testcontainers.ContainerFile{{
 		Reader:            strings.NewReader(credsYAML),
 		ContainerFilePath: "/etc/keel/credentials.yaml",
@@ -330,6 +368,25 @@ func (h *Harness) ManagementAddr(i int) string {
 	host, err := h.Cores[i].Container.Host(ctx)
 	if err != nil {
 		h.t.Fatalf("host for %s: %v", h.Cores[i].ID, err)
+	}
+	return host + ":" + mapped.Port()
+}
+
+// RedisAddr returns the host-reachable "host:port" for core index i's
+// co-located Redis instance — for a real redis client running on the test
+// host to inspect actual persisted keys (e.g. confirming a documented
+// cleanup gap), the same "real observable production state" posture the
+// MQTT/management-API accessors above already take.
+func (h *Harness) RedisAddr(i int) string {
+	h.t.Helper()
+	ctx := context.Background()
+	mapped, err := h.Redis[i].MappedPort(ctx, "6379/tcp")
+	if err != nil {
+		h.t.Fatalf("mapped port for redis-core-%d: %v", i+1, err)
+	}
+	host, err := h.Redis[i].Host(ctx)
+	if err != nil {
+		h.t.Fatalf("host for redis-core-%d: %v", i+1, err)
 	}
 	return host + ":" + mapped.Port()
 }

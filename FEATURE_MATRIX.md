@@ -31,10 +31,10 @@ already reflect that frozen state.
 |---|---|---|---|---|
 | Connect/Connack | YES | YES | `testBasic` / `test_basic` | PASS |
 | QoS 0 | YES | YES | exercised across most tests below (no single dedicated test in either suite) | PASS |
-| QoS 1 | YES | YES | `test_offline_message_queueing`, `test_redelivery_on_reconnect` | PASS |
+| QoS 1 | YES | YES | `test_offline_message_queueing`, `test_redelivery_on_reconnect`; `TestUpstreamQoS1SuccessReasonIsValidPubackCode`, `TestUpstreamInboundQoS1DoesNotPersistStatelessAck` in the Mochi fork | PASS |
 | QoS 2 | YES | YES | `test_offline_message_queueing`, `test_redelivery_on_reconnect`; production ordering also pinned by `internal/broker/receive_maximum_test.go`'s `TestFlowControl_ReceiveMaximumExceeded_DisconnectsWithReasonBeforeClose` | PASS |
 | Retained messages | YES | YES | `test_retained_messages` / `test_retained_message` | PASS |
-| Persistent sessions (offline queueing) | YES | YES | `test_offline_message_queueing` | PASS |
+| Persistent sessions (offline queueing) | YES | YES | `test_offline_message_queueing`; `TestOrdinaryOfflineDeliveryPreservesQoSState` and `TestDisconnectDuringPersistenceSeparatesOrdinaryAndSharedDelivery` in `thirdparty/mochi-mqtt-server/offline_delivery_regression_test.go` guard the local shared-fallback integration | PASS |
 | Redelivery on reconnect | YES | YES | `test_redelivery_on_reconnect` | PASS |
 | Will message | YES | YES | MQTT5: `test_will_message`, `test_will_delay` — PASS. 3.1.1: verified why the Paho suite never exercises it (`client_test.py`'s `will_message_test` isn't `test_`-prefixed, so `unittest`'s default discovery skips it) and closed the gap directly: `internal/broker/will_test.go`'s `TestWillMessage_MQTT311_UngracefulDisconnectTriggersWill`, `TestWillMessage_MQTT311_GracefulDisconnectDoesNotSendWill` (mutation-tested) | PASS (MQTT5 and 3.1.1) |
 | Overlapping subscriptions | YES | YES | `test_overlapping_subscriptions` | PASS |
@@ -65,16 +65,17 @@ distinction.
 | Session Expiry Interval | `test_session_expiry` | **UNRESOLVED** — failed once (host-load timing), passed on immediate retry. Phase 2 investigation (source review of mochi-mqtt's 1s sweep granularity + 20/20 clean reproduction attempts against a fresh build) found no defect, but a clean run doesn't erase the original failure. Tracked: [keel-iot/keel-mqtt-gateway#3](https://github.com/keel-iot/keel-mqtt-gateway/issues/3). **Public status: FAIL** until resolved — an unresolved flake is never silently treated as passing |
 | Session expiry — Redis cleanup (standalone) | `internal/broker/redis_session_expiry_cleanup_test.go`'s `TestOnDisconnectExpire_CleansSubscriptionsAndInflight`, `TestOnClientExpired_CleansAllSessionState` | PASS — real gap found and fixed: neither path cleaned up subscription/inflight Redis state before, only the client record (and only on the immediate-expiry path, not the periodic sweep at all). Mutation-tested. The cluster-only packet-ID-counter half of this same gap stays tracked under Phase 3 (`docs/testing/CLUSTER_CORRECTNESS_MATRIX.md`) |
 | Flow Control (general, Receive Maximum edge excluded) | `test_flow_control1` | PASS |
-| Topic Alias (client → server) | `test_client_topic_alias` | PASS |
+| Topic Alias (client → server) | `test_client_topic_alias`; fork `TestUpstreamUnregisteredTopicAliasIsRefused` covers unknown aliases for QoS0/1/2 | PASS |
 | Topic Alias (server → client) | `test_server_topic_alias` | PASS |
 | Maximum Packet Size | `test_maximum_packet_size` | PASS |
+| Explicit zero-valued CONNECT limits / Subscription Identifier | Fork `TestUpstreamZeroLimitsAreRefusedOnWire`; packet tests `TestUpstreamConnectDistinguishesAbsentAndZeroLimits`, `TestUpstreamSubscribeRejectsExplicitZeroIdentifier` cover absent/zero/positive properties | PASS |
 | Payload Format Indicator | `test_payload_format` | PASS |
 | Message Expiry Interval (Publication Expiry) | `test_publication_expiry` | PASS |
 | Subscription Identifiers | `test_subscribe_identifiers` | PASS |
-| Subscribe Options (No Local, Retain As Published, Retain Handling) | `test_subscribe_options` | PASS |
+| Subscribe Options (No Local, Retain As Published, Retain Handling) | `test_subscribe_options`; controlled upstream/fork reproduction in `test/conformance/evidence/subscription_barrier_race.md` | Paho's initial No Local missing-message assertion: HARNESS only for the documented traceback; complete test passes with the correct subscriber's SUBACK barrier. Other assertions remain real failures if they fail |
 | Assigned Client Identifier | `test_assigned_clientid` | PASS |
-| User Properties | `test_user_properties` | PASS |
-| Request/Response (Response Topic + Correlation Data) | `test_request_response` | PASS |
+| User Properties | `test_user_properties`; fork `TestUpstreamProblemInfoDoesNotStripPublishProperties` checks PUBLISH vs ACK with Request Problem Information 0/1 | PASS |
+| Request/Response (Response Topic + Correlation Data) | `test_request_response`; controlled upstream/fork reproduction in `test/conformance/evidence/subscription_barrier_race.md` | Paho's initial missing-message assertion: HARNESS only for the documented traceback; complete test passes with the correct subscriber's SUBACK barrier, including property and reply assertions. Other failures remain real failures |
 
 ## Transport (not MQTT protocol per se, but part of Phase 1's "deal breaker" gaps — see `ROADMAP.md`)
 
@@ -122,7 +123,16 @@ once those tests exist, not before.
 
 ## Performance / scalability
 
-Not yet populated. `internal/telemetry`'s metrics and the existing
-devicesim load-test results (see project memory / prior session notes)
-are inputs to this section once formalized into repeatable, referenced
-benchmarks rather than one-off session logs.
+| Behavior | Evidence | Scope |
+|---|---|---|
+| Lazy outbound storage with unchanged configured capacity | `TestPacketQueueStorageIsLazyAndLimitUnchanged`, `TestPacketQueueFullConfiguredCapacity`, `TestClientSlowWriterPreserves8192PendingLimit` in `thirdparty/mochi-mqtt-server/packet_queue_test.go` | Local tests including blocked writes with QoS 0/1/2; not cluster capacity certification |
+| Independent shared snapshots without an intermediate copy | `TestSharedGatherSnapshotIsIndependent`, `TestSharedGatherDuringSubscriptionChanges`, `BenchmarkSharedGather12Members` in `thirdparty/mochi-mqtt-server/shared_snapshot_test.go` | Map ownership, concurrency, and helper allocation benchmark |
+| Stateless inbound QoS1 ACK storage | Fork `TestUpstreamInboundQoS1DoesNotPersistStatelessAck`; `internal/broker/redis_stateless_qos1_test.go`'s `TestRedisStatelessInboundQoS1CannotDeleteOutboundDelivery` | Real Redis schemas 1/2: zero commands for the stateless callbacks, preserved equal-ID outbound record, and normal outbound completion |
+
+Measurements and limitations: [client memory investigation](docs/testing/MEMORY_ALLOCATION_PROFILE.md).
+
+Selective release-candidate backports and their protocol/race evidence:
+[Mochi upstream adoption](docs/testing/MOCHI_UPSTREAM_ADOPTION.md), including
+`TestUpstreamWrappedRefusalPreservesQoSAck`,
+`TestUpstreamDisconnectRespectsProtocolAndPassiveMode`, and
+`TestUpstreamRetainMessageWhileScanningDoesNotRace` in the fork.

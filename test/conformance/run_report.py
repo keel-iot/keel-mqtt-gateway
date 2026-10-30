@@ -45,6 +45,15 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 # inconvenient failures.
 KNOWN_HARNESS_ISSUES = {
     "test_flow_control2": "evidence/test_flow_control2.md",
+    "test_request_response": "evidence/subscription_barrier_race.md",
+    "test_subscribe_options": "evidence/subscription_barrier_race.md",
+}
+
+# These multi-assertion tests can also expose genuine broker failures. Match
+# only the proved missing-message failure at the pinned suite's bad barrier.
+HARNESS_FAILURE_SIGNATURES = {
+    "test_request_response": ('client_test5.py", line 692', "AssertionError: 0 != 1 : []"),
+    "test_subscribe_options": ('client_test5.py", line 561', "AssertionError: 0 != 1 : []"),
 }
 
 # Test name -> tracking issue, for a failure seen but not yet reproducible
@@ -92,7 +101,7 @@ def evidence_is_valid(evidence_path):
     return "HARNESS" in result_section
 
 
-def classify(failing_names, base_dir=_HERE):
+def classify(failing_names, base_dir=_HERE, failure_details=None):
     """Splits a set/iterable of failing test method names into
     (failed, harness), both sorted lists. See module doc for the
     fail-closed rule governing what can become "harness"."""
@@ -100,7 +109,11 @@ def classify(failing_names, base_dir=_HERE):
     harness = []
     for name in sorted(failing_names):
         evidence_rel = KNOWN_HARNESS_ISSUES.get(name)
-        if evidence_rel and evidence_is_valid(os.path.join(base_dir, evidence_rel)):
+        signature = HARNESS_FAILURE_SIGNATURES.get(name)
+        matches = signature is None or all(
+            fragment in (failure_details or {}).get(name, "") for fragment in signature
+        )
+        if matches and evidence_rel and evidence_is_valid(os.path.join(base_dir, evidence_rel)):
             harness.append(name)
         else:
             failed.append(name)
@@ -148,7 +161,10 @@ def main():
     result = runner.run(suite)
 
     failing_names = {test._testMethodName for test, _ in result.failures + result.errors}
-    failed, harness = classify(failing_names)
+    failure_details = {}
+    for test, traceback in result.failures + result.errors:
+        failure_details[test._testMethodName] = failure_details.get(test._testMethodName, "") + traceback
+    failed, harness = classify(failing_names, failure_details=failure_details)
     passed = result.testsRun - len(failing_names)
 
     for name in failed:

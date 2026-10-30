@@ -563,6 +563,9 @@ func TestSelectSharedSubscriber(t *testing.T) {
 	require.Len(t, subs.Shared[SharePrefix+"/tmp2/a/b/c"], 1)
 	subs.SelectShared()
 	require.Len(t, subs.SharedSelected, 2)
+	require.Len(t, subs.SharedSelectedGroups, 2)
+	require.Contains(t, []string{"cl1", "cl1b", "cl2"}, subs.SharedSelectedGroups[SharePrefix+"/tmp/a/b/c"])
+	require.Equal(t, "cl3", subs.SharedSelectedGroups[SharePrefix+"/tmp2/a/b/c"])
 }
 
 func TestMergeSharedSelected(t *testing.T) {

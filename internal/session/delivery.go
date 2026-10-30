@@ -24,6 +24,11 @@ type OfflineDelivery struct {
 	// Allocation and insertion must not be split: a live connection can write
 	// the same packet-ID space between two independent Redis operations.
 	Queue func(clientID string, msg InflightMessage) (packetID uint16, queued bool, err error)
+	// SharedSelected is the cluster's exact filter -> client decision for this
+	// node. A non-nil empty map suppresses all offline shared delivery (for
+	// example because the group has a live member). Nil retains local selection
+	// for standalone callers that do not use distributed routing.
+	SharedSelected map[string]string
 
 	Log *slog.Logger
 }
@@ -39,7 +44,10 @@ type OfflineDelivery struct {
 // the rest of owned. queued=false means a deduplicated delivery and is not an
 // error.
 func (d *OfflineDelivery) Deliver(owned []OfflineSession, topic string, payload []byte, publishQoS byte) (delivered int) {
-	sharedSelected := selectSharedSessions(owned, topic)
+	sharedSelected := d.SharedSelected
+	if sharedSelected == nil {
+		sharedSelected = selectSharedSessions(owned, topic)
+	}
 	for _, s := range owned {
 		qos, matched := bestMatchQoS(s, topic, publishQoS, sharedSelected)
 		if !matched || qos == 0 {

@@ -789,7 +789,8 @@ func TestClientWritePacketBuffer(t *testing.T) {
 	small := packets.TPacketData[packets.Publish].Get(packets.TPublishNoPayload).Packet
 	large := packets.TPacketData[packets.Publish].Get(packets.TPublishBasic).Packet
 
-	cl.State.outbound <- small
+	require.True(t, cl.State.outbound.tryPush(small))
+	atomic.AddInt32(&cl.State.outboundQty, 1)
 
 	tt := []struct {
 		pks  []*packets.Packet

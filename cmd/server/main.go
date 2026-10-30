@@ -1146,12 +1146,16 @@ func runServer() {
 			var inflightSample func() (int64, error)
 			if rdb != nil {
 				offlineSessionHook := broker.NewRedisSessionHook(rdb, log)
+				if err := offlineSessionHook.ConfigureIFMSchema(ctx, cfg.RedisIFMSchema); err != nil {
+					log.Error("configure Redis IFM schema", "error", err)
+					os.Exit(1)
+				}
 				offlineOwnership := &keelraft.OfflineOwnership{Registry: clusterRegistry}
 				offlineReconciler := &session.Reconciler{
-					// FilterOffline drops currently-live clients, which
-					// Redis alone can't tell apart from offline ones.
+					// Skip known live clients before reading Redis, then
+					// filter again for connections established during the scan.
 					Inventory: func() ([]session.OfflineSession, error) {
-						all, err := offlineSessionHook.OfflineInventory()
+						all, err := offlineSessionHook.OfflineInventoryExcept(raftNode.Registry.SessionsSnapshot())
 						if err != nil {
 							return nil, err
 						}
@@ -1368,6 +1372,7 @@ func runServer() {
 			AutoProvisioningURL:       cfg.AutoProvisioningURL,
 			DefaultTenantID:           cfg.DefaultTenantID,
 			RedisClient:               rdb,
+			RedisIFMSchema:            cfg.RedisIFMSchema,
 			ClusterRegistry:           clusterRegistry,
 			ClusterFwd:                clusterFwd,
 			ClusterNodeID:             cf.nodeID,
@@ -1475,6 +1480,10 @@ func runServer() {
 			var inboundOfflineStore *broker.RedisSessionHook
 			if rdb != nil {
 				inboundOfflineStore = broker.NewRedisSessionHook(rdb, log)
+				if err := inboundOfflineStore.ConfigureIFMSchema(ctx, cfg.RedisIFMSchema); err != nil {
+					log.Error("configure Redis IFM schema", "error", err)
+					os.Exit(1)
+				}
 			}
 			_ = gForwarder.SubscribeContext(func(ctx context.Context, msg *dataplane.Message) {
 				if err := mqttServer.Publish(msg.Topic, msg.Payload, false, msg.QoS); err != nil {

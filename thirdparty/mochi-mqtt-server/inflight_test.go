@@ -24,6 +24,32 @@ func TestInflightSet(t *testing.T) {
 	require.False(t, r)
 }
 
+// TestInflightOppositeDirectionsMaySharePacketID is the regression reproducer
+// for upstream issue #545. MQTT permits the client and server to use the same
+// numeric Packet Identifier for their independent flows.
+func TestInflightOppositeDirectionsMaySharePacketID(t *testing.T) {
+	i := NewInflights()
+	outbound := packets.Packet{
+		PacketID:    7,
+		FixedHeader: packets.FixedHeader{Type: packets.Publish, Qos: 1},
+		Payload:     []byte("server-to-client"),
+	}
+	inbound := packets.Packet{
+		PacketID:    7,
+		FixedHeader: packets.FixedHeader{Type: packets.Pubrec, Qos: 0},
+	}
+
+	i.SetOutbound(outbound)
+	i.SetInbound(inbound)
+
+	gotOutbound, outboundOK := i.GetOutbound(7)
+	gotInbound, inboundOK := i.GetInbound(7)
+	require.True(t, outboundOK)
+	require.True(t, inboundOK)
+	require.Equal(t, outbound, gotOutbound)
+	require.Equal(t, inbound, gotInbound)
+}
+
 func TestInflightGet(t *testing.T) {
 	cl, _, _ := newTestClient()
 	cl.State.Inflight.Set(packets.Packet{PacketID: 2})
@@ -53,6 +79,32 @@ func TestInflightGetAllAndImmediate(t *testing.T) {
 		{PacketID: 3, Created: 3, Expiry: -1},
 		{PacketID: 4, Created: 4, Expiry: -1},
 	}, cl.State.Inflight.GetAll(true))
+}
+
+func TestInflightGetAllOrdersPacketsCreatedInTheSameSecond(t *testing.T) {
+	const sameSecond int64 = 1700000000
+	cl, _, _ := newTestClient()
+	for _, id := range []uint16{5, 3, 8, 1, 7, 2, 6, 4} {
+		cl.State.Inflight.Set(packets.Packet{PacketID: id, Created: sameSecond})
+	}
+
+	got := cl.State.Inflight.GetAll(false)
+	order := make([]uint16, 0, len(got))
+	for _, pk := range got {
+		order = append(order, pk.PacketID)
+	}
+	require.Equal(t, []uint16{1, 2, 3, 4, 5, 6, 7, 8}, order)
+}
+
+func TestInflightGetAllDoesNotTruncateCreated(t *testing.T) {
+	const boundary int64 = 1786970112
+	cl, _, _ := newTestClient()
+	cl.State.Inflight.Set(packets.Packet{PacketID: 9, Created: boundary - 1})
+	cl.State.Inflight.Set(packets.Packet{PacketID: 2, Created: boundary + 1})
+
+	got := cl.State.Inflight.GetAll(false)
+	require.Len(t, got, 2)
+	require.Equal(t, uint16(9), got[0].PacketID)
 }
 
 func TestInflightLen(t *testing.T) {

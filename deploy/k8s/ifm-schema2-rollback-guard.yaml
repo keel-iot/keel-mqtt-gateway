@@ -1,0 +1,46 @@
+# Native Kubernetes admission guard for the irreversible Redis IFM schema-2
+# activation. Install this before changing keel:gw:IFM:SCHEMA to 2, then
+# label only the Keel namespace. The policy covers Deployment, ReplicaSet and
+# Pod CREATE/UPDATE requests for objects marked as Keel Edge:
+#   kubectl label namespace <namespace> keel.io/ifm-schema-required=2 --overwrite
+# Redis remains the semantic authority; this label is the admission barrier.
+# The capability label is deployment metadata, not the compatibility authority.
+# Add each validated schema-2 image digest to the CEL allowlist below before
+# activation. The sentinel keeps the policy fail-closed while no compatible
+# registry image has been approved.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: keel-edge-ifm-schema2
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["deployments", "replicasets"]
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  matchConditions:
+    - name: keel-edge-only
+      expression: "object.metadata.labels['app.kubernetes.io/component'] == 'edge'"
+  validations:
+    - expression: "request.resource.resource == 'pods' ? (has(object.metadata.labels) && object.metadata.labels['keel.io/ifm-schema-max'] == '2') : (has(object.spec.template.metadata.labels) && object.spec.template.metadata.labels['keel.io/ifm-schema-max'] == '2')"
+      message: "Keel Edge image must declare directional IFM schema capability (keel.io/ifm-schema-max=2)"
+    - expression: "(request.resource.resource == 'pods' ? object.spec.containers : object.spec.template.spec.containers).all(c, c.image.matches('^ghcr[.]io/keel-iot/keel-mqtt-gateway@sha256:[0-9a-f]{64}$') && c.image in ['__NO_APPROVED_SCHEMA2_IMAGE__'])"
+      message: "Keel Edge image must be an approved immutable schema-2 image digest"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: keel-edge-ifm-schema2
+spec:
+  policyName: keel-edge-ifm-schema2
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        keel.io/ifm-schema-required: "2"

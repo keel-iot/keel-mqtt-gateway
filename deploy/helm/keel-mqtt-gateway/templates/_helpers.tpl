@@ -66,8 +66,13 @@ app.kubernetes.io/component: edge
 {{- $root := .root -}}
 {{- $override := .override | default dict -}}
 {{- $repo := $override.repository | default $root.Values.image.repository -}}
+{{- $digest := $override.digest | default $root.Values.image.digest -}}
 {{- $tag := $override.tag | default $root.Values.image.tag | default $root.Chart.AppVersion -}}
+{{- if $digest -}}
+{{- printf "%s@%s" $repo $digest -}}
+{{- else -}}
 {{- printf "%s:%s" $repo $tag -}}
+{{- end -}}
 {{- end }}
 
 {{- define "keel.imagePullPolicy" -}}
