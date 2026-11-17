@@ -102,3 +102,28 @@ func TestWatchPrimary_NoopWhenPrimaryUnknown(t *testing.T) {
 		t.Fatalf("expected router to remain at %s when no primary is designated, got %s", srv1.addr(), r.Addr())
 	}
 }
+
+func TestWaitForPrimaryWaitsForRaftDesignationAndRedirects(t *testing.T) {
+	seed := startFakeRedisServer(t)
+	primary := startFakeRedisServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	r, err := New(ctx, seed.addr(), "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer r.Close()
+
+	lookup := &fakePrimaryLookup{}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		lookup.set("core-2", map[string]string{"core-2": primary.addr()})
+	}()
+	if err := WaitForPrimary(ctx, r, lookup.currentPrimary, lookup.resolveAddr); err != nil {
+		t.Fatalf("WaitForPrimary: %v", err)
+	}
+	if got := r.Addr(); got != primary.addr() {
+		t.Fatalf("expected router at primary %s, got %s", primary.addr(), got)
+	}
+}

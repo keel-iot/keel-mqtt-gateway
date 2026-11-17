@@ -16,6 +16,36 @@ import (
 // promptly to an already-decided change is exactly what this loop is for.
 const watchInterval = 3 * time.Second
 
+const primaryWaitInterval = 100 * time.Millisecond
+
+// WaitForPrimary blocks startup until the router points at the Redis address
+// belonging to Raft's designated primary. It is used before components that
+// may write to Redis are initialized; the periodic watcher alone is too late
+// for startup migrations, which can run as soon as the broker is constructed.
+func WaitForPrimary(
+	ctx context.Context,
+	r *Router,
+	currentPrimary func() (nodeID string, ok bool),
+	resolveAddr func(nodeID string) (addr string, ok bool),
+) error {
+	ticker := time.NewTicker(primaryWaitInterval)
+	defer ticker.Stop()
+	for {
+		if nodeID, ok := currentPrimary(); ok {
+			if addr, found := resolveAddr(nodeID); found {
+				if err := r.Redirect(ctx, addr); err == nil && r.Addr() == addr {
+					return nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 // WatchPrimary polls currentPrimary/resolveAddr every watchInterval and
 // redirects r whenever the resolved address differs from where it's
 // currently pointed. Blocks until ctx is cancelled — run it in its own

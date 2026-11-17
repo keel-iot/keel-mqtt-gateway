@@ -1339,6 +1339,17 @@ func runServer() {
 	// platform→device commands) — a pure "core" node has no connected
 	// devices to serve, so it runs none of them. "edge", "combined", and
 	// standalone (role == "") all run the full set.
+	// The Redis address configured on an edge is only a bootstrap seed and may
+	// be a replica. Resolve Raft's primary before broker.New registers the
+	// Redis session hook: its Init can migrate legacy session keys and must be
+	// able to write. WatchPrimary keeps handling later failovers.
+	if rdb != nil && clusterRegistry != nil && brokerRuntimeEnabled {
+		if err := redisrouter.WaitForPrimary(ctx, rdb, clusterRegistry.CurrentRedisPrimary, clusterMembership.RedisAddrForNode); err != nil {
+			log.Error("wait for Redis primary before broker startup", "error", err)
+			os.Exit(1)
+		}
+		log.Info("mqtt-gateway: Redis primary ready for broker startup", "addr", rdb.Addr())
+	}
 	if brokerRuntimeEnabled {
 		// Basic monitoring UI (see internal/livestatsapi and
 		// internal/cluster/management's aggregation of it): feeds
