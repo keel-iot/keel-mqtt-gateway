@@ -15,7 +15,7 @@
 
 image:
   repository: ghcr.io/keel-iot/keel-mqtt-gateway
-  tag: "0.3.4" # defaults to the gateway release matching this chart
+  tag: "0.3.5" # defaults to the gateway release matching this chart
   digest: "" # immutable sha256 digest; takes precedence over tag
   pullPolicy: IfNotPresent
 imagePullSecrets: []
@@ -164,6 +164,18 @@ core:
 
   # Raft/gossip/olric/grpc/mgmt tuning — see cmd/server/main.go flag docs
   # for full detail on each. Left at binary defaults unless overridden.
+  # Automatic passes run only on the Raft leader. Reconnect destinations
+  # are selected by the external load balancer; clients must reconnect.
+  # Threshold/cap/stagger/exclusions also apply to manual API passes.
+  rebalance:
+    enabled: false
+    interval: 10m
+    dryRun: false
+    imbalanceThreshold: 0.20
+    maxEvictionsPerNode: 50
+    evictStagger: 200ms
+    excludeClientIDs: []
+
   raftDataDir: /data/raft
   raftSnapshotInterval: 30s
   heartbeatThreshold: 30s

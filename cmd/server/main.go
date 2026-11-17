@@ -1135,7 +1135,7 @@ func runServer() {
 			}
 
 			if cf.rebalanceScheduleEnabled {
-				go lifecycle.RunScheduledRebalance(ctx,
+				go lifecycle.RunScheduledRebalance(ctx, raftNode.IsLeader,
 					raftNode.Registry.SessionsSnapshot,
 					func() map[string]bool { return lifecycle.LiveEdgeNodes(clusterMembership.Members()) },
 					rebalanceCfg, clusterFwd, cf.rebalanceScheduleDryRun, cf.rebalanceScheduleInterval, log)

@@ -81,3 +81,33 @@ in the meantime:
 ```
 kubectl exec {{ "<release>-core-0" }} -- keel-mqtt-gateway backup raft --output /tmp/snap
 ```
+
+## Automatic connection rebalancing (0.3.5+)
+
+```yaml
+core:
+  rebalance:
+    enabled: true
+    interval: 2m
+    dryRun: false
+    imbalanceThreshold: 0.20
+    maxEvictionsPerNode: 50
+    evictStagger: 200ms
+    excludeClientIDs: [] # e.g. ["bridge-consumer"]
+```
+
+Automatic rebalancing is disabled by default. When enabled, only the Raft
+leader runs a pass, starting after the configured interval. Each pass selects
+clients randomly from edges exceeding the average session count by the
+configured fraction. It disconnects at most `maxEvictionsPerNode` clients per
+overloaded edge, with `evictStagger` between successful disconnections.
+Clients must reconnect; their destination is chosen by the external load
+balancer. Rebalancing uses session counts, not CPU or message rate.
+
+Use `dryRun: true` to log the proposed disconnections without executing them.
+Leadership is checked before each scheduled disconnection; an RPC already
+in flight can complete after leadership changes. Manual API passes remain
+available and should not be triggered concurrently with scheduled passes.
+Threshold, cap, stagger and exclusions also configure the manual API.
+The interval must be positive. Apply these values with chart and image 0.3.5
+or later; changing core arguments causes a core StatefulSet rolling update.

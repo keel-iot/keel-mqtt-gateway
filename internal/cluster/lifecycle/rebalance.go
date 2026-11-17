@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -191,6 +192,10 @@ func Rebalance(ctx context.Context, sessions map[string]string, nodeIsLiveEdge m
 				continue
 			}
 			if err := evictor.Evict(ctx, nodeID, clientID); err != nil {
+				if errors.Is(err, errRebalanceLeadershipLost) {
+					result.Nodes = append(result.Nodes, nodeResult)
+					return result, err
+				}
 				log.Warn("lifecycle: rebalance evict failed", "node_id", nodeID, "client_id", clientID, "error", err)
 				nodeResult.EvictErrs = append(nodeResult.EvictErrs, fmt.Sprintf("%s: %v", clientID, err))
 				continue
@@ -213,8 +218,24 @@ func Rebalance(ctx context.Context, sessions map[string]string, nodeIsLiveEdge m
 	return result, nil
 }
 
-// RunScheduledRebalance blocks, calling Rebalance on every tick of
-// interval until ctx is cancelled — the periodic counterpart to the
+// leaderEvictor checks leadership before each scheduled disconnect, including
+// those after a stagger delay. An RPC already in flight cannot be recalled.
+var errRebalanceLeadershipLost = errors.New("rebalance: Raft leadership lost")
+
+type leaderEvictor struct {
+	isLeader func() bool
+	next     Evictor
+}
+
+func (e leaderEvictor) Evict(ctx context.Context, nodeID, clientID string) error {
+	if !e.isLeader() {
+		return errRebalanceLeadershipLost
+	}
+	return e.next.Evict(ctx, nodeID, clientID)
+}
+
+// RunScheduledRebalance blocks, calling Rebalance on each interval only
+// while isLeader reports Raft leadership, until ctx is cancelled — the periodic counterpart to the
 // manually-triggered POST /api/cluster/rebalance, opt-in via config (see
 // cmd/server/main.go's --rebalance-schedule-* flags). sessions and
 // liveEdgeNodes are called fresh on every tick, not captured once, since
@@ -225,7 +246,11 @@ func Rebalance(ctx context.Context, sessions map[string]string, nodeIsLiveEdge m
 // separate "observe for N passes, then start evicting" ramp-up; running
 // with dryRun=true for a while and inspecting logs before flipping it off
 // is the intended way to gain confidence in a new deployment.
-func RunScheduledRebalance(ctx context.Context, sessions func() map[string]string, liveEdgeNodes func() map[string]bool, cfg RebalanceConfig, evictor Evictor, dryRun bool, interval time.Duration, log *slog.Logger) {
+func RunScheduledRebalance(ctx context.Context, isLeader func() bool, sessions func() map[string]string, liveEdgeNodes func() map[string]bool, cfg RebalanceConfig, evictor Evictor, dryRun bool, interval time.Duration, log *slog.Logger) {
+	if interval <= 0 {
+		log.Error("lifecycle: rebalance interval must be positive")
+		return
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -233,7 +258,10 @@ func RunScheduledRebalance(ctx context.Context, sessions func() map[string]strin
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			result, err := Rebalance(ctx, sessions(), liveEdgeNodes(), cfg, evictor, dryRun, log)
+			if !isLeader() {
+				continue
+			}
+			result, err := Rebalance(ctx, sessions(), liveEdgeNodes(), cfg, leaderEvictor{isLeader: isLeader, next: evictor}, dryRun, log)
 			if err != nil {
 				if ctx.Err() != nil {
 					return

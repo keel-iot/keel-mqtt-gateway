@@ -111,6 +111,13 @@ spec:
                 --olric-advertise="$POD_NAME.{{ $svc }}" \
                 --olric-bootstrap-wait={{ .Values.core.olric.bootstrapWait }} \
                 --olric-join-retry-interval={{ .Values.core.olric.joinRetryInterval }} \
+                --rebalance-schedule-enabled={{ .Values.core.rebalance.enabled }} \
+                --rebalance-schedule-interval={{ .Values.core.rebalance.interval | quote }} \
+                --rebalance-schedule-dry-run={{ .Values.core.rebalance.dryRun }} \
+                --rebalance-imbalance-threshold={{ .Values.core.rebalance.imbalanceThreshold }} \
+                --rebalance-max-evictions-per-node={{ .Values.core.rebalance.maxEvictionsPerNode }} \
+                --rebalance-evict-stagger={{ .Values.core.rebalance.evictStagger | quote }} \
+                --rebalance-exclude-client-ids={{ join "," .Values.core.rebalance.excludeClientIDs | quote }} \
                 --olric-max-join-attempts={{ .Values.core.olric.maxJoinAttempts }}
           lifecycle:
             preStop:

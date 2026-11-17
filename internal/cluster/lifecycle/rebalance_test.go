@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -220,7 +221,7 @@ func TestRunScheduledRebalance_TicksAndEvicts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Millisecond)
 	defer cancel()
 
-	RunScheduledRebalance(ctx,
+	RunScheduledRebalance(ctx, func() bool { return true },
 		func() map[string]string { return sessions },
 		func() map[string]bool { return live },
 		cfg, evictor, false, 20*time.Millisecond, silentLogger())
@@ -242,7 +243,7 @@ func TestRunScheduledRebalance_DryRunNeverEvicts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Millisecond)
 	defer cancel()
 
-	RunScheduledRebalance(ctx,
+	RunScheduledRebalance(ctx, func() bool { return true },
 		func() map[string]string { return sessions },
 		func() map[string]bool { return live },
 		cfg, evictor, true, 20*time.Millisecond, silentLogger())
@@ -260,7 +261,7 @@ func TestRunScheduledRebalance_StopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		RunScheduledRebalance(ctx,
+		RunScheduledRebalance(ctx, func() bool { return true },
 			func() map[string]string { return nil },
 			func() map[string]bool { return nil },
 			DefaultRebalanceConfig(), &fakeEvictor{}, true, 5*time.Millisecond, silentLogger())
@@ -362,5 +363,37 @@ func TestRebalance_AllCandidatesExcluded_NoEviction(t *testing.T) {
 	}
 	if len(evictor.calls) != 0 {
 		t.Fatalf("expected no Evict calls, got %d", len(evictor.calls))
+	}
+}
+
+func TestScheduledRebalanceFollowerSkipsInventory(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	RunScheduledRebalance(ctx, func() bool { return false },
+		func() map[string]string { t.Fatal("follower must not start a pass"); return nil },
+		func() map[string]bool { return nil }, DefaultRebalanceConfig(), &fakeEvictor{}, false, time.Millisecond, silentLogger())
+}
+
+type rebalanceEvictFunc func(context.Context, string, string) error
+
+func (f rebalanceEvictFunc) Evict(ctx context.Context, nodeID, clientID string) error {
+	return f(ctx, nodeID, clientID)
+}
+
+func TestScheduledRebalanceStopsPassOnLeadershipLoss(t *testing.T) {
+	leader := true
+	calls := 0
+	guarded := leaderEvictor{isLeader: func() bool { return leader }, next: rebalanceEvictFunc(func(context.Context, string, string) error {
+		calls++
+		leader = false
+		return nil
+	})}
+	result, err := Rebalance(context.Background(), sessionsWithCounts(map[string]int{"edge-1": 20, "edge-2": 0}),
+		map[string]bool{"edge-1": true, "edge-2": true}, DefaultRebalanceConfig(), guarded, false, silentLogger())
+	if !errors.Is(err, errRebalanceLeadershipLost) {
+		t.Fatalf("expected leadership loss, got %v", err)
+	}
+	if calls != 1 || len(result.Nodes) != 1 || len(result.Nodes[0].Evicted) != 1 {
+		t.Fatalf("expected one eviction before leadership loss, calls=%d result=%+v", calls, result)
 	}
 }
