@@ -109,5 +109,5 @@ Leadership is checked before each scheduled disconnection; an RPC already
 in flight can complete after leadership changes. Manual API passes remain
 available and should not be triggered concurrently with scheduled passes.
 Threshold, cap, stagger and exclusions also configure the manual API.
-The interval must be positive. Apply these values with chart and image 0.3.5
+The interval must be positive. Apply these values with chart and image 0.3.6
 or later; changing core arguments causes a core StatefulSet rolling update.
