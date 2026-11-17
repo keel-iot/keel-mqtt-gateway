@@ -5,6 +5,7 @@
 package mqtt
 
 import (
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -125,6 +126,8 @@ func (a *OutboundTopicAliases) Delete(topic string, id uint16) {
 // SharedSubscriptions contains a map of subscriptions to a shared filter,
 // keyed on share group then client id.
 type SharedSubscriptions struct {
+	// Cursors live with indexed groups, rather than transient topic snapshots.
+	cursors  map[string]*atomic.Uint64
 	internal map[string]map[string]packets.Subscription
 	sync.RWMutex
 }
@@ -132,6 +135,7 @@ type SharedSubscriptions struct {
 // NewSharedSubscriptions returns a new instance of Subscriptions.
 func NewSharedSubscriptions() *SharedSubscriptions {
 	return &SharedSubscriptions{
+		cursors:  map[string]*atomic.Uint64{},
 		internal: map[string]map[string]packets.Subscription{},
 	}
 }
@@ -142,6 +146,7 @@ func (s *SharedSubscriptions) Add(group, id string, val packets.Subscription) {
 	defer s.Unlock()
 	if _, ok := s.internal[group]; !ok {
 		s.internal[group] = map[string]packets.Subscription{}
+		s.cursors[group] = new(atomic.Uint64)
 	}
 	s.internal[group][id] = val
 }
@@ -153,6 +158,7 @@ func (s *SharedSubscriptions) Delete(group, id string) {
 	delete(s.internal[group], id)
 	if len(s.internal[group]) == 0 {
 		delete(s.internal, group)
+		delete(s.cursors, group)
 	}
 }
 
@@ -328,6 +334,7 @@ type InlineSubscription struct {
 
 // Subscribers contains the shared and non-shared subscribers matching a topic.
 type Subscribers struct {
+	sharedCursors  map[string]*atomic.Uint64
 	routing        *routingSubscribers // internal ID-only query; ordinary snapshots stay caller-owned
 	Shared         map[string]map[string]packets.Subscription
 	SharedSelected map[string]packets.Subscription
@@ -340,21 +347,34 @@ type Subscribers struct {
 	InlineSubscriptions  map[int]InlineSubscription
 }
 
-// SelectShared returns one subscriber for each shared subscription group.
+// SelectShared returns one subscriber per full shared filter. Indexed snapshots
+// rotate in stable client-ID order, even across topics matching a wildcard and
+// concurrent publishers. Hooks can remove unavailable members before selection.
+// Caller-created snapshots without an index cursor use the first sorted member.
 func (s *Subscribers) SelectShared() {
 	s.SharedSelected = map[string]packets.Subscription{}
 	s.SharedSelectedGroups = map[string]string{}
 	for group, subs := range s.Shared {
-		for client, sub := range subs {
-			s.SharedSelectedGroups[group] = client
-			cls, ok := s.SharedSelected[client]
-			if !ok {
-				cls = sub
-			}
-
-			s.SharedSelected[client] = cls.Merge(sub)
-			break
+		if len(subs) == 0 {
+			continue
 		}
+		clients := make([]string, 0, len(subs))
+		for client := range subs {
+			clients = append(clients, client)
+		}
+		sort.Strings(clients)
+		var next uint64
+		if cursor := s.sharedCursors[group]; cursor != nil {
+			next = cursor.Add(1) - 1
+		}
+		client := clients[next%uint64(len(clients))]
+		sub := subs[client]
+		s.SharedSelectedGroups[group] = client
+		cls, ok := s.SharedSelected[client]
+		if !ok {
+			cls = sub
+		}
+		s.SharedSelected[client] = cls.Merge(sub)
 	}
 }
 
@@ -776,8 +796,12 @@ func (x *TopicsIndex) gatherSharedSubscriptions(particle *particle, subs *Subscr
 	// GetAll would copy every member into an intermediate map first.
 	particle.shared.RLock()
 	defer particle.shared.RUnlock()
-	for _, shares := range particle.shared.internal {
+	for group, shares := range particle.shared.internal {
+		if subs.sharedCursors == nil {
+			subs.sharedCursors = map[string]*atomic.Uint64{}
+		}
 		for client, sub := range shares {
+			subs.sharedCursors[sub.Filter] = particle.shared.cursors[group]
 			if _, ok := subs.Shared[sub.Filter]; !ok {
 				subs.Shared[sub.Filter] = map[string]packets.Subscription{}
 			}
